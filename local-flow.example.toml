@@ -1,0 +1,27 @@
+# Example local-flow config file. Copy to ./local-flow.toml or
+# ~/.config/local-flow/config.toml (or point LOCAL_FLOW_CONFIG at it).
+# Environment variables (see .env.example) override these values.
+
+lmstudio_base_url = "http://localhost:1234/v1"
+lmstudio_model = ""            # empty = auto-pick the first loaded model
+lmstudio_timeout = 60.0
+
+asr_backend = "faster-whisper" # faster-whisper | mock
+asr_model = "small.en"         # name or path to a CTranslate2 model dir
+asr_device = "auto"            # auto | cpu | cuda
+asr_compute_type = "int8"
+
+vad_backend = "energy"         # energy | webrtc | mock
+vad_aggressiveness = 2
+vad_frame_ms = 30
+vad_silence_ms = 600
+vad_energy_threshold = 500.0
+
+mode = "push-to-talk"          # push-to-talk | hands-free
+hotkey = "f9"
+
+style = "default"              # a style name from styles.json
+data_dir = "~/.local/share/local-flow"
+
+insert_method = "auto"         # auto | paste | type | clipboard
+sample_rate = 16000

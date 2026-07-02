@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local config / data (never commit personal data)
+.env
+local-flow.toml
+.local-flow/
+
+# OS
+.DS_Store

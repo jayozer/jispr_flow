@@ -1,0 +1,66 @@
+"""Combine rule-based cleanup with the LM Studio polish pass."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from local_flow.errors import LMStudioError
+from local_flow.llm.base import ChatClient
+from local_flow.personalization.store import PersonalizationStore
+from local_flow.polish.prompting import build_polish_messages
+from local_flow.polish.rules import clean_transcript
+
+
+@dataclass
+class PolishResult:
+    rough: str
+    cleaned: str
+    polished: str
+    used_llm: bool = False
+    warnings: list[str] = field(default_factory=list)
+
+
+class TranscriptPolisher:
+    """Rules first, then an optional LLM pass.
+
+    With ``chat_client=None`` (or when LM Studio is unreachable and
+    ``fallback_to_rules`` is on), the rule-cleaned text is returned so
+    dictation keeps working offline.
+    """
+
+    def __init__(
+        self,
+        chat_client: ChatClient | None,
+        store: PersonalizationStore,
+        style: str = "default",
+        fallback_to_rules: bool = True,
+    ) -> None:
+        self.chat_client = chat_client
+        self.store = store
+        self.style = style
+        self.fallback_to_rules = fallback_to_rules
+
+    def polish(self, rough: str) -> PolishResult:
+        cleaned = clean_transcript(rough)
+        result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
+        if not cleaned or self.chat_client is None:
+            return result
+
+        style_name, style_rules = self.store.style_rules(self.style)
+        messages = build_polish_messages(
+            cleaned,
+            dictionary_terms=self.store.dictionary_terms(),
+            style_name=style_name,
+            style_rules=style_rules,
+        )
+        try:
+            polished = self.chat_client.chat(messages)
+        except LMStudioError as exc:
+            if not self.fallback_to_rules:
+                raise
+            result.warnings.append(f"LM Studio polish skipped: {exc.message}")
+            return result
+        if polished:
+            result.polished = polished
+            result.used_llm = True
+        return result
