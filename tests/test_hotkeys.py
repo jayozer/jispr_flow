@@ -1,9 +1,11 @@
 """Hotkey logic: shared press/release core, factory dispatch, space and fn machines."""
 
+import threading
+
 import pytest
 
 from local_flow.errors import HotkeyBackendMissingError
-from local_flow.hotkeys.base import PushToTalkCore, resolve_key
+from local_flow.hotkeys.base import CallbackDispatcher, PushToTalkCore, resolve_key
 from local_flow.hotkeys.space import SpaceActions, SpaceStateMachine
 
 
@@ -155,3 +157,38 @@ class TestResolveKey:
     def test_unknown_name_raises_with_hint(self):
         with pytest.raises(HotkeyBackendMissingError, match="Unknown hotkey"):
             resolve_key(FakeKeyboard, "no_such_key")
+
+
+class TestCallbackDispatcher:
+    def test_runs_callbacks_in_order_off_the_calling_thread(self):
+        dispatcher = CallbackDispatcher()
+        results = []
+        done = threading.Event()
+
+        def first():
+            results.append(("first", threading.current_thread()))
+
+        def second():
+            results.append(("second", threading.current_thread()))
+            done.set()
+
+        dispatcher.wrap(first)()
+        dispatcher.wrap(second)()
+        assert done.wait(timeout=2)
+        assert [name for name, _ in results] == ["first", "second"]
+        assert all(t is not threading.main_thread() for _, t in results)
+
+    def test_worker_survives_a_failing_callback(self, capsys):
+        dispatcher = CallbackDispatcher()
+        done = threading.Event()
+
+        def boom():
+            raise RuntimeError("kaput")
+
+        dispatcher.wrap(boom)()
+        dispatcher.wrap(done.set)()
+        assert done.wait(timeout=2)
+        assert "kaput" in capsys.readouterr().err
+
+    def test_wrap_none_is_none(self):
+        assert CallbackDispatcher().wrap(None) is None

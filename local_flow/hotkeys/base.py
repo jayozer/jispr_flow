@@ -7,6 +7,9 @@ hotkeys at all, so run hands-free mode there instead.
 
 from __future__ import annotations
 
+import queue
+import sys
+import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
@@ -62,6 +65,38 @@ class PushToTalkCore:
             self.held = False
             self._suppressed = True  # swallow auto-repeats until physical release
             self._on_cancel()
+
+
+class CallbackDispatcher:
+    """Runs hotkey callbacks on a worker thread so OS event hooks return fast.
+
+    Dictation stop does seconds of work (ASR + LLM polish + insertion);
+    running it inside a Windows low-level keyboard hook or a macOS event-tap
+    callback gets the hook/tap disabled by the OS. A single worker preserves
+    press -> release ordering.
+    """
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[Callable[[], None]] = queue.Queue()
+        thread = threading.Thread(target=self._worker, daemon=True)
+        thread.start()
+
+    def _worker(self) -> None:
+        while True:
+            fn = self._queue.get()
+            try:
+                fn()
+            except Exception as exc:  # a failing callback must not kill dispatch
+                print(f"hotkey callback failed: {exc}", file=sys.stderr)
+
+    def wrap(self, fn: Callable[[], None] | None) -> Callable[[], None] | None:
+        if fn is None:
+            return None
+
+        def enqueue() -> None:
+            self._queue.put(fn)
+
+        return enqueue
 
 
 def resolve_key(keyboard, key_name: str):

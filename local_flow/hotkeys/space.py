@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -71,7 +70,6 @@ _WIN_VK_SPACE = 0x20
 _WIN_KEYDOWN_MSGS = (0x0100, 0x0104)  # WM_KEYDOWN, WM_SYSKEYDOWN
 _WIN_KEYUP_MSGS = (0x0101, 0x0105)  # WM_KEYUP, WM_SYSKEYUP
 _LLKHF_INJECTED = 0x10  # low-level keyboard hook flag: event was synthesized
-_REPLAY_WINDOW_S = 0.5
 
 
 class SpacePushToTalk(HotkeyListener):
@@ -92,22 +90,6 @@ class SpacePushToTalk(HotkeyListener):
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._controller = keyboard.Controller()
-        # Controller.tap() posts synthetic down+up events that arrive back on
-        # the listener thread *after* this callback frame returns, so a
-        # transient boolean reset at the end of the frame is already gone by
-        # the time the replay lands (the replay would be swallowed again,
-        # typing nothing, or worse re-entering the machine and looping). A
-        # counter that persists across callback frames, plus a deadline so a
-        # lost/never-arriving post can't wedge the listener forever (self-heals
-        # via _consume_replay). Only used by the darwin *handler* path: darwin
-        # identifies synthetic taps at the intercept layer by source PID
-        # instead (see _darwin_intercept), and win32 drives the machine
-        # straight from win32_event_filter, bypassing the handlers entirely
-        # (a suppressed event never reaches on_press/on_release on win32).
-        # Only touched on the listener thread (the timer thread never emits
-        # replay_space), so no lock.
-        self._replay_handler_left = 0
-        self._replay_deadline = 0.0
         self._on_press: Callable[[], None] | None = None
         self._on_release: Callable[[], None] | None = None
         self._on_cancel: Callable[[], None] | None = None
@@ -135,30 +117,20 @@ class SpacePushToTalk(HotkeyListener):
             current_generation = self._machine.generation
         self._apply(actions, current_generation)
 
-    def _consume_replay(self) -> bool:
-        """True if this space event is our own synthetic replay (darwin handlers only)."""
-        if self._replay_handler_left <= 0:
-            return False
-        if time.monotonic() > self._replay_deadline:
-            self._replay_handler_left = 0  # lost post: self-heal
-            return False
-        self._replay_handler_left -= 1
-        return True
-
     def _replay_space(self) -> None:
-        self._replay_handler_left = 2  # synthetic down + up
-        self._replay_deadline = time.monotonic() + _REPLAY_WINDOW_S
         self._controller.tap(self._keyboard.Key.space)
 
     # -- event plumbing ---------------------------------------------------
-    def _handle_press(self, key) -> None:
+    def _handle_press(self, key, injected=False) -> None:
         if key == self._keyboard.Key.space:
             if sys.platform == "win32":
                 return  # win32_event_filter feeds the machine directly (never here)
-            if self._consume_replay():
-                # Accepted limitation: a real second tap landing within the
-                # few-ms echo window may be mistaken for our synthetic echo
-                # and dropped here instead of reaching the machine.
+            # Covers both our own replay tap and our TypingSink's typed
+            # spaces (both are injected). Synthetic space events from other
+            # software are therefore fully inert on darwin: the PID
+            # interceptor swallows them (see _darwin_intercept) and this
+            # guard ignores them if they ever reached here.
+            if injected:
                 return
             with self._lock:
                 actions = self._machine.space_down()
@@ -170,14 +142,13 @@ class SpacePushToTalk(HotkeyListener):
                 generation = self._machine.generation
             self._apply(actions, generation)
 
-    def _handle_release(self, key) -> None:
+    def _handle_release(self, key, injected=False) -> None:
         if key == self._keyboard.Key.space:
             if sys.platform == "win32":
                 return  # win32_event_filter feeds the machine directly (never here)
-            if self._consume_replay():
-                # Accepted limitation: a real second tap landing within the
-                # few-ms echo window may be mistaken for our synthetic echo
-                # and dropped here instead of reaching the machine.
+            # See _handle_press: injected covers our replay tap and
+            # TypingSink; other software's synthetic spaces are inert here.
+            if injected:
                 return
             with self._lock:
                 actions = self._machine.space_up()
