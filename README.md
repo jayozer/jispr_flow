@@ -151,7 +151,8 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   still types a space; macOS/Windows — Linux/X11 cannot suppress the key, use
   another key or hands-free mode there), or any single pynput key name
   (`f9`, `f8`, `scroll_lock`, …). Chord hotkeys are not supported yet.
-  Press `esc` (configurable) to throw away a dictation mid-recording.
+  Press `esc` (configurable) to throw away a dictation mid-recording (with
+  the `fn` hotkey only `esc` is supported as the cancel key).
   Note: using Fn as a modifier (e.g. Fn+arrow) also triggers dictation
   start/stop — pick another key if you use Fn combos heavily.
   When paste fails, local-flow falls back to synthetic typing, then to
@@ -163,8 +164,9 @@ Automated tests cover the pipeline with mocks; these need a human, a mic,
 and a running LM Studio:
 
 1. `uv run local-flow check` → LM Studio reachable, model listed, extras installed.
-2. `uv run local-flow run`, hold F9, say "hello world um this is a test",
-   release → polished text appears in the focused editor.
+2. `uv run local-flow run`, hold your push-to-talk key (Fn on macOS by
+   default), say "hello world um this is a test", release → polished text
+   appears in the focused editor.
 3. Say "send it to Bob, scratch that, send it to Alice" → only Alice remains.
 4. Add a dictionary term, dictate it lowercase → canonical casing inserted.
 5. Add a snippet ("sig block"), dictate its trigger → expansion inserted.

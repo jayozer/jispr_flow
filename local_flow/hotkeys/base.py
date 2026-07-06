@@ -145,13 +145,20 @@ class PynputPushToTalk(HotkeyListener):
         keyboard = self._keyboard
         core = PushToTalkCore(on_press, on_release, on_cancel)
 
-        def handle_press(key) -> None:
+        def handle_press(key, injected=False) -> None:
+            # Synthetic keystrokes (our own TypingSink typing a transcript, or
+            # any other injector) must not start, stop, or cancel a
+            # dictation -- same invariant as SpacePushToTalk's guards.
+            if injected:
+                return
             if key == self._target:
                 core.key_down()
             elif self._cancel is not None and key == self._cancel:
                 core.cancel_down()
 
-        def handle_release(key) -> None:
+        def handle_release(key, injected=False) -> None:
+            if injected:
+                return
             if key == self._target:
                 core.key_up()
 

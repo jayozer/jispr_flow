@@ -230,7 +230,7 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
 
             listener = create_hotkey_listener(config)
             hint = "hold Space (a quick tap still types a space)" if (
-                config.hotkey == "space"
+                config.hotkey.lower() == "space"
             ) else f"hold {config.hotkey!r}"
             print(
                 f"push-to-talk: {hint} to dictate; "

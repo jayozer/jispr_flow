@@ -76,6 +76,16 @@ class SpacePushToTalk(HotkeyListener):
     """Hold Space to dictate; a quick tap still types a normal space."""
 
     def __init__(self, hold_ms: int = 250, cancel_key: str = "esc") -> None:
+        if sys.platform.startswith("linux"):
+            # Same guard as create_hotkey_listener's space-on-Linux check, but
+            # enforced here too so constructing this class directly (e.g. in
+            # tests, or future callers) can't bypass it.
+            raise HotkeyBackendMissingError(
+                "Space push-to-talk needs per-event key suppression, which is "
+                "not possible on Linux/X11.",
+                hint="Use another key (LOCAL_FLOW_HOTKEY=f9) or hands-free "
+                "mode (LOCAL_FLOW_MODE=hands-free).",
+            )
         try:
             from pynput import keyboard
         except ImportError as exc:

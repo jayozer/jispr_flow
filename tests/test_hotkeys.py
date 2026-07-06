@@ -272,6 +272,15 @@ class TestQuartzFnListenerConstruction:
             QuartzFnListener(cancel_key="f12")
 
 
+class TestSpacePushToTalkConstruction:
+    def test_refuses_linux(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        from local_flow.hotkeys.space import SpacePushToTalk
+
+        with pytest.raises(HotkeyBackendMissingError, match="suppression"):
+            SpacePushToTalk()
+
+
 def _config(**env):
     return load_config(env={f"LOCAL_FLOW_{k.upper()}": v for k, v in env.items()})
 
