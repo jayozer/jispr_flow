@@ -226,9 +226,16 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
             ):
                 handle(segment)
         else:
-            from local_flow.hotkeys.base import PynputPushToTalk
+            from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
 
-            print(f"push-to-talk: hold {config.hotkey!r} to dictate. Ctrl+C to quit.")
+            listener = create_hotkey_listener(config)
+            hint = "hold Space (a quick tap still types a space)" if (
+                config.hotkey == "space"
+            ) else f"hold {config.hotkey!r}"
+            print(
+                f"push-to-talk: {hint} to dictate; "
+                f"press {config.cancel_hotkey!r} to discard. Ctrl+C to quit."
+            )
             stop = threading.Event()
             recorder: dict[str, threading.Thread | None] = {"thread": None}
             captured: dict[str, bytes] = {}
@@ -251,7 +258,18 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
                 if pcm:
                     handle(pcm)
 
-            PynputPushToTalk(config.hotkey).run(start, finish)
+            def cancel() -> None:
+                stop.set()
+                thread = recorder["thread"]
+                if thread is not None:
+                    thread.join(timeout=5)
+                captured.pop("pcm", None)
+                print("dictation discarded")
+
+            dispatcher = CallbackDispatcher()
+            listener.run(
+                dispatcher.wrap(start), dispatcher.wrap(finish), dispatcher.wrap(cancel)
+            )
     except KeyboardInterrupt:
         print("\nbye")
         return 0

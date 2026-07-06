@@ -18,7 +18,9 @@ vad_silence_ms = 600
 vad_energy_threshold = 500.0
 
 mode = "push-to-talk"          # push-to-talk | hands-free
-hotkey = "f9"
+hotkey = "fn"                  # fn (macOS) | space | pynput key name; default f9 off-macOS
+hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
+cancel_hotkey = "esc"          # discards the in-flight dictation
 
 style = "default"              # a style name from styles.json
 data_dir = "~/.local/share/local-flow"

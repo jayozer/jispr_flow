@@ -82,7 +82,9 @@ environment > config file > defaults. Highlights:
 | ASR model | `LOCAL_FLOW_ASR_MODEL` | `small.en` |
 | VAD backend | `LOCAL_FLOW_VAD_BACKEND` | `energy` (or `webrtc`) |
 | Mode | `LOCAL_FLOW_MODE` | `push-to-talk` (or `hands-free`) |
-| Hotkey | `LOCAL_FLOW_HOTKEY` | `f9` |
+| Hotkey | `LOCAL_FLOW_HOTKEY` | fn (macOS) / f9 |
+| Hotkey hold threshold | `LOCAL_FLOW_HOTKEY_SPACE_HOLD_MS` | `250` |
+| Cancel hotkey | `LOCAL_FLOW_CANCEL_HOTKEY` | `esc` |
 | Style | `LOCAL_FLOW_STYLE` | `default` |
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
 
@@ -94,7 +96,7 @@ Personalization lives in the data dir as hand-editable JSON:
 
 ```bash
 uv run local-flow check      # diagnose LM Studio / ASR / audio / clipboard
-uv run local-flow run        # live dictation (hold F9, speak, release)
+uv run local-flow run        # live dictation (hold Fn/Space, speak, release)
 uv run local-flow run --mode hands-free   # VAD-segmented, no hotkey needed
 uv run local-flow polish "um send the uh draft, scratch that, the final doc"
 uv run local-flow command "make this formal" --text "hey can u fix the bug"
@@ -144,9 +146,16 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   keystrokes for security. Use `--mode hands-free` (no hotkey needed) with
   the clipboard insert method (`LOCAL_FLOW_INSERT_METHOD=clipboard`) and
   paste manually, or install `wl-clipboard`.
-- Push-to-talk uses a single physical key (default F9); chord hotkeys are not
-  supported in this MVP. When paste fails, local-flow falls back to synthetic
-  typing, then to clipboard-only with a message — the text is never lost.
+- Push-to-talk keys: **Fn** (macOS only — other OSes never see the Fn key;
+  needs Input Monitoring permission), **Space** (hold to dictate, quick tap
+  still types a space; macOS/Windows — Linux/X11 cannot suppress the key, use
+  another key or hands-free mode there), or any single pynput key name
+  (`f9`, `f8`, `scroll_lock`, …). Chord hotkeys are not supported yet.
+  Press `esc` (configurable) to throw away a dictation mid-recording.
+  Note: using Fn as a modifier (e.g. Fn+arrow) also triggers dictation
+  start/stop — pick another key if you use Fn combos heavily.
+  When paste fails, local-flow falls back to synthetic typing, then to
+  clipboard-only with a message — the text is never lost.
 
 ## Manual test checklist
 
@@ -165,6 +174,12 @@ and a running LM Studio:
    warning explains that polish was skipped.
 9. Focus an app that blocks paste → typing fallback (or clipboard message).
 10. `uv run local-flow command "make this a bullet list" --text "..."`.
+11. `LOCAL_FLOW_HOTKEY=fn uv run local-flow run` (macOS): hold Fn → dictate →
+    release inserts polished text.
+12. `LOCAL_FLOW_HOTKEY=space uv run local-flow run`: tap Space in an editor →
+    a normal space appears; hold Space → dictation starts.
+13. Press Esc mid-dictation → nothing is inserted and "dictation discarded"
+    is printed.
 
 ## Development
 
