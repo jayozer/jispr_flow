@@ -12,54 +12,56 @@ from local_flow.polish.rules import enforce_dictionary, expand_snippets
 class TestSnippetExpansion:
     def test_expands_multiword_trigger(self):
         snippets = {"sig block": "Best regards,\nJay"}
-        assert (
-            expand_snippets("add sig block here", snippets)
-            == "add Best regards,\nJay here"
-        )
+        text, count = expand_snippets("add sig block here", snippets)
+        assert text == "add Best regards,\nJay here"
+        assert count == 1
 
     def test_case_insensitive_trigger(self):
-        assert expand_snippets("My Addr please", {"addr": "12 Main St"}) == (
-            "My 12 Main St please"
-        )
+        text, count = expand_snippets("My Addr please", {"addr": "12 Main St"})
+        assert text == "My 12 Main St please"
+        assert count == 1
 
     def test_no_partial_word_match(self):
-        assert expand_snippets("the address book", {"addr": "12 Main St"}) == (
-            "the address book"
-        )
+        text, count = expand_snippets("the address book", {"addr": "12 Main St"})
+        assert text == "the address book"
+        assert count == 0
 
     def test_longer_trigger_wins(self):
         snippets = {"sig": "SHORT", "sig block": "LONG"}
-        assert expand_snippets("use sig block now", snippets) == "use LONG now"
+        text, count = expand_snippets("use sig block now", snippets)
+        assert text == "use LONG now"
+        assert count == 1
 
     def test_expansion_with_backslashes_is_literal(self):
         snippets = {"winpath": "C:\\Users\\jay"}
-        assert expand_snippets("open winpath now", snippets) == "open C:\\Users\\jay now"
+        text, count = expand_snippets("open winpath now", snippets)
+        assert text == "open C:\\Users\\jay now"
+        assert count == 1
 
 
 class TestDictionaryEnforcement:
     def test_canonical_casing_restored(self):
-        assert (
-            enforce_dictionary("we use postgresql at work", ["PostgreSQL"])
-            == "we use PostgreSQL at work"
-        )
+        text, count = enforce_dictionary("we use postgresql at work", ["PostgreSQL"])
+        assert text == "we use PostgreSQL at work"
+        assert count == 1
 
     def test_multiword_term_with_flexible_whitespace(self):
-        assert (
-            enforce_dictionary("the jispr   flow launch", ["JiSpr Flow"])
-            == "the JiSpr Flow launch"
-        )
+        text, count = enforce_dictionary("the jispr   flow launch", ["JiSpr Flow"])
+        assert text == "the JiSpr Flow launch"
+        assert count == 1
 
     def test_word_boundaries_respected(self):
         # 'postgresql' inside a longer token must not be rewritten
-        assert (
-            enforce_dictionary("see postgresqlish docs", ["PostgreSQL"])
-            == "see postgresqlish docs"
-        )
+        text, count = enforce_dictionary("see postgresqlish docs", ["PostgreSQL"])
+        assert text == "see postgresqlish docs"
+        assert count == 0
 
     def test_survives_llm_style_rewrites(self):
         # Simulates an LLM lowercasing a term; the post-pass restores it.
         polished = "Jispr flow is ready."
-        assert enforce_dictionary(polished, ["JiSpr Flow"]) == "JiSpr Flow is ready."
+        text, count = enforce_dictionary(polished, ["JiSpr Flow"])
+        assert text == "JiSpr Flow is ready."
+        assert count == 1
 
 
 class TestPersonalizationStore:

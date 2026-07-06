@@ -85,6 +85,7 @@ def _build_sink(config: Config):
 
 def _build_pipeline(config: Config, chat_client, sink):
     from local_flow.commands.command_mode import CommandMode
+    from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
     from local_flow.polish.polisher import TranscriptPolisher
 
@@ -100,12 +101,22 @@ def _build_pipeline(config: Config, chat_client, sink):
         if chat_client is not None
         else None
     )
+    history = (
+        HistoryStore(
+            config.data_dir,
+            max_entries=config.history_max_entries,
+            retention=config.history_retention,
+        )
+        if config.history_enabled
+        else None
+    )
     return DictationPipeline(
         transcriber=_build_transcriber(config),
         polisher=polisher,
         store=store,
         sink=sink,
         command_mode=command_mode,
+        history=history,
     )
 
 
@@ -127,8 +138,8 @@ def _cmd_polish(args: argparse.Namespace, config: Config) -> int:
     chat_client = None if args.no_llm else _build_chat_client(config)
     polisher = TranscriptPolisher(chat_client, store, style=config.style)
     result = polisher.polish(args.text)
-    text = enforce_dictionary(result.polished, store.dictionary_terms())
-    text = expand_snippets(text, store.snippets())
+    text, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
+    text, _snippet_count = expand_snippets(text, store.snippets())
     text, actions = apply_dictation_commands(text)
     for warning in result.warnings:
         print(f"warning: {warning}", file=sys.stderr)

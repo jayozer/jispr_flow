@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from local_flow.asr.base import Transcriber
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
+from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import TextSink
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.polish.polisher import TranscriptPolisher
@@ -37,12 +38,14 @@ class DictationPipeline:
         store: PersonalizationStore,
         sink: TextSink,
         command_mode: CommandMode | None = None,
+        history: HistoryStore | None = None,
     ) -> None:
         self.transcriber = transcriber
         self.polisher = polisher
         self.store = store
         self.sink = sink
         self.command_mode = command_mode
+        self.history = history
         self.last_transcript: str = ""
 
     def process_audio(
@@ -62,13 +65,14 @@ class DictationPipeline:
             segments = [pcm] if pcm else []
         texts = [self.transcriber.transcribe(seg, sample_rate) for seg in segments]
         rough = " ".join(t.strip() for t in texts if t.strip())
-        return self.process_transcript(rough)
+        duration_s = sum(len(seg) for seg in segments) / (2 * sample_rate) if sample_rate else 0.0
+        return self.process_transcript(rough, duration_s=duration_s)
 
-    def process_transcript(self, rough: str) -> DictationResult:
+    def process_transcript(self, rough: str, duration_s: float = 0.0) -> DictationResult:
         """Run the text half of the pipeline and insert the result."""
         polish = self.polisher.polish(rough)
-        text = enforce_dictionary(polish.polished, self.store.dictionary_terms())
-        text = expand_snippets(text, self.store.snippets())
+        text, dict_count = enforce_dictionary(polish.polished, self.store.dictionary_terms())
+        text, snippet_count = expand_snippets(text, self.store.snippets())
         text, actions = apply_dictation_commands(text)
 
         result = DictationResult(
@@ -80,16 +84,25 @@ class DictationPipeline:
             used_llm=polish.used_llm,
             warnings=list(polish.warnings),
         )
-        if not text and not actions:
-            return result
+        if text or actions:
+            if text:
+                self.sink.insert(text)
+            for action in actions:
+                self.sink.press_key(action)
+            result.inserted = True
+            if text:
+                self.last_transcript = text
 
-        if text:
-            self.sink.insert(text)
-        for action in actions:
-            self.sink.press_key(action)
-        result.inserted = True
-        if text:
-            self.last_transcript = text
+        if rough and self.history is not None:
+            self.history.append_new(
+                rough=rough,
+                final=result.final,
+                used_llm=result.used_llm,
+                app="",
+                duration_s=duration_s,
+                replacements=dict_count + snippet_count,
+            )
+
         return result
 
     def run_command(self, instruction: str, target_text: str | None = None) -> str:
@@ -101,7 +114,7 @@ class DictationPipeline:
             target_text=target_text,
             last_transcript=self.last_transcript,
         )
-        transformed = enforce_dictionary(transformed, self.store.dictionary_terms())
+        transformed, _dict_count = enforce_dictionary(transformed, self.store.dictionary_terms())
         if transformed:
             self.sink.insert(transformed)
         return transformed

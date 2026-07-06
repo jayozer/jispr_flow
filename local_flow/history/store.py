@@ -66,6 +66,17 @@ class HistoryStore:
     def path(self) -> Path:
         return self.data_dir / "history.jsonl"
 
+    def append_new(self, **fields: object) -> None:
+        """Build a :class:`HistoryRecord` timestamped with ``now()`` and append it.
+
+        ``fields`` are the ``HistoryRecord`` fields other than ``timestamp``
+        (``rough``, ``final``, ``used_llm``, ``app``, ``duration_s``,
+        ``replacements``). Keeps timestamp generation behind the injectable
+        ``now`` seam so callers never need to touch wall-clock time directly.
+        """
+        timestamp = self._now().astimezone(UTC).isoformat().replace("+00:00", "Z")
+        self.append(HistoryRecord(timestamp=timestamp, **fields))  # type: ignore[arg-type]
+
     def append(self, record: HistoryRecord) -> None:
         if self.retention == "off":
             return

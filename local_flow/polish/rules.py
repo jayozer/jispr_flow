@@ -103,33 +103,43 @@ def clean_transcript(text: str, fillers: Iterable[str] = FILLER_WORDS) -> str:
     return remove_fillers(apply_backtracking(text), fillers)
 
 
-def enforce_dictionary(text: str, terms: Iterable[str]) -> str:
+def enforce_dictionary(text: str, terms: Iterable[str]) -> tuple[str, int]:
     """Rewrite case-insensitive matches of each term to its canonical form.
 
     Multi-word terms tolerate flexible whitespace, so ``"jispr   flow"``
     still becomes ``"JiSpr Flow"``. Matches respect word boundaries.
+
+    Returns ``(text, count)`` where ``count`` is the number of substitutions
+    performed across all terms.
     """
+    total = 0
     for term in terms:
         if not term.strip():
             continue
         escaped = re.escape(term.strip()).replace(r"\ ", r"\s+")
-        text = re.sub(rf"(?i)(?<!\w){escaped}(?!\w)", term.strip(), text)
-    return text
+        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", term.strip(), text)
+        total += count
+    return text, total
 
 
-def expand_snippets(text: str, snippets: Mapping[str, str]) -> str:
+def expand_snippets(text: str, snippets: Mapping[str, str]) -> tuple[str, int]:
     """Replace spoken trigger phrases with their stored expansions.
 
     Triggers match case-insensitively on word boundaries; longer triggers win
     so ``"sig block work"`` is preferred over ``"sig block"``.
+
+    Returns ``(text, count)`` where ``count`` is the number of substitutions
+    performed across all triggers.
     """
+    total = 0
     for trigger in sorted(snippets, key=len, reverse=True):
         if not trigger.strip():
             continue
         escaped = re.escape(trigger.strip()).replace(r"\ ", r"\s+")
         expansion = snippets[trigger]
-        text = re.sub(rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _e=expansion: _e, text)
-    return text
+        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _e=expansion: _e, text)
+        total += count
+    return text, total
 
 
 def apply_dictation_commands(text: str) -> tuple[str, list[str]]:

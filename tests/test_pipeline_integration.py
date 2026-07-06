@@ -9,6 +9,7 @@ from local_flow.asr.mock import MockTranscriber
 from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
 from local_flow.errors import LMStudioConnectionError
+from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import FakeTextSink, InsertionManager
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import PersonalizationStore
@@ -34,13 +35,14 @@ def store(tmp_path):
     return store
 
 
-def make_pipeline(store, llm, sink, transcriber=None):
+def make_pipeline(store, llm, sink, transcriber=None, history=None):
     return DictationPipeline(
         transcriber=transcriber or MockTranscriber(["placeholder"]),
         polisher=TranscriptPolisher(llm, store),
         store=store,
         sink=sink,
         command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        history=history,
     )
 
 
@@ -128,3 +130,59 @@ class TestCommandModeThroughPipeline:
         pipeline = make_pipeline(store, MockChatClient(["clean text"]), sink)
         pipeline.process_transcript("some words")
         assert fallback.events == [("insert", "clean text")]
+
+
+class TestHistoryRecording:
+    def test_records_entry_with_duration_and_replacements(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        llm = MockChatClient(["The JiSpr Flow rollout needs sig block."])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink, history=history)
+
+        rough = "the jispr flow rollout needs sig block"
+        result = pipeline.process_transcript(rough, duration_s=2.5)
+
+        records = history.recent()
+        assert len(records) == 1
+        record = records[0]
+        assert record.rough == rough
+        assert record.final == result.final
+        assert record.used_llm is True
+        assert record.duration_s == 2.5
+        # 1 dictionary substitution (JiSpr Flow) + 1 snippet substitution (sig block)
+        assert record.replacements == 2
+
+    def test_history_none_records_nothing(self, store, tmp_path):
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, MockChatClient(["hello"]), sink, history=None)
+        pipeline.process_transcript("some rough text")
+        # Nothing should have been written where a history store would live.
+        assert HistoryStore(tmp_path / "history").recent() == []
+
+    def test_empty_rough_records_nothing(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        sink = FakeTextSink()
+        pipeline = make_pipeline(
+            store, MockChatClient(["should not be used"]), sink, history=history
+        )
+        result = pipeline.process_transcript("")
+        assert result.inserted is False
+        assert history.recent() == []
+
+    def test_duration_computed_from_transcribed_pcm_bytes(self, store, tmp_path):
+        from local_flow.demo import synth_pcm
+
+        history = HistoryStore(tmp_path / "history")
+        transcriber = MockTranscriber(["first part.", "second part."])
+        llm = MockChatClient(["First part. Second part."])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink, transcriber=transcriber, history=history)
+
+        pcm = synth_pcm([(150, 0), (600, 12000), (800, 0), (600, 12000), (150, 0)])
+        pipeline.process_audio(pcm, 16000, vad=EnergyVAD(500), silence_ms=400)
+
+        expected_duration = sum(length for length, _rate in transcriber.calls) / (2 * 16000)
+        records = history.recent()
+        assert len(records) == 1
+        assert records[0].duration_s == pytest.approx(expected_duration)
+        assert expected_duration > 0

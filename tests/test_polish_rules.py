@@ -4,6 +4,8 @@ from local_flow.polish.rules import (
     apply_backtracking,
     apply_dictation_commands,
     clean_transcript,
+    enforce_dictionary,
+    expand_snippets,
     remove_fillers,
 )
 
@@ -98,3 +100,48 @@ class TestDictationCommands:
         text, actions = apply_dictation_commands("enter the building through gate two")
         assert text == "enter the building through gate two"
         assert actions == []
+
+
+class TestDictionaryReplacementCount:
+    def test_zero_when_nothing_replaced(self):
+        text, count = enforce_dictionary("nothing to see here", ["PostgreSQL"])
+        assert text == "nothing to see here"
+        assert count == 0
+
+    def test_one_for_a_single_match(self):
+        text, count = enforce_dictionary("we use postgresql daily", ["PostgreSQL"])
+        assert text == "we use PostgreSQL daily"
+        assert count == 1
+
+    def test_counts_same_term_appearing_twice(self):
+        text, count = enforce_dictionary(
+            "postgresql and postgresql again", ["PostgreSQL"]
+        )
+        assert text == "PostgreSQL and PostgreSQL again"
+        assert count == 2
+
+    def test_counts_across_multiple_terms(self):
+        text, count = enforce_dictionary(
+            "postgresql and jispr flow", ["PostgreSQL", "JiSpr Flow"]
+        )
+        assert text == "PostgreSQL and JiSpr Flow"
+        assert count == 2
+
+
+class TestSnippetReplacementCount:
+    def test_zero_when_nothing_replaced(self):
+        text, count = expand_snippets("nothing to expand here", {"sig": "SIG"})
+        assert text == "nothing to expand here"
+        assert count == 0
+
+    def test_one_for_a_single_trigger(self):
+        text, count = expand_snippets("add sig here", {"sig": "Best regards, Jay"})
+        assert text == "add Best regards, Jay here"
+        assert count == 1
+
+    def test_counts_same_trigger_appearing_twice(self):
+        text, count = expand_snippets(
+            "sig now and sig again", {"sig": "SIG"}
+        )
+        assert text == "SIG now and SIG again"
+        assert count == 2
