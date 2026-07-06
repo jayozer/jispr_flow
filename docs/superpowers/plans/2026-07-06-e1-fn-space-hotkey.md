@@ -753,6 +753,26 @@ Move the `import threading` / `Callable` / errors / base imports to the top of t
 - [ ] **Step 2: Run** — `uv run pytest && uv run ruff check .` → PASS (glue has no headless-runnable behavior beyond import; machine tests still green; the Task 3 space-dispatch test now passes).
 - [ ] **Step 3: Commit** — `git commit -m "feat(hotkeys): space push-to-talk glue with suppression and tap replay"`
 
+**Amendment (post-review, 2026-07-06).** Review found two defects in the code above; the implementation must use these corrections (the code blocks above are superseded where they conflict):
+
+1. **Replay race.** `Controller.tap()` posts the synthetic down+up asynchronously; they arrive back on the listener thread *after* the current callback returns, when a transient `_replaying` boolean has already been reset — so the replayed space is swallowed again (tap types nothing, and the handler re-entry can self-sustain a replay loop). Replace the boolean with per-stage counters + deadline: `_replay_left = {"intercept": 0, "handler": 0}` and `_replay_deadline = 0.0`; `_replay_space()` sets both counters to 2 (one down + one up per stage), sets `_replay_deadline = time.monotonic() + 0.5`, then taps. A `_consume_replay(stage)` helper returns True (and decrements) while the counter is positive and the deadline unexpired, else zeroes both counters and returns False. The darwin interceptor *passes through* (`return event`) consumed replays and swallows other space events; the win32 filter suppresses space only when `_consume_replay("intercept")` is False; both handlers return early when `_consume_replay("handler")` is True. `import time` at module top. All replay state is touched only on the listener thread (the timer thread never emits `replay_space`), so no lock is needed on the counters.
+2. **Cancel-key resolution.** `getattr(keyboard.Key, cancel_key.lower(), None)` silently disables cancel for single-character keys. Extract the existing `PynputPushToTalk._resolve_key` body into a module-level `resolve_key(keyboard, key_name)` in `base.py` (special name → `keyboard.Key` attr; single char → `KeyCode.from_char`; else `HotkeyBackendMissingError` with the existing hint); `PynputPushToTalk._resolve_key` becomes a thin delegate, and `SpacePushToTalk` uses `resolve_key(keyboard, cancel_key) if cancel_key else None`. Add headless tests for `resolve_key` driving it with a fake keyboard object (`Key` attrs + `KeyCode.from_char`).
+3. **Lock hygiene (minor).** Capture `generation = self._machine.generation` inside the same `with self._lock:` block that produced the actions, and pass it to `_apply(actions, generation)`; `_apply` schedules the timer with that captured value, and `_fire_hold` re-locks to call `hold_elapsed(generation)` and capture the then-current generation for its own `_apply` call.
+
+**Amendment 2 (post-re-review, 2026-07-06).** Reading pynput 1.8.2's source shows the counter design in Amendment 1 item 1 is still wrong on both platforms; it is superseded by exact synthetic-event identification:
+
+- **macOS ordering fact:** pynput's darwin `ListenerMixin._handler` invokes `on_press`/`on_release` FIRST and consults `darwin_intercept` for the SAME event afterwards. Arming an interceptor counter inside the handler therefore mis-consumes on the very event that triggered the replay (real tap-up passes through; synthetic up gets swallowed — an unbalanced event stream on every tap).
+- **macOS fix (stateless):** identify our synthetic events exactly by source PID. In `_darwin_intercept`: non-space keycodes pass; for space, `Quartz.CGEventGetIntegerValueField(event, Quartz.kCGEventSourceUnixProcessID) == os.getpid()` → `return event` (our replay reaches the app); otherwise `return None` (every real space swallowed — taps are replayed, holds dictate). No interceptor counters, no triggering-event flag. Known accepted limitation (comment it): space events synthesized by *other* software (e.g. Karabiner) carry that software's PID and are swallowed like hardware events.
+- **macOS handlers:** keep a single handler-side counter (`_replay_handler_left = 2` + `_replay_deadline`, self-healing) so the synthetic echo does not re-enter the machine. Accepted limitation (comment it): a real second tap landing within the few-ms echo window may be ignored by the machine.
+- **Windows ordering fact:** `listener.suppress_event()` raises `SuppressException` inside the hook *before* the event is posted to pynput's message loop — a suppressed event never reaches `on_press`/`on_release`. Feeding the machine from handlers therefore never happens: the class as written is inert on Windows.
+- **Windows fix:** drive the machine from `win32_event_filter` itself: `data.vkCode == 0x20` and `data.flags & 0x10` (`LLKHF_INJECTED`) → `return True` untouched (our synthetic tap reaches the app, skips the machine); real space with `msg in (0x0100, 0x0104)` → locked `machine.space_down()`; `msg in (0x0101, 0x0105)` → locked `machine.space_up()`; after feeding the machine, call `listener_box[0].suppress_event()` LAST (it raises). `_handle_press`/`_handle_release` ignore space entirely on win32 (`sys.platform == "win32"`); the cancel key still flows through the normal handlers on both platforms (never suppressed).
+- Module constants: `_WIN_KEYDOWN_MSGS = (0x0100, 0x0104)`, `_WIN_KEYUP_MSGS = (0x0101, 0x0105)`, `_LLKHF_INJECTED = 0x10`; `import os` at top. The `"intercept"` counter stage is deleted; `_replay_space` arms only the handler counter before tapping.
+
+**Amendment 3 (post-re-review 2, 2026-07-06).** Two further defects from the end-to-end trace:
+
+1. **User callbacks must not run inside OS event hooks.** `on_release` → `finish()` does seconds of work (ASR + LLM + insertion). Amendment 2 runs it inside the win32 `WH_KEYBOARD_LL` hook (Windows stalls all keyboard input, then silently kills hooks that overrun `LowLevelHooksTimeout`) and inside the darwin CGEventTap callback (an active/filtering tap — `darwin_intercept` forces `kCGEventTapOptionDefault` — that macOS disables via `kCGEventTapDisabledByTimeout` after ~1s; pynput never re-enables it). Fix at the wiring altitude so all three listeners benefit: add `CallbackDispatcher` to `local_flow/hotkeys/base.py` — single daemon worker thread + `queue.Queue`; `wrap(fn)` returns an enqueueing stand-in (`wrap(None)` → `None`); the worker catches exceptions (`print(f"hotkey callback failed: {exc}", file=sys.stderr)`) so a failing callback can't kill dispatch; single worker preserves press→release ordering. Task 7's `_cmd_run` builds one dispatcher and passes `listener.run(dispatcher.wrap(start), dispatcher.wrap(finish), dispatcher.wrap(cancel))`. Headless tests: ordering across two wrapped callbacks (threading.Event-synchronized), worker survives an exception and runs the next callback, callbacks execute off the caller's thread, `wrap(None) is None`. Docstring must state WHY (hook/tap timeout).
+2. **Our own `TypingSink` doubles spaces on darwin.** `TypingSink` types via a pynput `Controller` in our PID, so each typed space passes the PID interceptor (correct — it types) but also reaches the darwin handlers, feeds the machine (down→PENDING, up→replay) and emits an extra synthetic space. Fix: pynput 1.8+ passes an `injected` flag to two-argument callbacks — declare the space handlers as `_handle_press(self, key, injected=False)` / `_handle_release(self, key, injected=False)` and for space events `if injected: return`. This replaces the `_replay_handler_left` counter/deadline mechanism entirely (our replay tap is itself injected): delete `_consume_replay`, `_replay_handler_left`, `_replay_deadline`, `_REPLAY_WINDOW_S`; `_replay_space()` is just the tap. Documented trade-off (comment): synthetic space events from *other* software are now fully inert on darwin (swallowed by the PID interceptor, ignored by the injected guard) — previously they would have dictated without typing. The `injected=False` default keeps compatibility if a pynput version calls handlers with one argument. Cancel-key branch behavior unchanged.
+
 ---
 
 ### Task 6: `FnLogic` + `QuartzFnListener` + pyproject dep
@@ -957,7 +977,7 @@ desktop = [
 - [ ] **Step 1: Implement app wiring** — in `_cmd_run`, replace the push-to-talk branch's listener block (`from local_flow.hotkeys.base import PynputPushToTalk` … `PynputPushToTalk(config.hotkey).run(start, finish)`) with:
 
 ```python
-            from local_flow.hotkeys.base import create_hotkey_listener
+            from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
 
             listener = create_hotkey_listener(config)
             hint = "hold Space (a quick tap still types a space)" if (
@@ -997,10 +1017,13 @@ desktop = [
                 captured.pop("pcm", None)
                 print("dictation discarded")
 
-            listener.run(start, finish, cancel)
+            dispatcher = CallbackDispatcher()
+            listener.run(
+                dispatcher.wrap(start), dispatcher.wrap(finish), dispatcher.wrap(cancel)
+            )
 ```
 
-(Construct the listener *before* printing so factory errors surface immediately with their hints; `start`/`finish` bodies are unchanged from today.)
+(Construct the listener *before* printing so factory errors surface immediately with their hints; `start`/`finish` bodies are unchanged from today. The dispatcher — Amendment 3 — keeps seconds-long dictation processing out of the OS event hook/tap callbacks, which the OS would otherwise disable.)
 
 - [ ] **Step 2: Update `.env.example`** — replace the hotkey block:
 

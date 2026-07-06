@@ -1,11 +1,18 @@
 """Hotkey logic: shared press/release core, factory dispatch, space and fn machines."""
 
+import sys
 import threading
 
 import pytest
 
+from local_flow.config import load_config
 from local_flow.errors import HotkeyBackendMissingError
-from local_flow.hotkeys.base import CallbackDispatcher, PushToTalkCore, resolve_key
+from local_flow.hotkeys.base import (
+    CallbackDispatcher,
+    PushToTalkCore,
+    create_hotkey_listener,
+    resolve_key,
+)
 from local_flow.hotkeys.macos_fn import ESCAPE_KEYCODE, FnLogic
 from local_flow.hotkeys.space import SpaceActions, SpaceStateMachine
 
@@ -238,3 +245,65 @@ class TestFnLogic:
         logic.key_down(ESCAPE_KEYCODE)
         logic.flags_changed(False)
         assert rec.events == ["press", "release"]
+
+
+def _config(**env):
+    return load_config(env={f"LOCAL_FLOW_{k.upper()}": v for k, v in env.items()})
+
+
+class TestFactory:
+    def test_fn_rejected_off_macos(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        with pytest.raises(HotkeyBackendMissingError, match="only be observed on macOS"):
+            create_hotkey_listener(_config(hotkey="fn"))
+
+    def test_space_rejected_on_linux(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        with pytest.raises(HotkeyBackendMissingError, match="suppression"):
+            create_hotkey_listener(_config(hotkey="space"))
+
+    def test_fn_dispatches_to_quartz_listener_on_macos(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        import local_flow.hotkeys.macos_fn as macos_fn
+
+        created = {}
+
+        class FakeFn:
+            def __init__(self, cancel_key):
+                created["cancel_key"] = cancel_key
+
+        monkeypatch.setattr(macos_fn, "QuartzFnListener", FakeFn)
+        listener = create_hotkey_listener(_config(hotkey="FN", cancel_hotkey="f12"))
+        assert isinstance(listener, FakeFn)
+        assert created["cancel_key"] == "f12"
+
+    def test_space_dispatches_to_space_listener_on_macos(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        import local_flow.hotkeys.space as space_mod
+
+        created = {}
+
+        class FakeSpace:
+            def __init__(self, hold_ms, cancel_key):
+                created.update(hold_ms=hold_ms, cancel_key=cancel_key)
+
+        monkeypatch.setattr(space_mod, "SpacePushToTalk", FakeSpace)
+        listener = create_hotkey_listener(
+            _config(hotkey="space", hotkey_space_hold_ms="400")
+        )
+        assert isinstance(listener, FakeSpace)
+        assert created == {"hold_ms": 400, "cancel_key": "esc"}
+
+    def test_other_names_dispatch_to_pynput(self, monkeypatch):
+        import local_flow.hotkeys.base as base_mod
+
+        created = {}
+
+        class FakePynput:
+            def __init__(self, key_name, cancel_key="esc"):
+                created.update(key_name=key_name, cancel_key=cancel_key)
+
+        monkeypatch.setattr(base_mod, "PynputPushToTalk", FakePynput)
+        listener = create_hotkey_listener(_config(hotkey="f9"))
+        assert isinstance(listener, FakePynput)
+        assert created["key_name"] == "f9"

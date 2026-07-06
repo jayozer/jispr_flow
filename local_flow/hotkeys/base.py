@@ -13,6 +13,7 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from local_flow.config import Config
 from local_flow.errors import HotkeyBackendMissingError
 
 
@@ -167,3 +168,38 @@ class PynputPushToTalk(HotkeyListener):
                 "by the compositor - use hands-free mode "
                 "(LOCAL_FLOW_MODE=hands-free) instead.",
             ) from exc
+
+
+def create_hotkey_listener(config: Config) -> HotkeyListener:
+    """Build the push-to-talk listener for ``config.hotkey``.
+
+    ``fn`` needs a macOS-only Quartz event tap (the Fn key never reaches
+    other OSes); ``space`` needs per-event suppression, which pynput cannot
+    do on Linux; anything else is a plain pynput key name.
+    """
+    name = config.hotkey.lower()
+    if name == "fn":
+        if sys.platform != "darwin":
+            raise HotkeyBackendMissingError(
+                "The Fn key can only be observed on macOS.",
+                hint="On this platform Fn is handled by keyboard firmware and "
+                "never reaches the OS. Set LOCAL_FLOW_HOTKEY to another key, "
+                "e.g. f9 or space.",
+            )
+        import local_flow.hotkeys.macos_fn as macos_fn
+
+        return macos_fn.QuartzFnListener(cancel_key=config.cancel_hotkey)
+    if name == "space":
+        if sys.platform.startswith("linux"):
+            raise HotkeyBackendMissingError(
+                "Space push-to-talk needs per-event key suppression, which is "
+                "not possible on Linux/X11.",
+                hint="Use another key (LOCAL_FLOW_HOTKEY=f9) or hands-free "
+                "mode (LOCAL_FLOW_MODE=hands-free).",
+            )
+        import local_flow.hotkeys.space as space_mod
+
+        return space_mod.SpacePushToTalk(
+            hold_ms=config.hotkey_space_hold_ms, cancel_key=config.cancel_hotkey
+        )
+    return PynputPushToTalk(name, cancel_key=config.cancel_hotkey)
