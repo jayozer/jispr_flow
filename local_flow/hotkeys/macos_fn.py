@@ -47,6 +47,14 @@ class QuartzFnListener(HotkeyListener):
                 "The Fn key can only be observed on macOS.",
                 hint="Set LOCAL_FLOW_HOTKEY to another key, e.g. f9 or space.",
             )
+        # Validate before the Quartz import so a bad cancel key fails loudly
+        # (and headlessly testable) instead of silently disabling cancel.
+        if cancel_key and cancel_key.lower() not in _CANCEL_KEYCODES:
+            raise HotkeyBackendMissingError(
+                f"The fn hotkey backend only supports 'esc' as the cancel key, "
+                f"not {cancel_key!r}.",
+                hint="Set LOCAL_FLOW_CANCEL_HOTKEY=esc, or choose a different hotkey.",
+            )
         try:
             import Quartz
         except ImportError as exc:
@@ -55,7 +63,7 @@ class QuartzFnListener(HotkeyListener):
                 hint="Install desktop extras: uv sync --extra desktop.",
             ) from exc
         self._quartz = Quartz
-        self._cancel_keycode = _CANCEL_KEYCODES.get(cancel_key.lower()) if cancel_key else None
+        self._cancel_keycode = _CANCEL_KEYCODES[cancel_key.lower()] if cancel_key else None
 
     def run(
         self,

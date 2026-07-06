@@ -96,6 +96,12 @@ class SpacePushToTalk(HotkeyListener):
 
     # -- actions ---------------------------------------------------------
     def _apply(self, actions: SpaceActions, generation: int) -> None:
+        # Always called while holding self._lock: actions must be applied in
+        # the order the machine produced them. Applying outside the lock lets
+        # a hold-timer `start` and a release `stop` enqueue in inverted order
+        # at the exact hold boundary. Safe under the lock: everything here is
+        # sub-millisecond (queue.put via wrapped callbacks, Timer
+        # create/cancel, one async event post) and nothing takes this lock.
         if actions.start_timer:
             if self._timer is not None:
                 self._timer.cancel()
@@ -114,8 +120,7 @@ class SpacePushToTalk(HotkeyListener):
     def _fire_hold(self, generation: int) -> None:
         with self._lock:
             actions = self._machine.hold_elapsed(generation)
-            current_generation = self._machine.generation
-        self._apply(actions, current_generation)
+            self._apply(actions, self._machine.generation)
 
     def _replay_space(self) -> None:
         self._controller.tap(self._keyboard.Key.space)
@@ -134,13 +139,15 @@ class SpacePushToTalk(HotkeyListener):
                 return
             with self._lock:
                 actions = self._machine.space_down()
-                generation = self._machine.generation
-            self._apply(actions, generation)
+                self._apply(actions, self._machine.generation)
         elif self._cancel is not None and key == self._cancel:
+            # A TypingSink-typed cancel character (e.g. cancel key "x" inside
+            # inserted text) must not spuriously cancel a recording.
+            if injected:
+                return
             with self._lock:
                 actions = self._machine.cancel_down()
-                generation = self._machine.generation
-            self._apply(actions, generation)
+                self._apply(actions, self._machine.generation)
 
     def _handle_release(self, key, injected=False) -> None:
         if key == self._keyboard.Key.space:
@@ -152,8 +159,7 @@ class SpacePushToTalk(HotkeyListener):
                 return
             with self._lock:
                 actions = self._machine.space_up()
-                generation = self._machine.generation
-            self._apply(actions, generation)
+                self._apply(actions, self._machine.generation)
 
     def _darwin_intercept(self, event_type, event):
         import Quartz
@@ -182,6 +188,11 @@ class SpacePushToTalk(HotkeyListener):
         on_release: Callable[[], None],
         on_cancel: Callable[[], None] | None = None,
     ) -> None:
+        """Block, driving the callbacks from space press/release/cancel events.
+
+        Callbacks are invoked on OS event threads -- keep them cheap; wrap
+        heavy work with ``CallbackDispatcher`` (as ``local-flow run`` does).
+        """
         self._on_press, self._on_release, self._on_cancel = on_press, on_release, on_cancel
         keyboard = self._keyboard
         listener_box: list = []
@@ -199,13 +210,11 @@ class SpacePushToTalk(HotkeyListener):
             if msg in _WIN_KEYDOWN_MSGS:
                 with self._lock:
                     actions = self._machine.space_down()
-                    generation = self._machine.generation
-                self._apply(actions, generation)
+                    self._apply(actions, self._machine.generation)
             elif msg in _WIN_KEYUP_MSGS:
                 with self._lock:
                     actions = self._machine.space_up()
-                    generation = self._machine.generation
-                self._apply(actions, generation)
+                    self._apply(actions, self._machine.generation)
             if listener_box:
                 listener_box[0].suppress_event()  # raises; nothing after this runs
             return True

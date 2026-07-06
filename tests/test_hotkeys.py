@@ -86,6 +86,15 @@ class TestPushToTalkCore:
         core.key_down()  # a fresh press afterwards works again
         assert rec.events == ["press", "cancel", "press"]
 
+    def test_no_handler_cancel_does_not_arm_suppression(self):
+        rec = Recorder()
+        core = PushToTalkCore(rec.press, rec.release, None)
+        core.key_down()
+        core.cancel_down()
+        core.key_down()  # auto-repeat: recording simply continues
+        core.key_up()
+        assert rec.events == ["press", "release"]
+
 
 class TestSpaceStateMachine:
     def test_quick_tap_replays_a_space(self):
@@ -245,6 +254,22 @@ class TestFnLogic:
         logic.key_down(ESCAPE_KEYCODE)
         logic.flags_changed(False)
         assert rec.events == ["press", "release"]
+
+
+class TestQuartzFnListenerConstruction:
+    def test_refuses_non_darwin(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        from local_flow.hotkeys.macos_fn import QuartzFnListener
+
+        with pytest.raises(HotkeyBackendMissingError, match="only be observed on macOS"):
+            QuartzFnListener()
+
+    def test_refuses_unsupported_cancel_key(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        from local_flow.hotkeys.macos_fn import QuartzFnListener
+
+        with pytest.raises(HotkeyBackendMissingError, match="only supports 'esc'"):
+            QuartzFnListener(cancel_key="f12")
 
 
 def _config(**env):
