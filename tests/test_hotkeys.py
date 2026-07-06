@@ -6,6 +6,7 @@ import pytest
 
 from local_flow.errors import HotkeyBackendMissingError
 from local_flow.hotkeys.base import CallbackDispatcher, PushToTalkCore, resolve_key
+from local_flow.hotkeys.macos_fn import ESCAPE_KEYCODE, FnLogic
 from local_flow.hotkeys.space import SpaceActions, SpaceStateMachine
 
 
@@ -192,3 +193,48 @@ class TestCallbackDispatcher:
 
     def test_wrap_none_is_none(self):
         assert CallbackDispatcher().wrap(None) is None
+
+
+class TestFnLogic:
+    def _logic(self, rec, cancel=ESCAPE_KEYCODE):
+        return FnLogic(PushToTalkCore(rec.press, rec.release, rec.cancel), cancel)
+
+    def test_fn_press_release(self):
+        rec = Recorder()
+        logic = self._logic(rec)
+        logic.flags_changed(True)
+        logic.flags_changed(False)
+        assert rec.events == ["press", "release"]
+
+    def test_repeated_flag_states_do_not_repeat_callbacks(self):
+        rec = Recorder()
+        logic = self._logic(rec)
+        logic.flags_changed(True)
+        logic.flags_changed(True)  # e.g. fn+arrow re-reports the same mask
+        logic.flags_changed(False)
+        logic.flags_changed(False)
+        assert rec.events == ["press", "release"]
+
+    def test_escape_while_held_cancels(self):
+        rec = Recorder()
+        logic = self._logic(rec)
+        logic.flags_changed(True)
+        logic.key_down(ESCAPE_KEYCODE)
+        logic.flags_changed(False)
+        assert rec.events == ["press", "cancel"]
+
+    def test_other_keys_ignored(self):
+        rec = Recorder()
+        logic = self._logic(rec)
+        logic.flags_changed(True)
+        logic.key_down(0)  # kVK_ANSI_A
+        logic.flags_changed(False)
+        assert rec.events == ["press", "release"]
+
+    def test_no_cancel_keycode_ignores_escape(self):
+        rec = Recorder()
+        logic = self._logic(rec, cancel=None)
+        logic.flags_changed(True)
+        logic.key_down(ESCAPE_KEYCODE)
+        logic.flags_changed(False)
+        assert rec.events == ["press", "release"]
