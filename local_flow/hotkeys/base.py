@@ -64,6 +64,25 @@ class PushToTalkCore:
             self._on_cancel()
 
 
+def resolve_key(keyboard, key_name: str):
+    """Resolve a config key name to a pynput ``Key``/``KeyCode``.
+
+    Shared by ``PynputPushToTalk`` and ``SpacePushToTalk`` (for the cancel
+    key) so both backends accept special names (``esc``, ``f9``, ...) and
+    single characters identically.
+    """
+    special = getattr(keyboard.Key, key_name.lower(), None)
+    if special is not None:
+        return special
+    if len(key_name) == 1:
+        return keyboard.KeyCode.from_char(key_name)
+    raise HotkeyBackendMissingError(
+        f"Unknown hotkey {key_name!r}.",
+        hint="Use a pynput key name such as f9, f8, scroll_lock, or a "
+        "single character.",
+    )
+
+
 class PynputPushToTalk(HotkeyListener):
     def __init__(self, key_name: str = "f9", cancel_key: str = "esc") -> None:
         try:
@@ -79,17 +98,7 @@ class PynputPushToTalk(HotkeyListener):
         self._cancel = self._resolve_key(cancel_key) if cancel_key else None
 
     def _resolve_key(self, key_name: str):
-        keyboard = self._keyboard
-        special = getattr(keyboard.Key, key_name.lower(), None)
-        if special is not None:
-            return special
-        if len(key_name) == 1:
-            return keyboard.KeyCode.from_char(key_name)
-        raise HotkeyBackendMissingError(
-            f"Unknown hotkey {key_name!r}.",
-            hint="Use a pynput key name such as f9, f8, scroll_lock, or a "
-            "single character.",
-        )
+        return resolve_key(self._keyboard, key_name)
 
     def run(
         self,

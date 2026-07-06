@@ -8,11 +8,12 @@ timer that fires after the key was already released a no-op.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from local_flow.errors import HotkeyBackendMissingError
-from local_flow.hotkeys.base import HotkeyListener
+from local_flow.hotkeys.base import HotkeyListener, resolve_key
 
 _IDLE, _PENDING, _RECORDING, _CANCELLED = "idle", "pending", "recording", "cancelled"
 
@@ -65,6 +66,7 @@ class SpaceStateMachine:
 
 _MAC_SPACE_KEYCODE = 49
 _WIN_VK_SPACE = 0x20
+_REPLAY_WINDOW_S = 0.5
 
 
 class SpacePushToTalk(HotkeyListener):
@@ -80,24 +82,32 @@ class SpacePushToTalk(HotkeyListener):
             ) from exc
         self._keyboard = keyboard
         self.hold_ms = hold_ms
-        self._cancel = getattr(keyboard.Key, cancel_key.lower(), None) if cancel_key else None
+        self._cancel = resolve_key(keyboard, cancel_key) if cancel_key else None
         self._machine = SpaceStateMachine()
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._controller = keyboard.Controller()
-        self._replaying = False
+        # Controller.tap() posts synthetic down+up events that arrive back on
+        # the listener thread *after* this callback frame returns, so a
+        # transient boolean reset at the end of the frame is already gone by
+        # the time the replay lands (the replay would be swallowed again,
+        # typing nothing, or worse re-entering the machine and looping). Per
+        # stage counters that persist across callback frames, plus a deadline
+        # so a lost/never-arriving post can't wedge the listener forever
+        # (self-heals via _consume_replay). Only touched on the listener
+        # thread (the timer thread never emits replay_space), so no lock.
+        self._replay_left = {"intercept": 0, "handler": 0}
+        self._replay_deadline = 0.0
         self._on_press: Callable[[], None] | None = None
         self._on_release: Callable[[], None] | None = None
         self._on_cancel: Callable[[], None] | None = None
 
     # -- actions ---------------------------------------------------------
-    def _apply(self, actions: SpaceActions) -> None:
+    def _apply(self, actions: SpaceActions, generation: int) -> None:
         if actions.start_timer:
             if self._timer is not None:
                 self._timer.cancel()
-            self._timer = threading.Timer(
-                self.hold_ms / 1000.0, self._fire_hold, args=[self._machine.generation]
-            )
+            self._timer = threading.Timer(self.hold_ms / 1000.0, self._fire_hold, args=[generation])
             self._timer.daemon = True
             self._timer.start()
         if actions.replay_space:
@@ -112,47 +122,59 @@ class SpacePushToTalk(HotkeyListener):
     def _fire_hold(self, generation: int) -> None:
         with self._lock:
             actions = self._machine.hold_elapsed(generation)
-        self._apply(actions)
+            current_generation = self._machine.generation
+        self._apply(actions, current_generation)
+
+    def _consume_replay(self, stage: str) -> bool:
+        """True if this space event is one of our own synthetic replays."""
+        if self._replay_left[stage] <= 0:
+            return False
+        if time.monotonic() > self._replay_deadline:
+            self._replay_left = {"intercept": 0, "handler": 0}  # lost post: self-heal
+            return False
+        self._replay_left[stage] -= 1
+        return True
 
     def _replay_space(self) -> None:
-        self._replaying = True
-        try:
-            self._controller.tap(self._keyboard.Key.space)
-        finally:
-            self._replaying = False
+        self._replay_left = {"intercept": 2, "handler": 2}  # synthetic down + up
+        self._replay_deadline = time.monotonic() + _REPLAY_WINDOW_S
+        self._controller.tap(self._keyboard.Key.space)
 
     # -- event plumbing ---------------------------------------------------
     def _handle_press(self, key) -> None:
-        if self._replaying:
-            return
         if key == self._keyboard.Key.space:
+            if self._consume_replay("handler"):
+                return
             with self._lock:
                 actions = self._machine.space_down()
-            self._apply(actions)
+                generation = self._machine.generation
+            self._apply(actions, generation)
         elif self._cancel is not None and key == self._cancel:
             with self._lock:
                 actions = self._machine.cancel_down()
-            self._apply(actions)
+                generation = self._machine.generation
+            self._apply(actions, generation)
 
     def _handle_release(self, key) -> None:
-        if self._replaying:
-            return
         if key == self._keyboard.Key.space:
+            if self._consume_replay("handler"):
+                return
             with self._lock:
                 actions = self._machine.space_up()
-            self._apply(actions)
+                generation = self._machine.generation
+            self._apply(actions, generation)
 
     def _darwin_intercept(self, event_type, event):
-        if self._replaying:
-            return event
         import Quartz
 
         keycode = Quartz.CGEventGetIntegerValueField(
             event, Quartz.kCGKeyboardEventKeycode
         )
-        if keycode == _MAC_SPACE_KEYCODE:
-            return None  # swallow: taps are replayed, holds dictate
-        return event
+        if keycode != _MAC_SPACE_KEYCODE:
+            return event  # non-space keys always pass through
+        if self._consume_replay("intercept"):
+            return event  # our synthetic tap: let it reach the app
+        return None  # swallow: taps are replayed, holds dictate
 
     def run(
         self,
@@ -165,8 +187,9 @@ class SpacePushToTalk(HotkeyListener):
         listener_box: list = []
 
         def win32_event_filter(msg, data):
-            if not self._replaying and data.vkCode == _WIN_VK_SPACE and listener_box:
-                listener_box[0].suppress_event()
+            if data.vkCode == _WIN_VK_SPACE and listener_box:
+                if not self._consume_replay("intercept"):
+                    listener_box[0].suppress_event()
             return True
 
         try:

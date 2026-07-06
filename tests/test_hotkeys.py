@@ -1,6 +1,9 @@
 """Hotkey logic: shared press/release core, factory dispatch, space and fn machines."""
 
-from local_flow.hotkeys.base import PushToTalkCore
+import pytest
+
+from local_flow.errors import HotkeyBackendMissingError
+from local_flow.hotkeys.base import PushToTalkCore, resolve_key
 from local_flow.hotkeys.space import SpaceActions, SpaceStateMachine
 
 
@@ -122,3 +125,33 @@ class TestSpaceStateMachine:
 
     def test_up_while_idle_is_noop(self):
         assert SpaceStateMachine().space_up() == SpaceActions()
+
+
+class FakeKeyCode:
+    @staticmethod
+    def from_char(char):
+        return ("char", char)
+
+
+class FakeKeys:
+    esc = "ESC"
+    f9 = "F9"
+    space = "SPACE"
+
+
+class FakeKeyboard:
+    Key = FakeKeys
+    KeyCode = FakeKeyCode
+
+
+class TestResolveKey:
+    def test_special_name_resolves_via_key_enum(self):
+        assert resolve_key(FakeKeyboard, "esc") == "ESC"
+        assert resolve_key(FakeKeyboard, "F9") == "F9"
+
+    def test_single_character_resolves_via_keycode(self):
+        assert resolve_key(FakeKeyboard, "x") == ("char", "x")
+
+    def test_unknown_name_raises_with_hint(self):
+        with pytest.raises(HotkeyBackendMissingError, match="Unknown hotkey"):
+            resolve_key(FakeKeyboard, "no_such_key")
