@@ -1,6 +1,7 @@
 """Hotkey logic: shared press/release core, factory dispatch, space and fn machines."""
 
 from local_flow.hotkeys.base import PushToTalkCore
+from local_flow.hotkeys.space import SpaceActions, SpaceStateMachine
 
 
 class Recorder:
@@ -71,3 +72,53 @@ class TestPushToTalkCore:
         core.key_up()
         core.key_down()  # a fresh press afterwards works again
         assert rec.events == ["press", "cancel", "press"]
+
+
+class TestSpaceStateMachine:
+    def test_quick_tap_replays_a_space(self):
+        m = SpaceStateMachine()
+        down = m.space_down()
+        assert down.start_timer and not down.start
+        up = m.space_up()
+        assert up.replay_space and not up.stop
+
+    def test_hold_starts_then_release_stops(self):
+        m = SpaceStateMachine()
+        m.space_down()
+        held = m.hold_elapsed(m.generation)
+        assert held.start
+        up = m.space_up()
+        assert up.stop and not up.replay_space
+
+    def test_stale_timer_after_tap_does_not_start(self):
+        m = SpaceStateMachine()
+        m.space_down()
+        stale_gen = m.generation
+        m.space_up()  # tap finished; timer not yet cancelled
+        late = m.hold_elapsed(stale_gen)
+        assert late == SpaceActions()  # no-op
+
+    def test_auto_repeat_downs_are_ignored(self):
+        m = SpaceStateMachine()
+        m.space_down()
+        assert m.space_down() == SpaceActions()  # repeat while pending
+        m.hold_elapsed(m.generation)
+        assert m.space_down() == SpaceActions()  # repeat while recording
+
+    def test_cancel_while_recording_discards(self):
+        m = SpaceStateMachine()
+        m.space_down()
+        m.hold_elapsed(m.generation)
+        assert m.cancel_down().cancel
+        assert m.space_down() == SpaceActions()  # auto-repeat while still held: no restart
+        assert m.space_up() == SpaceActions()  # physical release: swallowed, no stop
+        assert m.space_down().start_timer  # a fresh press afterwards works again
+
+    def test_cancel_while_idle_or_pending_is_noop(self):
+        m = SpaceStateMachine()
+        assert m.cancel_down() == SpaceActions()
+        m.space_down()
+        assert m.cancel_down() == SpaceActions()
+
+    def test_up_while_idle_is_noop(self):
+        assert SpaceStateMachine().space_up() == SpaceActions()
