@@ -61,3 +61,13 @@ class TestPushToTalkCore:
         core.cancel_down()
         core.key_up()
         assert rec.events == ["press", "release"]
+
+    def test_auto_repeat_after_cancel_does_not_restart(self):
+        rec = Recorder()
+        core = PushToTalkCore(rec.press, rec.release, rec.cancel)
+        core.key_down()
+        core.cancel_down()
+        core.key_down()  # OS auto-repeat: the key is still physically held
+        core.key_up()
+        core.key_down()  # a fresh press afterwards works again
+        assert rec.events == ["press", "cancel", "press"]

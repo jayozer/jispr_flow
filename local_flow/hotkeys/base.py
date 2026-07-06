@@ -44,13 +44,15 @@ class PushToTalkCore:
         self._on_release = on_release
         self._on_cancel = on_cancel
         self.held = False
+        self._suppressed = False  # key still physically down after a cancel
 
     def key_down(self) -> None:
-        if not self.held:
+        if not self.held and not self._suppressed:
             self.held = True
             self._on_press()
 
     def key_up(self) -> None:
+        self._suppressed = False
         if self.held:
             self.held = False
             self._on_release()
@@ -58,6 +60,7 @@ class PushToTalkCore:
     def cancel_down(self) -> None:
         if self.held and self._on_cancel is not None:
             self.held = False
+            self._suppressed = True  # swallow auto-repeats until physical release
             self._on_cancel()
 
 
