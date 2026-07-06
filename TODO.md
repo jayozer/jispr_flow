@@ -9,10 +9,10 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 
 ## Phase 1 — Foundations
 
-- [ ] **E1 — Hotkeys: Fn or Space push-to-talk** *(user priority)*
-  - `LOCAL_FLOW_HOTKEY=fn` (default on macOS, via Quartz event tap) or `space` (hold-vs-tap with suppression) or any pynput key
-  - Rebindable cancel key (default Esc) to discard an utterance mid-recording
-  - Stretch: chord hotkeys (`ctrl+space`)
+- [x] **E1 — Hotkeys: Fn or Space push-to-talk** *(user priority; live hardware checks = README manual checklist 11–13)*
+  - [x] `LOCAL_FLOW_HOTKEY=fn` (default on macOS, via Quartz event tap) or `space` (hold-vs-tap with suppression) or any pynput key
+  - [x] Rebindable cancel key (default Esc) to discard an utterance mid-recording
+  - [ ] Stretch (not shipped): chord hotkeys (`ctrl+space`)
 - [ ] **E2 — Dictation history** — local JSONL log, `local-flow history --search/--clear`, retention `forever|24h|off`, records duration + replacement counts (fuels E5/E9/E14)
 - [ ] **E3 — Multilingual ASR** — `asr_language=auto` detection with multilingual Whisper models, config validation
 
