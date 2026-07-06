@@ -20,6 +20,7 @@ from local_flow.errors import ConfigError
 
 ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
+VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 
 
 def _default_data_dir() -> Path:
@@ -67,6 +68,11 @@ class Config:
 
     # Audio
     sample_rate: int = 16000
+
+    # Dictation history (local JSONL log)
+    history_enabled: bool = True
+    history_max_entries: int = 5000
+    history_retention: str = "forever"  # forever | 24h | off
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -144,6 +150,8 @@ def load_config(
         "data_dir": Path,
         "sample_rate": int,
         "hotkey_space_hold_ms": int,
+        "history_enabled": bool,
+        "history_max_entries": int,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
@@ -172,4 +180,12 @@ def load_config(
         if raw is not None and raw != "":
             values[name] = _coerce(name, raw, field_types.get(name, str))
 
-    return Config(**values)  # type: ignore[arg-type]
+    config = Config(**values)  # type: ignore[arg-type]
+
+    if config.history_retention not in VALID_HISTORY_RETENTIONS:
+        raise ConfigError(
+            f"Invalid history_retention: {config.history_retention!r}",
+            hint=f"Valid values: {', '.join(VALID_HISTORY_RETENTIONS)}.",
+        )
+
+    return config
