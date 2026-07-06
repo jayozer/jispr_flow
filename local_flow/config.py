@@ -10,6 +10,7 @@ looked up at ``$LOCAL_FLOW_CONFIG``, ``./local-flow.toml``, then
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
@@ -23,6 +24,12 @@ DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 
 def _default_data_dir() -> Path:
     return Path.home() / ".local" / "share" / "local-flow"
+
+
+def _default_hotkey() -> str:
+    # The Fn key is only observable on macOS (elsewhere keyboard firmware
+    # swallows it), so the friendlier default is limited to darwin.
+    return "fn" if sys.platform == "darwin" else "f9"
 
 
 @dataclass(frozen=True)
@@ -47,7 +54,9 @@ class Config:
 
     # Hotkey / capture mode
     mode: str = "push-to-talk"  # push-to-talk | hands-free
-    hotkey: str = "f9"
+    hotkey: str = field(default_factory=_default_hotkey)  # fn | space | pynput key name
+    hotkey_space_hold_ms: int = 250  # hold-vs-tap threshold for hotkey="space"
+    cancel_hotkey: str = "esc"  # discards the in-flight dictation
 
     # Style / personalization
     style: str = "default"
@@ -134,6 +143,7 @@ def load_config(
         "vad_energy_threshold": float,
         "data_dir": Path,
         "sample_rate": int,
+        "hotkey_space_hold_ms": int,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}

@@ -72,3 +72,34 @@ class TestConfigObject:
         config = Config()
         with pytest.raises(AttributeError):
             config.hotkey = "f1"  # type: ignore[misc]
+
+
+class TestHotkeyDefaults:
+    def test_hotkey_defaults_to_fn_on_macos(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        config = load_config(env={})
+        assert config.hotkey == "fn"
+
+    def test_hotkey_defaults_to_f9_elsewhere(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        config = load_config(env={})
+        assert config.hotkey == "f9"
+
+    def test_space_hold_ms_and_cancel_hotkey(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_HOTKEY_SPACE_HOLD_MS": "300",
+                "LOCAL_FLOW_CANCEL_HOTKEY": "f12",
+            }
+        )
+        assert config.hotkey_space_hold_ms == 300
+        assert config.cancel_hotkey == "f12"
+
+    def test_space_hold_ms_defaults(self):
+        config = load_config(env={})
+        assert config.hotkey_space_hold_ms == 250
+        assert config.cancel_hotkey == "esc"
