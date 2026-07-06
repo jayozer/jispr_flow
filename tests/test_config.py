@@ -73,6 +73,10 @@ class TestConfigObject:
         with pytest.raises(AttributeError):
             config.hotkey = "f1"  # type: ignore[misc]
 
+    def test_history_enabled_false_from_env(self):
+        config = load_config(env={"LOCAL_FLOW_HISTORY_ENABLED": "false"})
+        assert config.history_enabled is False
+
 
 class TestHotkeyDefaults:
     def test_hotkey_defaults_to_fn_on_macos(self, monkeypatch):

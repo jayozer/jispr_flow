@@ -19,8 +19,6 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-VALID_RETENTIONS = ("forever", "24h", "off")
-
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)

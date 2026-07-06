@@ -84,6 +84,38 @@ class TestRetention:
         assert not store.path.exists()
         assert store.recent() == []
 
+    def test_rotation_and_24h_retention_together(self, tmp_path):
+        """Rotation and 24h retention firing in same append call."""
+        clock = {"now": datetime(2026, 7, 6, 12, 0, 0, tzinfo=UTC)}
+        store = HistoryStore(tmp_path, max_entries=2, retention="24h", now=lambda: clock["now"])
+        # Append two old records (beyond 24h)
+        store.append(_record("old1", "Old1.", timestamp="2026-07-05T10:00:00Z"))
+        store.append(_record("old2", "Old2.", timestamp="2026-07-05T11:00:00Z"))
+        # Advance clock and append three fresh records
+        clock["now"] = datetime(2026, 7, 6, 14, 0, 0, tzinfo=UTC)
+        store.append(_record("new1", "New1.", timestamp="2026-07-06T14:00:00Z"))
+        store.append(_record("new2", "New2.", timestamp="2026-07-06T14:01:00Z"))
+        store.append(_record("new3", "New3.", timestamp="2026-07-06T14:02:00Z"))
+        # Should have 2 newest records (old pruned by age, new3 trimmed by rotation)
+        recent = store.recent()
+        assert [r.final for r in recent] == ["New3.", "New2."]
+        assert len(list(store.all())) == 2
+
+    def test_garbage_timestamp_silently_dropped_on_prune(self, tmp_path):
+        """Line with invalid timestamp JSON is silently dropped during 24h prune."""
+        clock = {"now": datetime(2026, 7, 6, 12, 0, 0, tzinfo=UTC)}
+        store = HistoryStore(tmp_path, retention="24h", now=lambda: clock["now"])
+        # Write a valid record and a record with garbage timestamp directly to file
+        store.append(_record("good", "Good.", timestamp="2026-07-06T12:00:00Z"))
+        with store.path.open("a", encoding="utf-8") as f:
+            f.write('{"timestamp": "not-a-date", "rough": "bad", "final": "Bad."}\n')
+        # Advance clock and append a new record, triggering prune
+        clock["now"] = datetime(2026, 7, 7, 13, 0, 0, tzinfo=UTC)  # +25h
+        store.append(_record("newer", "Newer.", timestamp="2026-07-07T13:00:00Z"))
+        # Should not crash, should drop the garbage timestamp line and keep valid records
+        records = list(store.all())
+        assert [r.final for r in records] == ["Newer."]
+
 
 class TestCorruptLines:
     def test_corrupt_line_is_skipped(self, tmp_path):
