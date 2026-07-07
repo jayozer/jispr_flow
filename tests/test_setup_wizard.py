@@ -8,7 +8,7 @@ import pytest
 
 from local_flow.config import Config, load_config
 from local_flow.errors import ConfigError
-from local_flow.setup_wizard import run_wizard
+from local_flow.setup_wizard import _hotkey_options, run_wizard
 
 
 def _scripted_ask(answers):
@@ -68,7 +68,7 @@ class TestHappyPathDefaults:
         monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "linux")
         config = Config(data_dir=tmp_path / "data")
         target = tmp_path / "config.toml"
-        say, _messages = _say_recorder()
+        say, messages = _say_recorder()
         probe_import, probe_lmstudio = _stub_probes()
         ask = _scripted_ask(["", "", "", ""])
 
@@ -83,6 +83,34 @@ class TestHappyPathDefaults:
 
         data = tomllib.loads(target.read_text())
         assert data["hotkey"] == "f9"
+        # Linux firmware swallows fn and the hotkey factory rejects space, so
+        # neither should ever be offered.
+        assert not any("space" in m.lower() for m in messages)
+        assert not any(m.strip().startswith("1. fn") for m in messages)
+
+
+class TestHotkeyOptionsByPlatform:
+    """``_hotkey_options()`` must never offer "space" on Linux (the hotkey
+    factory rejects it there), while macOS and other non-Linux platforms
+    (e.g. Windows) keep offering it."""
+
+    def test_darwin_offers_fn_space_f9(self, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        options, default = _hotkey_options()
+        assert options == ["fn", "space", "f9"]
+        assert default == "fn"
+
+    def test_linux_offers_only_f9(self, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "linux")
+        options, default = _hotkey_options()
+        assert options == ["f9"]
+        assert default == "f9"
+
+    def test_other_non_macos_still_offers_space(self, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "win32")
+        options, default = _hotkey_options()
+        assert options == ["space", "f9"]
+        assert default == "f9"
 
 
 class TestAnswerValidation:
@@ -282,6 +310,40 @@ class TestConfigErrorCleansUp:
             )
 
         assert not target.exists()
+        assert list(tmp_path.glob("*.toml")) == []  # no stray temp file left behind
+
+    def test_config_error_after_overwrite_preserves_original(self, tmp_path, monkeypatch):
+        """A pre-existing config must survive a validation failure untouched:
+        the wizard writes to a temp file and only swaps it in on success."""
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+
+        def _broken_load_config(*, config_file):
+            raise ConfigError("boom", hint="fix it")
+
+        monkeypatch.setattr("local_flow.setup_wizard.load_config", _broken_load_config)
+
+        config = Config(data_dir=tmp_path / "data")
+        target = tmp_path / "config.toml"
+        original = b'hotkey = "f9"\n'
+        target.write_bytes(original)
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+
+        # 4 question answers (defaults), then accept the overwrite.
+        ask = _scripted_ask(["", "", "", "", "y"])
+
+        with pytest.raises(ConfigError):
+            run_wizard(
+                config,
+                ask=ask,
+                say=say,
+                target=target,
+                probe_import=probe_import,
+                probe_lmstudio=probe_lmstudio,
+            )
+
+        assert target.read_bytes() == original
+        assert list(tmp_path.glob("*.toml")) == [target]
 
 
 class TestProbeReporting:
@@ -355,6 +417,91 @@ class TestStyleChoices:
         probe_import, probe_lmstudio = _stub_probes()
 
         ask = _scripted_ask(["", "", "", "professional"])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["style"] == "professional"
+
+
+class TestDefaultsSeededFromLiveConfig:
+    """Question defaults come from the passed-in ``Config`` when its value is
+    among the offered options, else the hardcoded factory fallback."""
+
+    def test_round_trips_config_values_on_enter(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        config = Config(
+            data_dir=tmp_path / "data",
+            hotkey="space",
+            mode="hands-free",
+            asr_model="small",
+            asr_language="auto",
+        )
+        target = tmp_path / "config.toml"
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+
+        # hotkey, mode, asr model, asr language ("small" triggers the
+        # language question), style -- all "" (accept the seeded defaults).
+        ask = _scripted_ask(["", "", "", "", ""])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["hotkey"] == "space"
+        assert data["mode"] == "hands-free"
+        assert data["asr_model"] == "small"
+        assert data["asr_language"] == "auto"
+
+    def test_un_offered_model_falls_back_to_hardcoded_default(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        # "medium" isn't one of the ASR models the wizard offers.
+        config = Config(data_dir=tmp_path / "data", asr_model="medium")
+        target = tmp_path / "config.toml"
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+        ask = _scripted_ask(["", "", "", ""])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["asr_model"] == "small.en"
+        assert "asr_language" not in data
+
+    def test_style_default_is_active_style_from_store(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        data_dir = tmp_path / "data"
+        from local_flow.personalization.store import PersonalizationStore
+
+        store = PersonalizationStore(data_dir)
+        store.set_active_style("professional")
+
+        config = Config(data_dir=data_dir)
+        target = tmp_path / "config.toml"
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+        ask = _scripted_ask(["", "", "", ""])
 
         run_wizard(
             config,
