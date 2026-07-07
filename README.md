@@ -255,8 +255,15 @@ uv run local-flow pad --new someday             # create an empty note without s
 Each `--append` starts a new paragraph: if the target note already has
 content, the new text is separated from it by a blank line, so successive
 jottings read as distinct entries rather than run-on text. Note names may
-only contain letters, digits, spaces, `.`, `_`, `-` (1-64 characters) --
-no `/` or `..` -- so a note name can never escape the notes directory.
+only contain letters, digits, spaces, `.`, `_`, `-` (1-64 characters), may
+never contain a path separator like `/` or `..`, and may not end in `.` or
+` ` (accepted characters elsewhere in the name, but Windows-hostile as a
+trailing character) -- so a note name can never escape the notes directory
+and stays portable across platforms. There's no cross-process locking on
+appends (this is a single-user, local-first tool by design): two processes
+racing to make the very first append to the same empty note at the same
+instant could both see it as empty and skip the blank-line separator
+between them, but a single writer -- the normal case -- is unaffected.
 
 This is CLI-only for now (headless, scriptable); a floating always-on-top
 window and a hotkey that routes live dictation straight into the active

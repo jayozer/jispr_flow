@@ -129,7 +129,17 @@ class TestListNotes:
 class TestNameValidation:
     @pytest.mark.parametrize(
         "bad_name",
-        ["../evil", "a/b", "", "x" * 65, "/etc/passwd", "..\\evil"],
+        [
+            "../evil",
+            "a/b",
+            "",
+            "x" * 65,
+            "/etc/passwd",
+            "..\\evil",
+            "evil\n",
+            "trailing dot.",
+            "trailing space ",
+        ],
     )
     def test_rejects_invalid_names(self, tmp_path, bad_name):
         store = NoteStore(tmp_path)
@@ -147,6 +157,19 @@ class TestNameValidation:
         with pytest.raises(LocalFlowError):
             store.create("")
 
+    def test_rejects_invalid_name_on_read(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.read("../evil")
+
+    def test_rejects_trailing_newline_on_create(self, tmp_path):
+        # A bare trailing "$" in the old regex admits a trailing "\n"
+        # (`re.match` treats "$" as matching just before a final newline);
+        # `re.fullmatch` (or an escaped "\Z") does not.
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.create("evil\n")
+
     def test_accepts_boundary_length_name(self, tmp_path):
         store = NoteStore(tmp_path)
         name = "x" * 64
@@ -158,6 +181,33 @@ class TestNameValidation:
         name = "My Notes_v2.draft-1"
         store.create(name)
         assert name in store.list_notes()
+
+
+class TestActiveNoteCorruption:
+    """``notes/.active`` is a hand-editable plain-text file; a corrupted or
+    hand-crafted value (e.g. a path-traversal string) must never make
+    ``active_note()`` (and callers defaulting through it) escape
+    ``notes_dir`` -- it should degrade to ``"inbox"`` instead of raising or
+    passing the bad value through."""
+
+    def test_active_note_falls_back_to_inbox_when_traversal_string(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.notes_dir.mkdir(parents=True)
+        (store.notes_dir / ".active").write_text("../../elsewhere/leak", encoding="utf-8")
+        assert store.active_note() == "inbox"
+
+    def test_active_note_falls_back_to_inbox_when_blank(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.notes_dir.mkdir(parents=True)
+        (store.notes_dir / ".active").write_text("   ", encoding="utf-8")
+        assert store.active_note() == "inbox"
+
+    def test_append_after_corrupted_active_still_targets_inbox(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.notes_dir.mkdir(parents=True)
+        (store.notes_dir / ".active").write_text("../../elsewhere/leak", encoding="utf-8")
+        store.append("safe text")
+        assert store.read("inbox") == "safe text"
 
 
 class TestScratchpadSink:
@@ -288,3 +338,52 @@ class TestPadCli:
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         with pytest.raises(SystemExit):
             main(["pad", "--list", "--use", "work"])
+
+    def test_show_rejects_path_traversal_and_never_reads_outside_file(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        # data dir is nested two levels under tmp_path, so
+        # "../../elsewhere/leak" (relative to notes_dir = data_dir/notes)
+        # resolves to tmp_path/elsewhere/leak.md -- a real file outside the
+        # notes directory, seeded with a secret that must never surface.
+        data_dir = tmp_path / "data"
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(data_dir))
+        outside_dir = tmp_path / "elsewhere"
+        outside_dir.mkdir()
+        (outside_dir / "leak.md").write_text("TOP SECRET, DO NOT LEAK", encoding="utf-8")
+
+        code = main(["pad", "--show", "../../elsewhere/leak"])
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "TOP SECRET" not in captured.out
+        assert "TOP SECRET" not in captured.err
+        assert "invalid note name" in captured.err
+        assert "hint" in captured.err
+
+    def test_show_falls_back_to_inbox_when_active_marker_corrupted(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        notes_dir = tmp_path / "notes"
+        notes_dir.mkdir()
+        (notes_dir / ".active").write_text("../../elsewhere/leak", encoding="utf-8")
+
+        code = main(["pad", "--show"])
+
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "-- inbox --" in out
+
+    def test_append_falls_back_to_inbox_when_active_marker_corrupted(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        notes_dir = tmp_path / "notes"
+        notes_dir.mkdir()
+        (notes_dir / ".active").write_text("../../elsewhere/leak", encoding="utf-8")
+
+        code = main(["pad", "--append", "still works"])
+
+        assert code == 0
+        assert (notes_dir / "inbox.md").read_text(encoding="utf-8") == "still works"

@@ -27,7 +27,11 @@ from local_flow.errors import LocalFlowError
 # Letters, digits, spaces, '.', '_', '-' only -- no '/' or other path
 # separators, so a name can never escape ``notes_dir`` (rules out "../evil",
 # "a/b", absolute paths, etc). 1-64 characters; empty names are rejected.
-_NAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,64}$")
+# Checked with ``fullmatch``, not ``match`` + a trailing "$": "$" alone
+# matches just before a trailing newline, so a bare `match(r"...{1,64}$")`
+# would wrongly accept "evil\n"; ``fullmatch`` requires the whole string
+# (all 1-64 chars, no more) to fit the character class.
+_NAME_RE = re.compile(r"[A-Za-z0-9._ -]{1,64}")
 
 _DEFAULT_NOTE = "inbox"
 _ACTIVE_FILE = ".active"
@@ -37,12 +41,22 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def _is_valid_name(name: str) -> bool:
+    """Whether ``name`` is a legal note name: see :data:`_NAME_RE`, plus a
+    ban on a trailing '.' or ' ' -- both otherwise-legal characters here,
+    but ones Windows strips (or rejects outright) from filenames, so a note
+    created on one platform could silently resolve to a different file (or
+    fail to open at all) on another."""
+    return bool(_NAME_RE.fullmatch(name)) and name[-1] not in {".", " "}
+
+
 def _validate_name(name: str) -> None:
-    if not _NAME_RE.match(name):
+    if not _is_valid_name(name):
         raise LocalFlowError(
             f"invalid note name {name!r}.",
             hint="Note names may only use letters, digits, spaces, '.', '_', '-' "
-            "(1-64 characters), and never a path separator like '/' or '..'.",
+            "(1-64 characters), may never use a path separator like '/' or '..', "
+            "and may not end in '.' or ' ' (Windows-hostile).",
         )
 
 
@@ -69,11 +83,24 @@ class NoteStore:
         return sorted(path.stem for path in self.notes_dir.glob("*.md"))
 
     def active_note(self) -> str:
-        """The persisted active note name, defaulting to ``"inbox"``."""
+        """The persisted active note name, defaulting to ``"inbox"``.
+
+        This is a degraded-read path, not a validating one: :meth:`set_active`
+        already validates on write, but ``notes/.active`` is a plain-text
+        file a user (or a bug) could put anything into directly. If its
+        contents aren't a legal note name -- including a path-traversal
+        string like ``"../../elsewhere/leak"`` -- we quietly fall back to
+        ``"inbox"`` rather than raising, so a hand-corrupted marker file can
+        never make a bare `pad --show`/`pad --append` (which both default
+        through here) escape ``notes_dir`` or blow up the CLI outright.
+        Callers that want a hard failure on an explicit bad name should go
+        through :meth:`read`/:meth:`append`/:meth:`create`/:meth:`set_active`
+        directly instead.
+        """
         if not self._active_path.is_file():
             return _DEFAULT_NOTE
         name = self._active_path.read_text(encoding="utf-8").strip()
-        return name or _DEFAULT_NOTE
+        return name if _is_valid_name(name) else _DEFAULT_NOTE
 
     def set_active(self, name: str) -> None:
         """Persist ``name`` as the active note. Does not create the note file
@@ -84,7 +111,14 @@ class NoteStore:
         self._active_path.write_text(name, encoding="utf-8")
 
     def read(self, name: str) -> str:
-        """The note's full text, or ``""`` if it doesn't exist yet."""
+        """The note's full text, or ``""`` if it doesn't exist yet.
+
+        Validates ``name`` first, same as :meth:`append`/:meth:`create`/
+        :meth:`set_active` -- without this, a caller-supplied name like
+        ``"../../elsewhere/leak"`` would resolve outside ``notes_dir`` and
+        silently read an arbitrary ``*.md`` file on disk.
+        """
+        _validate_name(name)
         path = self._note_path(name)
         if not path.is_file():
             return ""
@@ -96,6 +130,16 @@ class NoteStore:
         append is prefixed with a blank-line paragraph separator
         (``"\\n\\n" + text``); an empty/missing note just gets ``text``
         directly, with no leading blank line. Returns the note's path.
+
+        Concurrency note: there is no cross-process locking here by design
+        (this is a single-user, local-first tool) -- the read-to-decide-
+        separator step and the ``"a"``-mode write are two separate
+        operations. Append-mode writes are effectively line-atomic for
+        realistic note sizes, so two processes appending won't interleave
+        garbled text, but if they race on the very *first* append to the
+        same currently-empty note, both may see it as empty and skip the
+        blank-line separator, landing back-to-back with no blank line
+        between them. A lone writer -- the normal case -- is unaffected.
         """
         target = name if name is not None else self.active_note()
         _validate_name(target)

@@ -11,27 +11,31 @@ class ScratchpadSink(TextSink):
     of the desktop -- swap this in for the configured sink and dictation
     lands in the active scratchpad note rather than the frontmost app.
 
-    ``press_key("enter")`` marks a pending paragraph break rather than
-    writing anything itself: :meth:`NoteStore.append` already prefixes a
-    blank line onto any append made to a non-empty note, so a bare "press
-    enter" immediately followed by the next utterance's ``insert`` would
-    otherwise double up that separator (two blank lines instead of one).
-    The pending flag is bookkeeping only -- kept so the sink's contract
-    honestly records that a break was requested, rather than silently
-    dropping it -- and is cleared by the next ``insert``. Any other key is a
-    no-op, matching ``TextSink``'s own default.
+    ``press_key("enter")`` is intentionally a no-op, not an oversight:
+    :meth:`NoteStore.append` already prefixes a blank line onto any append
+    made to a non-empty note, so every dictated utterance is already
+    paragraph-separated from the one before it with no help needed from an
+    explicit "press enter"/"new paragraph" gesture. If this method wrote
+    anything for "enter" (even an empty append), the next utterance's
+    ``insert`` would double up that separator (two blank lines instead of
+    one). So "enter" and any other key both do nothing here -- the same
+    outward behavior -- but "enter" is called out explicitly below because
+    its no-op-ness is a deliberate design choice (see above), distinct in
+    *intent* from the truly-unrecognized keys that fall through to
+    ``TextSink``'s own default no-op.
     """
 
     name = "scratchpad"
 
     def __init__(self, store: NoteStore) -> None:
         self.store = store
-        self._pending_break = False
 
     def insert(self, text: str) -> None:
-        self._pending_break = False
         self.store.append(text)
 
     def press_key(self, key: str) -> None:
         if key == "enter":
-            self._pending_break = True
+            # See class docstring: NoteStore.append's own blank-line rule
+            # already provides paragraph separation, so there is nothing to
+            # do here -- this is a deliberate no-op, not a missing feature.
+            return
