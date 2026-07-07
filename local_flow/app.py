@@ -169,7 +169,9 @@ def _build_pipeline(config: Config, chat_client, sink):
 
     store = PersonalizationStore(config.data_dir)
     _, style_rules = store.style_rules(config.style)
-    polisher = TranscriptPolisher(chat_client, store, style=config.style)
+    polisher = TranscriptPolisher(
+        chat_client, store, style=config.style, level=config.cleanup_level
+    )
     command_mode = (
         CommandMode(
             chat_client,
@@ -210,7 +212,9 @@ def _cmd_polish(args: argparse.Namespace, config: Config) -> int:
 
     store = PersonalizationStore(config.data_dir)
     chat_client = None if args.no_llm else _build_chat_client(config)
-    polisher = TranscriptPolisher(chat_client, store, style=config.style)
+    polisher = TranscriptPolisher(
+        chat_client, store, style=config.style, level=config.cleanup_level
+    )
     result = polisher.polish(args.text)
     text, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
     text, _snippet_count = expand_snippets(text, store.snippets())

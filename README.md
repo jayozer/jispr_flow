@@ -105,6 +105,7 @@ environment > config file > defaults. Highlights:
 | Hotkey hold threshold | `LOCAL_FLOW_HOTKEY_SPACE_HOLD_MS` | `250` |
 | Cancel hotkey | `LOCAL_FLOW_CANCEL_HOTKEY` | `esc` |
 | Style | `LOCAL_FLOW_STYLE` | `default` |
+| Cleanup level | `LOCAL_FLOW_CLEANUP_LEVEL` | `medium` (or `none`/`light`/`high`; see "Cleanup levels") |
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
 | Streaming | `LOCAL_FLOW_STREAMING` | `off` (or `sentence`/`live-preview`, hands-free only; see "Streaming") |
 | Streaming pause | `LOCAL_FLOW_STREAMING_PAUSE_MS` | `300` |
@@ -211,6 +212,37 @@ even when LM Studio is unreachable. Spoken adds are extracted *after*
 dictation commands, so a term that is itself a command phrase (e.g. "new
 line") can't be added this way — use `local-flow learn` or edit
 `dictionary.json` directly for those.
+
+## Cleanup levels
+
+`LOCAL_FLOW_CLEANUP_LEVEL` controls how aggressively the polish pass rewrites
+your rough transcript, from `none` (verbatim) to `high` (rewritten for
+concision). Default: `medium` (today's behavior, unchanged).
+
+| Level | Rule cleanup | LM Studio call | Behavior |
+|---|---|---|---|
+| `none` | no | no | Insert exactly what you said, fillers and all. |
+| `light` | yes | yes | Fix grammar and remove fillers only; no rephrasing. |
+| `medium` | yes | yes | Punctuation, capitalization, grammar, artifacts (default). |
+| `high` | yes | yes | Rewrite for concision and polish, preserving meaning. |
+
+`light`/`medium`/`high` all instruct the model to turn spoken enumerations
+("first ..., second ..., third ...") into a proper numbered or bulleted
+list, and all three fall back to rule-based cleanup only (no rewrite) if LM
+Studio is unreachable, exactly like today's `medium` behavior.
+
+**`none` is special: it is not just "gentle cleanup," it is a full bypass.**
+No filler/backtracking rules run and LM Studio is never contacted -- the
+inserted text is your dictated words exactly as ASR produced them. This is
+*not* the same as disabling personalization, though: dictionary term
+correction, snippet expansion, dictation commands ("new line", "press
+enter"), and spoken "add \<term\> to the dictionary" all still run, because
+those are personalization features applied by
+`local_flow.pipeline.DictationPipeline` after the polish step, not cleanup
+performed by the polish step itself. So at `none`, "the jispr flow rollout"
+still becomes "the JiSpr Flow rollout" if `JiSpr Flow` is in your
+dictionary, and "press enter" still triggers the Enter key -- only the
+filler-removal/grammar/rewrite pass is skipped.
 
 ## Streaming
 

@@ -33,11 +33,13 @@ class TranscriptPolisher:
         chat_client: ChatClient | None,
         store: PersonalizationStore,
         style: str = "default",
+        level: str = "medium",
         fallback_to_rules: bool = True,
     ) -> None:
         self.chat_client = chat_client
         self.store = store
         self._style = style
+        self._level = level
         self.fallback_to_rules = fallback_to_rules
 
     @property
@@ -55,6 +57,20 @@ class TranscriptPolisher:
     def style(self, value: str) -> None:
         self._style = value
 
+    @property
+    def level(self) -> str:
+        """Cleanup level used by :meth:`polish` (none|light|medium|high; see
+        ``local_flow.config.Config.cleanup_level``).
+
+        Settable so a caller can change the active cleanup level for future
+        utterances without rebuilding the pipeline, mirroring ``style`` above.
+        """
+        return self._level
+
+    @level.setter
+    def level(self, value: str) -> None:
+        self._level = value
+
     def polish(self, rough: str, style: str | None = None) -> PolishResult:
         """Rules first, then an LLM polish pass using ``style``.
 
@@ -62,7 +78,17 @@ class TranscriptPolisher:
         (``None`` keeps using ``self.style``); this is how per-app style
         overrides from :class:`local_flow.context.router.ContextRouter` reach
         the polisher without changing any other call site.
+
+        At ``level == "none"`` this returns ``rough`` untouched in both
+        ``cleaned`` and ``polished`` -- no rule-based cleanup runs and
+        ``self.chat_client`` is never called. Dictionary/snippet/dictation
+        command handling still happens downstream in
+        :class:`local_flow.pipeline.DictationPipeline` (that's
+        personalization, not cleanup).
         """
+        if self._level == "none":
+            return PolishResult(rough=rough, cleaned=rough, polished=rough)
+
         cleaned = clean_transcript(rough)
         result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
         if not cleaned or self.chat_client is None:
@@ -79,6 +105,7 @@ class TranscriptPolisher:
             dictionary_terms=self.store.dictionary_terms(),
             style_name=style_name,
             style_rules=style_rules,
+            level=self._level,
         )
         try:
             polished = self.chat_client.chat(messages)

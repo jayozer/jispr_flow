@@ -24,7 +24,7 @@ Standard set (local-only, lazy platform imports, Config/env/TOML pattern with va
 
 **Tests:** level=none → chat client not called, output == input verbatim; per-level prompt content asserted via MockChatClient; medium prompt unchanged from the current constant (pin it); property setter affects next polish; config validation.
 
-- [ ] TDD → commit `feat(polish): cleanup levels none/light/medium/high with list formatting`
+- [x] TDD → commit `feat(polish): cleanup levels none/light/medium/high with list formatting`
 
 ### Task 2 (E9): Spoken code syntax + undo AI edit
 

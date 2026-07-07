@@ -22,6 +22,7 @@ ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
+VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
 
 
 def _default_data_dir() -> Path:
@@ -69,6 +70,11 @@ class Config:
     # Style / personalization
     style: str = "default"
     data_dir: Path = field(default_factory=_default_data_dir)
+
+    # Auto-cleanup level for the polish pass: none (verbatim, no LLM call) |
+    # light (fillers/grammar only) | medium (today's default) | high
+    # (rewrite for concision). See `local_flow.polish.prompting`.
+    cleanup_level: str = "medium"
 
     # Per-app context awareness (frontmost app -> style/insert overrides)
     context_styles: bool = True
@@ -211,6 +217,12 @@ def load_config(
         raise ConfigError(
             f"Invalid streaming: {config.streaming!r}",
             hint=f"Valid values: {', '.join(VALID_STREAMING_MODES)}.",
+        )
+
+    if config.cleanup_level not in VALID_CLEANUP_LEVELS:
+        raise ConfigError(
+            f"Invalid cleanup_level: {config.cleanup_level!r}",
+            hint=f"Valid values: {', '.join(VALID_CLEANUP_LEVELS)}.",
         )
 
     return config

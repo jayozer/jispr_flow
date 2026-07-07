@@ -24,6 +24,12 @@ hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
 cancel_hotkey = "esc"          # discards the in-flight dictation
 
 style = "default"              # a style name from styles.json
+# Auto-cleanup level for the polish pass (see README "Cleanup levels").
+# none (verbatim, no rule cleanup/LM Studio call) | light (fillers/grammar
+# only) | medium (default) | high (rewrite for concision). Dictionary/
+# snippets/dictation commands still apply at "none" -- personalization, not
+# cleanup.
+cleanup_level = "medium"
 data_dir = "~/.local/share/local-flow"
 
 languages = ""                 # comma-separated ISO codes for the tray's Language
