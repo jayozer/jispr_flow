@@ -23,6 +23,7 @@ DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
+VALID_VAD_PRESETS = ("normal", "whisper")
 
 
 def _default_data_dir() -> Path:
@@ -61,11 +62,25 @@ class Config:
     vad_silence_ms: int = 600
     vad_energy_threshold: float = 500.0
 
+    # Preset that biases the energy VAD toward quiet/whispered speech: "normal"
+    # (default) leaves `vad_energy_threshold` alone; "whisper" lowers it to 150
+    # -- but only when the user hasn't set `vad_energy_threshold` explicitly
+    # (detected by comparing against the dataclass default 500.0; an explicit
+    # 500.0 is indistinguishable from "unset" -- documented limitation). See
+    # `local_flow.app._build_vad`.
+    vad_preset: str = "normal"  # normal | whisper
+
     # Hotkey / capture mode
     mode: str = "push-to-talk"  # push-to-talk | hands-free
     hotkey: str = field(default_factory=_default_hotkey)  # fn | space | pynput key name
     hotkey_space_hold_ms: int = 250  # hold-vs-tap threshold for hotkey="space"
     cancel_hotkey: str = "esc"  # discards the in-flight dictation
+
+    # Comma-separated, priority-ordered microphone name substrings (case-
+    # insensitive), e.g. "AirPods, USB". The first input device whose name
+    # contains one of these wins; empty (default) means "system default".
+    # Parsed by `local_flow.app.parse_mic_priority`.
+    mic_priority: str = ""
 
     # Style / personalization
     style: str = "default"
@@ -90,6 +105,12 @@ class Config:
     # recover` replays anything left behind by a crash/force-quit. Set false to
     # skip the extra disk write entirely (byte-identical to before this existed).
     audio_recovery: bool = True
+
+    # Utterances longer than this (minutes) trigger a "warning" status
+    # notification after processing (a very long recording is usually an
+    # accidental hands-free/stuck-hotkey capture rather than intended
+    # dictation). Does not truncate or otherwise change processing.
+    max_utterance_min: int = 20
 
     # Dictation history (local JSONL log)
     history_enabled: bool = True
@@ -184,6 +205,7 @@ def load_config(
         "context_styles": bool,
         "streaming_pause_ms": int,
         "audio_recovery": bool,
+        "max_utterance_min": int,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
@@ -230,6 +252,12 @@ def load_config(
         raise ConfigError(
             f"Invalid cleanup_level: {config.cleanup_level!r}",
             hint=f"Valid values: {', '.join(VALID_CLEANUP_LEVELS)}.",
+        )
+
+    if config.vad_preset not in VALID_VAD_PRESETS:
+        raise ConfigError(
+            f"Invalid vad_preset: {config.vad_preset!r}",
+            hint=f"Valid values: {', '.join(VALID_VAD_PRESETS)}.",
         )
 
     return config

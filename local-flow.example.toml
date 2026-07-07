@@ -17,11 +17,18 @@ vad_aggressiveness = 2
 vad_frame_ms = 30
 vad_silence_ms = 600
 vad_energy_threshold = 500.0
+# Preset for quiet/whispered speech (see README "Microphone priority and
+# whisper mode"): normal (default) | whisper (lowers vad_energy_threshold to
+# 150 unless set explicitly, and peak-normalizes each utterance before ASR).
+vad_preset = "normal"
 
 mode = "push-to-talk"          # push-to-talk | hands-free
 hotkey = "fn"                  # fn (macOS) | space | pynput key name; default f9 off-macOS
 hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
 cancel_hotkey = "esc"          # discards the in-flight dictation
+# Priority-ordered, comma-separated microphone name substrings (case-
+# insensitive), e.g. "AirPods, USB"; empty (default) means system default.
+mic_priority = ""
 
 style = "default"              # a style name from styles.json
 # Auto-cleanup level for the polish pass (see README "Cleanup levels").
@@ -43,6 +50,9 @@ sample_rate = 16000
 # each utterance's PCM under <data dir>/pending/ before processing, deletes
 # it once handled. `local-flow recover` replays anything a crash left behind.
 audio_recovery = true
+# Utterances longer than this (minutes) log a warning after processing
+# (does not truncate or otherwise change what gets inserted).
+max_utterance_min = 20
 
 history_enabled = true         # false stops recording (existing history stays readable)
 history_max_entries = 5000     # rotate out the oldest entries beyond this count

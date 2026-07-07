@@ -2,19 +2,29 @@
 extracted per-utterance handler in ``local_flow.app``.
 """
 
+import array
 import threading
 
-from local_flow.app import _handle_utterance, _interruptible, _run_loop
+from local_flow.app import (
+    RunDependencies,
+    _build_run_dependencies,
+    _build_vad,
+    _handle_utterance,
+    _interruptible,
+    _run_loop,
+    parse_mic_priority,
+)
 from local_flow.asr.mock import MockStream, MockTranscriber
+from local_flow.audio.gain import normalize_peak
 from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
 from local_flow.demo import synth_pcm
-from local_flow.errors import LMStudioConnectionError
+from local_flow.errors import LMStudioConnectionError, LocalFlowError
 from local_flow.insertion.base import FakeTextSink
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import PersonalizationStore
-from local_flow.pipeline import DictationPipeline
+from local_flow.pipeline import DictationPipeline, DictationResult
 from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.status import ConsoleReporter, StatusReporter
 
@@ -255,7 +265,7 @@ class TestHandsFreeReArmsRecording:
             config,
             "hands-free",
             reporter,
-            dependencies=(pipeline, DummySource(), DummyVAD()),
+            dependencies=RunDependencies(pipeline, DummySource(), DummyVAD()),
         )
 
         states = [event[0] for event in reporter.events]
@@ -321,7 +331,7 @@ class TestCancelPathNotifiesIdle:
             config,
             "push-to-talk",
             SignalingReporter(),
-            dependencies=(pipeline, FakeSource(), DummyVAD()),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
         )
 
         assert done.is_set(), "cancel() never notified 'idle'"
@@ -399,7 +409,7 @@ class TestStreamingSilenceMs:
             config,
             "hands-free",
             reporter,
-            dependencies=(pipeline, DummySource(), DummyVAD()),
+            dependencies=RunDependencies(pipeline, DummySource(), DummyVAD()),
         )
         return captured
 
@@ -478,7 +488,7 @@ class TestSentenceModeOrdering:
             config,
             "hands-free",
             reporter,
-            dependencies=(pipeline, FakeSource(), vad),
+            dependencies=RunDependencies(pipeline, FakeSource(), vad),
         )
 
         kinds = [kind for kind, _ in event_log]
@@ -535,7 +545,7 @@ class TestPushToTalkStreamingNotice:
             config,
             "push-to-talk",
             SignalingReporter(),
-            dependencies=(pipeline, FakeSource(), DummyVAD()),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
         )
 
         assert done.is_set(), "finish() never notified 'idle'"
@@ -601,7 +611,7 @@ class TestLivePreviewRunLoop:
             config,
             "hands-free",
             reporter,
-            dependencies=(pipeline, FakeSource(), vad),
+            dependencies=RunDependencies(pipeline, FakeSource(), vad),
         )
         return reporter
 
@@ -626,3 +636,239 @@ class TestLivePreviewRunLoop:
         inserted_with = [d for s, d in with_preview.events if s == "inserted"]
         inserted_without = [d for s, d in without_preview.events if s == "inserted"]
         assert inserted_with == inserted_without == [repr("Final polished text.")]
+
+
+class _RecordingPipeline:
+    """Captures the PCM handed to `process_audio` and returns a scripted
+    `DictationResult` -- used to verify `_handle_utterance`'s whisper-preset
+    normalization and long-utterance warning wiring without a real ASR/LLM.
+    """
+
+    def __init__(self, duration_s: float = 0.0, final: str = "") -> None:
+        self.received_pcm: bytes | None = None
+        self._duration_s = duration_s
+        self._final = final
+
+    def process_audio(self, pcm: bytes, sample_rate: int) -> DictationResult:
+        self.received_pcm = pcm
+        return DictationResult(
+            rough=self._final,
+            cleaned=self._final,
+            polished=self._final,
+            final=self._final,
+            duration_s=self._duration_s,
+        )
+
+
+class _FailingRecordingPipeline(_RecordingPipeline):
+    """Like `_RecordingPipeline`, but raises after capturing the PCM -- used
+    to inspect what was persisted to a `PendingAudioStore` before failure.
+    """
+
+    def process_audio(self, pcm: bytes, sample_rate: int) -> DictationResult:
+        self.received_pcm = pcm
+        raise LocalFlowError("simulated pipeline failure")
+
+
+class TestHandleUtteranceNormalizeAudio:
+    """`normalize_audio=True` (`vad_preset="whisper"`) peak-normalizes the
+    PCM once, before both the pending-store save and `pipeline.process_audio`
+    see it.
+    """
+
+    def _quiet_pcm(self) -> bytes:
+        return array.array("h", [50, -80, 60, -40]).tobytes()
+
+    def test_true_normalizes_pcm_before_processing(self):
+        pipeline = _RecordingPipeline()
+        reporter = FakeReporter()
+        raw = self._quiet_pcm()
+
+        _handle_utterance(pipeline, reporter, raw, 16000, normalize_audio=True)
+
+        assert pipeline.received_pcm == normalize_peak(raw)
+        assert pipeline.received_pcm != raw
+
+    def test_false_leaves_pcm_unchanged(self):
+        pipeline = _RecordingPipeline()
+        reporter = FakeReporter()
+        raw = self._quiet_pcm()
+
+        _handle_utterance(pipeline, reporter, raw, 16000, normalize_audio=False)
+
+        assert pipeline.received_pcm == raw
+
+    def test_default_is_false(self):
+        pipeline = _RecordingPipeline()
+        reporter = FakeReporter()
+        raw = self._quiet_pcm()
+
+        _handle_utterance(pipeline, reporter, raw, 16000)
+
+        assert pipeline.received_pcm == raw
+
+    def test_pending_store_saves_the_normalized_bytes(self, tmp_path):
+        from local_flow.audio.recovery import PendingAudioStore
+
+        pending = PendingAudioStore(tmp_path)
+        pipeline = _FailingRecordingPipeline()
+        reporter = FakeReporter()
+        raw = self._quiet_pcm()
+
+        _handle_utterance(pipeline, reporter, raw, 16000, pending, normalize_audio=True)
+
+        # Failure leaves the WAV in place (existing autosave contract); its
+        # bytes should already be the normalized ones, not the raw input.
+        [saved_path] = pending.pending()
+        saved_pcm, saved_rate = pending.load(saved_path)
+        assert saved_pcm == normalize_peak(raw)
+        assert saved_rate == 16000
+
+
+class TestHandleUtteranceLongUtteranceWarning:
+    """After processing, a utterance longer than `max_utterance_min` minutes
+    triggers an extra "warning" notification (informational only).
+    """
+
+    def test_over_threshold_triggers_warning(self):
+        pipeline = _RecordingPipeline(duration_s=25 * 60, final="hello")
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm", 16000, max_utterance_min=20)
+
+        warnings = [detail for state, detail in reporter.events if state == "warning"]
+        assert len(warnings) == 1
+        assert "25 minutes long" in warnings[0]
+        assert "consider shorter dictations" in warnings[0]
+
+    def test_under_threshold_no_warning(self):
+        pipeline = _RecordingPipeline(duration_s=5 * 60, final="hello")
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm", 16000, max_utterance_min=20)
+
+        assert not any(state == "warning" for state, _ in reporter.events)
+
+    def test_exactly_at_threshold_no_warning(self):
+        pipeline = _RecordingPipeline(duration_s=20 * 60, final="hello")
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm", 16000, max_utterance_min=20)
+
+        assert not any(state == "warning" for state, _ in reporter.events)
+
+    def test_default_max_utterance_min_is_twenty(self):
+        pipeline = _RecordingPipeline(duration_s=21 * 60, final="hello")
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm", 16000)
+
+        assert any(state == "warning" for state, _ in reporter.events)
+
+
+class TestBuildVadWhisperPreset:
+    """`_build_vad`'s `vad_preset="whisper"` threshold resolution -- see the
+    docstring on `_build_vad` for the documented "explicit 500.0 counts as
+    unset" limitation.
+    """
+
+    def test_whisper_preset_lowers_default_threshold(self):
+        config = load_config(env={"LOCAL_FLOW_VAD_PRESET": "whisper"})
+        vad = _build_vad(config)
+        assert isinstance(vad, EnergyVAD)
+        assert vad.threshold == 150.0
+
+    def test_whisper_preset_does_not_override_an_explicit_non_default_threshold(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_VAD_PRESET": "whisper",
+                "LOCAL_FLOW_VAD_ENERGY_THRESHOLD": "300",
+            }
+        )
+        vad = _build_vad(config)
+        assert vad.threshold == 300.0
+
+    def test_normal_preset_leaves_threshold_untouched(self):
+        config = load_config(
+            env={"LOCAL_FLOW_VAD_PRESET": "normal", "LOCAL_FLOW_VAD_ENERGY_THRESHOLD": "700"}
+        )
+        vad = _build_vad(config)
+        assert vad.threshold == 700.0
+
+    def test_default_preset_is_normal_and_unaffected(self):
+        config = load_config(env={})
+        vad = _build_vad(config)
+        assert vad.threshold == 500.0
+
+
+class TestParseMicPriority:
+    """`parse_mic_priority` mirrors `local_flow.tray.app.parse_languages`."""
+
+    def test_splits_and_strips_comma_separated_entries(self):
+        assert parse_mic_priority("AirPods, USB Mic") == ["AirPods", "USB Mic"]
+
+    def test_empty_string_returns_empty_list(self):
+        assert parse_mic_priority("") == []
+
+    def test_blank_entries_are_dropped(self):
+        assert parse_mic_priority("AirPods, , USB") == ["AirPods", "USB"]
+
+    def test_case_insensitive_duplicates_removed_preserving_first_seen_order(self):
+        assert parse_mic_priority("AirPods, airpods, USB") == ["AirPods", "USB"]
+
+    def test_order_is_preserved(self):
+        assert parse_mic_priority("c, a, b") == ["c", "a", "b"]
+
+
+class TestBuildRunDependenciesWiring:
+    """`_build_run_dependencies` threads `mic_priority`/`vad_preset`/
+    `max_utterance_min` from `Config` into the `SounddeviceSource`
+    construction and the returned `RunDependencies`.
+    """
+
+    def _config(self, tmp_path, **overrides):
+        env = {
+            "LOCAL_FLOW_DATA_DIR": str(tmp_path),
+            "LOCAL_FLOW_ASR_BACKEND": "mock",
+            "LOCAL_FLOW_LMSTUDIO_BASE_URL": "http://127.0.0.1:59999/v1",
+            **overrides,
+        }
+        return load_config(env=env)
+
+    def test_preferred_devices_and_whisper_and_max_utterance_are_wired(
+        self, tmp_path, monkeypatch
+    ):
+        captured: dict[str, object] = {}
+
+        class FakeSource:
+            def __init__(self, sample_rate, device=None, preferred=None):
+                captured["sample_rate"] = sample_rate
+                captured["preferred"] = preferred
+
+        monkeypatch.setattr("local_flow.audio.capture.SounddeviceSource", FakeSource)
+
+        config = self._config(
+            tmp_path,
+            LOCAL_FLOW_MIC_PRIORITY="AirPods, USB",
+            LOCAL_FLOW_VAD_PRESET="whisper",
+            LOCAL_FLOW_MAX_UTTERANCE_MIN="5",
+        )
+        deps = _build_run_dependencies(config)
+
+        assert captured["preferred"] == ["AirPods", "USB"]
+        assert captured["sample_rate"] == config.sample_rate
+        assert deps.normalize_audio is True
+        assert deps.max_utterance_min == 5
+
+    def test_normal_preset_and_default_max_utterance(self, tmp_path, monkeypatch):
+        class FakeSource:
+            def __init__(self, sample_rate, device=None, preferred=None):
+                pass
+
+        monkeypatch.setattr("local_flow.audio.capture.SounddeviceSource", FakeSource)
+
+        config = self._config(tmp_path)
+        deps = _build_run_dependencies(config)
+
+        assert deps.normalize_audio is False
+        assert deps.max_utterance_min == 20

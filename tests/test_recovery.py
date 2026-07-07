@@ -4,7 +4,7 @@
 
 import pytest
 
-from local_flow.app import _handle_utterance, main
+from local_flow.app import RunDependencies, _handle_utterance, main
 from local_flow.asr.mock import MockTranscriber
 from local_flow.audio.recovery import PendingAudioStore
 from local_flow.history.store import HistoryStore
@@ -155,7 +155,9 @@ class TestRecoverCommand:
         import local_flow.app as app_module
 
         monkeypatch.setattr(
-            app_module, "_build_run_dependencies", lambda config: (pipeline, None, None, None)
+            app_module,
+            "_build_run_dependencies",
+            lambda config: RunDependencies(pipeline, None, None),
         )
 
         code = main(["recover"])
@@ -175,7 +177,9 @@ class TestRecoverCommand:
         import local_flow.app as app_module
 
         monkeypatch.setattr(
-            app_module, "_build_run_dependencies", lambda config: (pipeline, None, None, None)
+            app_module,
+            "_build_run_dependencies",
+            lambda config: RunDependencies(pipeline, None, None),
         )
 
         code = main(["recover"])
@@ -195,7 +199,9 @@ class TestRecoverCommand:
         import local_flow.app as app_module
 
         monkeypatch.setattr(
-            app_module, "_build_run_dependencies", lambda config: (pipeline, None, None, None)
+            app_module,
+            "_build_run_dependencies",
+            lambda config: RunDependencies(pipeline, None, None),
         )
 
         code = main(["recover"])

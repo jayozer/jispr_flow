@@ -100,6 +100,9 @@ environment > config file > defaults. Highlights:
 | ASR language | `LOCAL_FLOW_ASR_LANGUAGE` | `en` (or an ISO code, or `auto`) |
 | Tray languages | `LOCAL_FLOW_LANGUAGES` | *(empty; comma-separated codes)* |
 | VAD backend | `LOCAL_FLOW_VAD_BACKEND` | `energy` (or `webrtc`) |
+| VAD preset | `LOCAL_FLOW_VAD_PRESET` | `normal` (or `whisper`; see "Microphone priority & whisper mode") |
+| Mic priority | `LOCAL_FLOW_MIC_PRIORITY` | *(empty; comma-separated device-name substrings)* |
+| Max utterance length | `LOCAL_FLOW_MAX_UTTERANCE_MIN` | `20` (minutes; warns, does not truncate) |
 | Mode | `LOCAL_FLOW_MODE` | `push-to-talk` (or `hands-free`) |
 | Hotkey | `LOCAL_FLOW_HOTKEY` | fn (macOS) / f9 |
 | Hotkey hold threshold | `LOCAL_FLOW_HOTKEY_SPACE_HOLD_MS` | `250` |
@@ -234,6 +237,36 @@ nothing pending prints a friendly one-line message and exits `0`.
 Set `LOCAL_FLOW_AUDIO_RECOVERY=false` (or `audio_recovery = false` in
 `local-flow.toml`) to skip the autosave entirely — no extra disk write per
 utterance, at the cost of losing audio if something crashes mid-dictation.
+
+### Microphone priority & whisper mode
+
+`LOCAL_FLOW_MIC_PRIORITY` picks which input device `local-flow run`/`tray`
+use when you have more than one microphone: a comma-separated,
+priority-ordered list of case-insensitive name substrings (e.g.
+`"AirPods, USB"` prefers an AirPods mic, then a USB mic, over your laptop's
+built-in one). Priority is about *preference order*, not device-list order —
+the first substring in the list that matches any input device wins. Leave it
+empty (the default) to use the system's default input device.
+
+```bash
+uv run local-flow check   # lists input devices, marking the OS default and
+                           # whichever one LOCAL_FLOW_MIC_PRIORITY selects
+```
+
+This resolution happens once, at startup: it does not re-check or fail over
+mid-dictation if the chosen device disconnects while you're recording.
+
+`LOCAL_FLOW_VAD_PRESET=whisper` helps hands-free (VAD-segmented) dictation
+pick up quiet or whispered speech: it lowers the energy VAD's RMS threshold
+from 500 to 150 (unless you've set `LOCAL_FLOW_VAD_ENERGY_THRESHOLD`
+explicitly — note that an *explicit* value of exactly `500` is
+indistinguishable from "not set" and the preset still applies) and
+peak-normalizes each utterance's audio before it reaches the ASR model. The
+default, `normal`, leaves both alone.
+
+Utterances longer than `LOCAL_FLOW_MAX_UTTERANCE_MIN` minutes (default `20`)
+still process and insert normally, but also emit a one-line warning — a
+safety net for an accidentally stuck hands-free session or held hotkey.
 
 ### Teach it your words
 
@@ -552,6 +585,11 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     works with `local-flow check`/`local-flow run` without edits.
 20. Re-running `setup` against an existing config asks to overwrite; answering
     anything but `y` leaves the existing file untouched.
+21. `LOCAL_FLOW_MIC_PRIORITY="AirPods"` with AirPods connected → `local-flow
+    check`'s input-device listing marks the AirPods entry as selected.
+22. `LOCAL_FLOW_VAD_PRESET=whisper` with `--mode hands-free` → speaking at a
+    whisper still transcribes (compare against `vad_preset=normal`, where the
+    same whisper often goes undetected).
 
 ## Development
 

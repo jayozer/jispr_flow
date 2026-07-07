@@ -234,9 +234,11 @@ class TrayApp:
 
         self.config = config
         self.mode = config.mode
-        self.pipeline, self.source, self.vad, self.pending_store = _build_run_dependencies(
-            config
-        )
+        self._deps = _build_run_dependencies(config)
+        self.pipeline = self._deps.pipeline
+        self.source = self._deps.source
+        self.vad = self._deps.vad
+        self.pending_store = self._deps.pending_store
         self._languages = parse_languages(config.languages)
 
         self._running = False
@@ -297,7 +299,7 @@ class TrayApp:
                 self.mode,
                 self.reporter,
                 self._stop_event,
-                (self.pipeline, self.source, self.vad, self.pending_store),
+                self._deps,
             ),
             daemon=True,
         )

@@ -2,8 +2,9 @@
 
 import json
 import re
+import sys
 
-from local_flow.app import _build_router, main
+from local_flow.app import _build_router, _describe_input_devices, main
 from local_flow.config import Config
 from local_flow.demo import run_demo
 from local_flow.history.store import HistoryStore
@@ -86,6 +87,88 @@ class TestCheckCommand:
         assert code == 0
         out = capsys.readouterr().out
         assert "frontmost app : (context styles disabled)" in out
+
+
+class TestDescribeInputDevices:
+    """Pure formatter for `check`'s input-device listing -- no sounddevice
+    import needed to test it.
+    """
+
+    def _devices(self):
+        return [
+            {"name": "Built-in Microphone", "max_input_channels": 1},
+            {"name": "Built-in Speakers", "max_input_channels": 0},
+            {"name": "AirPods Pro", "max_input_channels": 1},
+        ]
+
+    def test_skips_non_input_devices(self):
+        lines = _describe_input_devices(self._devices(), None, None)
+        assert len(lines) == 2
+        assert all("Speakers" not in line for line in lines)
+
+    def test_marks_default_device(self):
+        lines = _describe_input_devices(self._devices(), default_index=0, chosen_index=None)
+        assert "[0]" in lines[0] and "default" in lines[0]
+        assert "default" not in lines[1]
+
+    def test_marks_mic_priority_selection(self):
+        lines = _describe_input_devices(self._devices(), default_index=None, chosen_index=2)
+        assert "selected by mic_priority" in lines[1]
+
+    def test_default_and_selected_can_both_be_marked_on_the_same_device(self):
+        lines = _describe_input_devices(self._devices(), default_index=0, chosen_index=0)
+        assert "default" in lines[0]
+        assert "selected by mic_priority" in lines[0]
+
+    def test_no_input_devices_prints_friendly_placeholder(self):
+        lines = _describe_input_devices([], None, None)
+        assert lines == ["    (no input devices found)"]
+
+
+class TestCheckCommandInputDevices:
+    """`check`'s "input devices" section, both with and without a real
+    sounddevice backend installed.
+    """
+
+    class _FakeDefault:
+        device = (0, 1)
+
+    class FakeSounddevice:
+        def query_devices(self):
+            return [
+                {"name": "Built-in Microphone", "max_input_channels": 1},
+                {"name": "AirPods Pro", "max_input_channels": 1},
+            ]
+
+    def test_lists_devices_with_default_and_priority_markers(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_BASE_URL", "http://127.0.0.1:59999/v1")
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_TIMEOUT", "1")
+        monkeypatch.setenv("LOCAL_FLOW_MIC_PRIORITY", "AirPods")
+
+        fake = self.FakeSounddevice()
+        fake.default = self._FakeDefault()
+        monkeypatch.setitem(sys.modules, "sounddevice", fake)
+
+        code = main(["check"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "input devices :" in out
+        assert "[0] Built-in Microphone [default]" in out
+        assert "[1] AirPods Pro [selected by mic_priority]" in out
+
+    def test_sounddevice_missing_is_handled_gracefully(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_BASE_URL", "http://127.0.0.1:59999/v1")
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_TIMEOUT", "1")
+        monkeypatch.setitem(sys.modules, "sounddevice", None)  # simulates ImportError on import
+
+        code = main(["check"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "sounddevice unavailable" in out
 
 
 class TestBuildRouter:

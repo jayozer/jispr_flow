@@ -411,6 +411,7 @@ class TestStartLoopGuardsAgainstDoubleStart:
         app.mode = mode
         app.reporter = None
         app.pipeline = app.source = app.vad = app.pending_store = None
+        app._deps = None
         app._running = False
         app._stop_event = threading.Event()
         app._loop_thread = None

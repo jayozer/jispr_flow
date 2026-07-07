@@ -32,6 +32,7 @@ class DictationResult:
     used_llm: bool = False
     warnings: list[str] = field(default_factory=list)
     inserted: bool = False
+    duration_s: float = 0.0
 
 
 class DictationPipeline:
@@ -101,6 +102,7 @@ class DictationPipeline:
             actions=actions,
             used_llm=polish.used_llm,
             warnings=list(polish.warnings),
+            duration_s=duration_s,
         )
         for term in dictionary_additions:
             if self.store.add_dictionary_term(term):

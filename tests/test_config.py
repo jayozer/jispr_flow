@@ -158,3 +158,53 @@ class TestStreamingField:
         assert "off" in message
         assert "sentence" in message
         assert "live-preview" in message
+
+
+class TestMicPriorityField:
+    """`mic_priority`: see local_flow/app.py `parse_mic_priority`/`_build_run_dependencies`."""
+
+    def test_default_is_empty(self):
+        assert load_config(env={}).mic_priority == ""
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_MIC_PRIORITY": "AirPods, USB"})
+        assert config.mic_priority == "AirPods, USB"
+
+    def test_file_override(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text('mic_priority = "AirPods"\n', encoding="utf-8")
+        config = load_config(config_file=config_file, env={})
+        assert config.mic_priority == "AirPods"
+
+
+class TestVadPresetField:
+    """`vad_preset`: see local_flow/app.py `_build_vad`."""
+
+    def test_default_is_normal(self):
+        assert load_config(env={}).vad_preset == "normal"
+
+    def test_env_override_to_whisper(self):
+        config = load_config(env={"LOCAL_FLOW_VAD_PRESET": "whisper"})
+        assert config.vad_preset == "whisper"
+
+    def test_invalid_value_raises_config_error_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="vad_preset") as excinfo:
+            load_config(env={"LOCAL_FLOW_VAD_PRESET": "loud"})
+        message = str(excinfo.value)
+        assert "normal" in message
+        assert "whisper" in message
+
+
+class TestMaxUtteranceMinField:
+    """`max_utterance_min`: see local_flow/app.py `_handle_utterance`."""
+
+    def test_default_is_twenty(self):
+        assert load_config(env={}).max_utterance_min == 20
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_MAX_UTTERANCE_MIN": "5"})
+        assert config.max_utterance_min == 5
+
+    def test_bad_numeric_value_raises_config_error(self):
+        with pytest.raises(ConfigError, match="max_utterance_min"):
+            load_config(env={"LOCAL_FLOW_MAX_UTTERANCE_MIN": "soon"})

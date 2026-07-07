@@ -19,8 +19,9 @@ import argparse
 import sys
 import threading
 from collections.abc import Iterable, Iterator
+from dataclasses import fields
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from local_flow import __version__
 from local_flow.asr.streaming import TranscriberStream
@@ -31,9 +32,37 @@ from local_flow.status import ConsoleReporter, StatusReporter
 
 if TYPE_CHECKING:
     from local_flow.asr.base import Transcriber
+    from local_flow.audio.capture import AudioSource
     from local_flow.audio.recovery import PendingAudioStore
+    from local_flow.audio.vad import VoiceActivityDetector
     from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
+
+# The energy VAD's dataclass default (see `Config.vad_energy_threshold`);
+# `_build_vad` uses this to detect whether the user left the threshold at
+# its default (in which case `vad_preset="whisper"` may lower it).
+_DEFAULT_VAD_ENERGY_THRESHOLD = next(
+    f.default for f in fields(Config) if f.name == "vad_energy_threshold"
+)
+_WHISPER_PRESET_ENERGY_THRESHOLD = 150.0
+
+
+def parse_mic_priority(raw: str) -> list[str]:
+    """Parse ``config.mic_priority`` (e.g. ``"AirPods, USB"``) into a
+    priority-ordered list of device-name substrings, mirroring
+    ``local_flow.tray.app.parse_languages``: entries are stripped, blanks
+    dropped, and duplicates removed (case-insensitively, since matching
+    itself is case-insensitive) while preserving first-seen order.
+    """
+    seen: set[str] = set()
+    names: list[str] = []
+    for piece in raw.split(","):
+        name = piece.strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        names.append(name)
+    return names
 
 
 def _fail(exc: LocalFlowError) -> int:
@@ -75,13 +104,26 @@ def _build_transcriber(config: Config):
 
 
 def _build_vad(config: Config):
+    """Build the configured VAD backend.
+
+    ``vad_preset="whisper"`` lowers the energy VAD's RMS threshold from the
+    dataclass default (500.0) to 150.0 for quieter/whispered speech --  but
+    only when ``vad_energy_threshold`` still equals that default, i.e. the
+    user hasn't set it explicitly. Limitation (documented, not fixed): an
+    *explicit* ``vad_energy_threshold=500.0`` is indistinguishable from
+    "unset" and is treated as unset, so the whisper preset would still apply.
+    An explicitly-set non-default threshold always wins over the preset.
+    """
     from local_flow.audio.vad import EnergyVAD, MockVAD, WebRtcVAD
 
     if config.vad_backend == "webrtc":
         return WebRtcVAD(config.vad_aggressiveness)
     if config.vad_backend == "mock":
         return MockVAD([])
-    return EnergyVAD(config.vad_energy_threshold)
+    threshold = config.vad_energy_threshold
+    if config.vad_preset == "whisper" and threshold == _DEFAULT_VAD_ENERGY_THRESHOLD:
+        threshold = _WHISPER_PRESET_ENERGY_THRESHOLD
+    return EnergyVAD(threshold)
 
 
 def _insertion_sinks(method: str) -> list | None:
@@ -249,6 +291,30 @@ def _cmd_command(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _describe_input_devices(
+    devices: list[dict], default_index: int | None, chosen_index: int | None
+) -> list[str]:
+    """Format one ``check`` line per input-capable device, marking the OS
+    default and the one ``mic_priority`` would select (independently -- they
+    need not be the same device). Pure (no sounddevice import), so it is
+    directly unit-testable with fake device dicts.
+    """
+    lines = []
+    for index, device in enumerate(devices):
+        if device.get("max_input_channels", 0) <= 0:
+            continue
+        markers = []
+        if index == default_index:
+            markers.append("default")
+        if index == chosen_index:
+            markers.append("selected by mic_priority")
+        suffix = f" [{', '.join(markers)}]" if markers else ""
+        lines.append(f"    [{index}] {device.get('name', '?')}{suffix}")
+    if not lines:
+        lines.append("    (no input devices found)")
+    return lines
+
+
 def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"local-flow {__version__} environment check")
     print(f"  data dir      : {config.data_dir}")
@@ -274,6 +340,24 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
         print(f"  LM Studio     : UNAVAILABLE - {exc.message}")
         if exc.hint:
             print(f"                  hint: {exc.hint}")
+
+    print("  input devices :")
+    try:
+        import sounddevice
+
+        from local_flow.audio.capture import pick_input_device
+
+        devices = sounddevice.query_devices()
+        try:
+            default_index = sounddevice.default.device[0]
+        except Exception:
+            default_index = None
+        preferred = parse_mic_priority(config.mic_priority)
+        chosen_index = pick_input_device(devices, preferred) if preferred else None
+        for line in _describe_input_devices(devices, default_index, chosen_index):
+            print(line)
+    except (ImportError, OSError) as exc:
+        print(f"    sounddevice unavailable: {exc}")
 
     for label, module, extra in (
         ("faster-whisper", "faster_whisper", "asr"),
@@ -431,12 +515,33 @@ def _cmd_learn(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+class RunDependencies(NamedTuple):
+    """Everything ``_run_loop`` needs to run one dictation session.
+
+    Built once by ``_build_run_dependencies`` from ``Config``; ``TrayApp``
+    keeps the same instance across Start/Stop cycles, and tests construct one
+    directly and positionally (``RunDependencies(pipeline, source, vad)``)
+    since ``pending_store``/``normalize_audio``/``max_utterance_min`` all
+    default -- replacing the old ad hoc 3-or-4-tuple ``dependencies``
+    parameter that ``_run_loop`` used to shape-sniff with ``*rest``.
+    """
+
+    pipeline: DictationPipeline
+    source: AudioSource
+    vad: VoiceActivityDetector
+    pending_store: PendingAudioStore | None = None
+    normalize_audio: bool = False
+    max_utterance_min: int = 20
+
+
 def _handle_utterance(
     pipeline: DictationPipeline,
     reporter: StatusReporter,
     pcm: bytes,
     sample_rate: int,
     pending_store: PendingAudioStore | None = None,
+    normalize_audio: bool = False,
+    max_utterance_min: int = 20,
 ) -> None:
     """Run one captured utterance's PCM through the pipeline.
 
@@ -452,8 +557,23 @@ def _handle_utterance(
     normally -- if it raises (caught below as ``error``) or the process
     dies first, the saved WAV is left behind for ``local-flow recover``.
     ``pending_store=None`` is byte-identical to before this existed.
+
+    When ``normalize_audio`` is set (``vad_preset="whisper"``; see
+    ``_build_vad``/``_build_run_dependencies``), the PCM is peak-normalized
+    *before* both the pending-store save and ``pipeline.process_audio`` --
+    so a crash-recovered whisper-mode WAV is already boosted too, and ASR
+    always sees the same bytes that were persisted.
+
+    After processing, if the utterance's duration exceeds
+    ``max_utterance_min`` minutes, an extra ``"warning"`` notification fires
+    (informational only -- it does not truncate or otherwise change what was
+    already processed and inserted).
     """
     reporter.notify("processing")
+    if normalize_audio:
+        from local_flow.audio.gain import normalize_peak
+
+        pcm = normalize_peak(pcm)
     pending_path = pending_store.save(pcm, sample_rate) if pending_store is not None else None
     try:
         result = pipeline.process_audio(pcm, sample_rate)
@@ -461,6 +581,12 @@ def _handle_utterance(
             reporter.notify("warning", warning)
         if result.final:
             reporter.notify("inserted", repr(result.final))
+        if result.duration_s > max_utterance_min * 60:
+            minutes = result.duration_s / 60
+            reporter.notify(
+                "warning",
+                f"utterance was {minutes:.0f} minutes long; consider shorter dictations",
+            )
         if pending_path is not None:
             pending_store.delete(pending_path)
     except LocalFlowError as exc:
@@ -486,7 +612,7 @@ def _build_pending_store(config: Config):
     return PendingAudioStore(config.data_dir)
 
 
-def _build_run_dependencies(config: Config):
+def _build_run_dependencies(config: Config) -> RunDependencies:
     """Build the pipeline + audio source + VAD + pending-audio store that
     ``_run_loop`` needs.
 
@@ -496,19 +622,27 @@ def _build_run_dependencies(config: Config):
     running on its worker thread (rather than each rebuilding its own
     pipeline). ``_cmd_run`` still goes through ``_run_loop`` with
     ``dependencies=None``, so this call sequence (and its exception
-    behavior) is unchanged for the CLI path. Returns a 4-tuple
-    ``(pipeline, source, vad, pending_store)``; ``_run_loop`` also accepts a
-    caller-supplied 3-tuple (no pending store) for backward compatibility.
+    behavior) is unchanged for the CLI path.
     """
     from local_flow.audio.capture import SounddeviceSource
 
     chat_client = _build_chat_client(config)
     sink = _build_sink(config)
     pipeline = _build_pipeline(config, chat_client, sink)
-    source = SounddeviceSource(sample_rate=config.sample_rate)
+    source = SounddeviceSource(
+        sample_rate=config.sample_rate,
+        preferred=parse_mic_priority(config.mic_priority),
+    )
     vad = _build_vad(config)
     pending_store = _build_pending_store(config)
-    return pipeline, source, vad, pending_store
+    return RunDependencies(
+        pipeline=pipeline,
+        source=source,
+        vad=vad,
+        pending_store=pending_store,
+        normalize_audio=config.vad_preset == "whisper",
+        max_utterance_min=config.max_utterance_min,
+    )
 
 
 def _interruptible(
@@ -574,22 +708,15 @@ def _run_loop(
     mode: str,
     reporter: StatusReporter,
     stop_event: threading.Event | None = None,
-    dependencies: tuple | None = None,
+    dependencies: RunDependencies | None = None,
 ) -> int:
     from local_flow.audio.vad import segment_stream
 
     try:
-        if dependencies is not None:
-            # Accept both the 3-tuple `(pipeline, source, vad)` predating
-            # crash-safe audio recovery and the 4-tuple `_build_run_dependencies`
-            # now returns; a caller-supplied 3-tuple simply gets no pending
-            # store (same as `audio_recovery=false`).
-            pipeline, source, vad, *rest = dependencies
-            pending_store = rest[0] if rest else None
-        else:
-            pipeline, source, vad, pending_store = _build_run_dependencies(config)
+        deps = dependencies if dependencies is not None else _build_run_dependencies(config)
     except LocalFlowError as exc:
         return _fail(exc)
+    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min = deps
 
     try:
         if mode == "hands-free":
@@ -636,7 +763,13 @@ def _run_loop(
                     # silent for "recording", so CLI output is unaffected.
                     reporter.notify("recording")
                 _handle_utterance(
-                    pipeline, reporter, segment, config.sample_rate, pending_store
+                    pipeline,
+                    reporter,
+                    segment,
+                    config.sample_rate,
+                    pending_store,
+                    normalize_audio,
+                    max_utterance_min,
                 )
                 if preview_stream is not None:
                     # `segment_stream` only reveals an utterance boundary by
@@ -686,7 +819,15 @@ def _run_loop(
                     thread.join(timeout=5)
                 pcm = captured.pop("pcm", b"")
                 if pcm:
-                    _handle_utterance(pipeline, reporter, pcm, config.sample_rate, pending_store)
+                    _handle_utterance(
+                        pipeline,
+                        reporter,
+                        pcm,
+                        config.sample_rate,
+                        pending_store,
+                        normalize_audio,
+                        max_utterance_min,
+                    )
 
             def cancel() -> None:
                 stop.set()
@@ -733,7 +874,7 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
         return 0
 
     try:
-        pipeline, _source, _vad, _pending_store = _build_run_dependencies(config)
+        pipeline = _build_run_dependencies(config).pipeline
     except LocalFlowError as exc:
         return _fail(exc)
 
