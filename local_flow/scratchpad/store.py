@@ -160,3 +160,22 @@ class NoteStore:
         if not path.is_file():
             path.touch()
         return path
+
+    def write(self, text: str, name: str | None = None) -> Path:
+        """Overwrite ``name`` (or the active note) with ``text`` verbatim --
+        the "save the whole buffer" counterpart to :meth:`append`'s "add a
+        paragraph" semantics.
+
+        Used by :class:`~local_flow.scratchpad.window.ScratchpadWindow`'s
+        debounced autosave: once a note is open for hand-editing, the Text
+        widget's full buffer is the source of truth, not just appended
+        dictation, so a plain overwrite (no blank-line separator logic) is
+        the right operation. Creates the notes directory lazily; validates
+        ``name`` first, same as every other method here.
+        """
+        target = name if name is not None else self.active_note()
+        _validate_name(target)
+        self.notes_dir.mkdir(parents=True, exist_ok=True)
+        path = self._note_path(target)
+        path.write_text(text, encoding="utf-8")
+        return path

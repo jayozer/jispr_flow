@@ -70,6 +70,7 @@ class DictationPipeline:
         vad: VoiceActivityDetector | None = None,
         frame_ms: int = 30,
         silence_ms: int = 600,
+        sink_override: TextSink | None = None,
     ) -> DictationResult:
         """Transcribe a PCM buffer (VAD-segmented when a VAD is given)."""
         if vad is not None:
@@ -81,10 +82,26 @@ class DictationPipeline:
         texts = [self.transcriber.transcribe(seg, sample_rate) for seg in segments]
         rough = " ".join(t.strip() for t in texts if t.strip())
         duration_s = sum(len(seg) for seg in segments) / (2 * sample_rate) if sample_rate else 0.0
-        return self.process_transcript(rough, duration_s=duration_s)
+        return self.process_transcript(rough, duration_s=duration_s, sink_override=sink_override)
 
-    def process_transcript(self, rough: str, duration_s: float = 0.0) -> DictationResult:
-        """Run the text half of the pipeline and insert the result."""
+    def process_transcript(
+        self,
+        rough: str,
+        duration_s: float = 0.0,
+        sink_override: TextSink | None = None,
+    ) -> DictationResult:
+        """Run the text half of the pipeline and insert the result.
+
+        ``sink_override``, when given, wins outright over BOTH the router's
+        per-app sink override (``ctx.sink``, see ``ContextRouter``) and this
+        pipeline's own configured ``self.sink`` -- this is what lets the
+        scratchpad dictate-to-pad hotkey (see ``local_flow.app._run_loop``)
+        force every insertion into the active note regardless of which app is
+        frontmost. ``ctx`` (style, app_id for history) is still resolved and
+        applied normally either way -- only the SINK portion of routing is
+        overridden. ``None`` (the default) is byte-identical to before this
+        parameter existed.
+        """
         ctx = self.router.resolve() if self.router is not None else ResolvedContext()
 
         polish = self.polisher.polish(rough, style=ctx.style)
@@ -143,7 +160,7 @@ class DictationPipeline:
                 # still gets inserted, with a warning explaining why.
                 result.warnings.append(f"auto-transform skipped: {exc.message}")
 
-        sink = ctx.sink or self.sink
+        sink = sink_override if sink_override is not None else (ctx.sink or self.sink)
         if text or actions:
             if text:
                 sink.insert(text)

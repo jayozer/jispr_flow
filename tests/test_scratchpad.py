@@ -1,4 +1,6 @@
-"""NoteStore, ScratchpadSink, and the `local-flow pad` CLI."""
+"""NoteStore, ScratchpadSink, ScratchpadWindow, and the `local-flow pad` CLI."""
+
+import sys
 
 import pytest
 
@@ -6,6 +8,7 @@ from local_flow.app import main
 from local_flow.errors import LocalFlowError
 from local_flow.scratchpad.sink import ScratchpadSink
 from local_flow.scratchpad.store import NoteStore
+from local_flow.scratchpad.window import ScratchpadWindow
 
 
 class TestNoteStoreBasics:
@@ -109,6 +112,47 @@ class TestCreate:
         store = NoteStore(tmp_path)
         with pytest.raises(LocalFlowError):
             store.create("a/b")
+
+
+class TestWrite:
+    """`NoteStore.write` (T2): the whole-buffer overwrite `ScratchpadWindow`'s
+    autosave uses -- distinct from `append`'s "add a paragraph" semantics.
+    """
+
+    def test_write_creates_dirs_and_file_lazily(self, tmp_path):
+        store = NoteStore(tmp_path)
+        path = store.write("hello", name="work")
+        assert path == tmp_path / "notes" / "work.md"
+        assert path.read_text() == "hello"
+
+    def test_write_overwrites_existing_content_verbatim_no_blank_line(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.append("first", name="work")
+        store.write("replaced entirely", name="work")
+        assert store.read("work") == "replaced entirely"
+
+    def test_write_defaults_to_active_note(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.set_active("work")
+        store.write("hi")
+        assert store.read("work") == "hi"
+        assert store.read("inbox") == ""
+
+    def test_write_validates_name(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.write("text", name="../evil")
+
+    def test_write_returns_path(self, tmp_path):
+        store = NoteStore(tmp_path)
+        path = store.write("x", name="scratch")
+        assert path == tmp_path / "notes" / "scratch.md"
+
+    def test_write_empty_string_clears_the_note(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.append("something", name="work")
+        store.write("", name="work")
+        assert store.read("work") == ""
 
 
 class TestListNotes:
@@ -387,3 +431,49 @@ class TestPadCli:
 
         assert code == 0
         assert (notes_dir / "inbox.md").read_text(encoding="utf-8") == "still works"
+
+    def test_with_dictation_without_window_fails_helpfully(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        code = main(["pad", "--with-dictation"])
+        assert code == 1
+
+    def test_window_flag_is_mutually_exclusive_with_others(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        with pytest.raises(SystemExit):
+            main(["pad", "--window", "--list"])
+
+    def test_window_missing_tkinter_fails_with_hint(self, tmp_path, capsys, monkeypatch):
+        # Mirrors TrayApp's pystray-missing test: simulate tkinter being
+        # unavailable by making `import tkinter` raise ImportError.
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setitem(sys.modules, "tkinter", None)
+
+        code = main(["pad", "--window"])
+
+        assert code == 1
+        captured = capsys.readouterr()
+        assert "tkinter unavailable" in captured.err
+        assert "pad --show" in captured.err
+        assert "hint" in captured.err
+
+
+class TestScratchpadWindowConstruction:
+    """`ScratchpadWindow` (T2): tkinter is imported lazily, only inside
+    `__init__`, so a missing/broken tkinter raises `LocalFlowError` with a
+    fix-it hint -- the same adapter-boundary discipline as every other
+    optional backend (pystray/Pillow, pynput, ...). GUI behavior itself
+    (does the window actually render, stay on top, live-refresh) is
+    manual-verify only; this is the one headless-testable path.
+    """
+
+    def test_missing_tkinter_raises_local_flow_error_with_hint(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(sys.modules, "tkinter", None)  # simulates ImportError
+        store = NoteStore(tmp_path)
+
+        with pytest.raises(LocalFlowError) as exc_info:
+            ScratchpadWindow(store)
+
+        assert "tkinter unavailable" in exc_info.value.message
+        assert "pad --show" in exc_info.value.message
+        assert exc_info.value.hint
+        assert "python3-tk" in exc_info.value.hint or "python-tk" in exc_info.value.hint

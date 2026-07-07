@@ -93,3 +93,10 @@ command_hotkey = ""
 # cleanup_level="none" or with no LM Studio client configured; an unknown
 # name fails fast at startup.
 auto_transform = ""
+
+# Scratchpad dictate-to-pad hotkey (see README "Dictate to scratchpad"): tap
+# this key to toggle routing live dictation into the scratchpad's active
+# note instead of the configured insertion sink; tap again to resume normal
+# insertion. Empty (default) disables it entirely. Must be distinct from
+# hotkey, transform_hotkey, and command_hotkey.
+scratchpad_hotkey = ""

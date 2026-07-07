@@ -10,7 +10,7 @@ Subcommands:
 - ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
-- ``pad``     markdown scratchpad notes: list/show/append/switch/create
+- ``pad``     markdown scratchpad notes: list/show/append/switch/create/window
 - ``learn``   mine history for candidate dictionary terms, optionally add them
 - ``stats``   local-only personal insights: words, streaks, top apps
 - ``tray``    menu-bar app with live states + style/language quick-switch
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
     from local_flow.audio.recovery import PendingAudioStore
     from local_flow.audio.vad import VoiceActivityDetector
     from local_flow.history.store import HistoryStore
+    from local_flow.insertion.base import TextSink
     from local_flow.pipeline import DictationPipeline
     from local_flow.transforms.selection import SelectionCapture
 
@@ -703,16 +704,31 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
-def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
-    """``local-flow pad``: headless CRUD over local markdown scratchpad notes.
+_PAD_DICTATION_JOIN_TIMEOUT = 5.0
 
-    Exactly one of ``--list``/``--show``/``--append``/``--use``/``--new`` is
-    accepted at a time (enforced by an argparse mutually exclusive group);
-    with none given, behaves like a bare ``--show`` (prints the active
-    note) -- the friendliest default for `local-flow pad` on its own.
-    ``--note`` only makes sense alongside ``--append`` (it names a note
-    other than the active one to append to); given without ``--append`` it
-    fails with a hint rather than silently doing nothing.
+
+def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
+    """``local-flow pad``: headless CRUD over local markdown scratchpad notes,
+    plus ``--window`` (the floating always-on-top editor).
+
+    Exactly one of ``--list``/``--show``/``--append``/``--use``/``--new``/
+    ``--window`` is accepted at a time (enforced by an argparse mutually
+    exclusive group); with none given, behaves like a bare ``--show``
+    (prints the active note) -- the friendliest default for `local-flow pad`
+    on its own. ``--note`` only makes sense alongside ``--append`` (it names
+    a note other than the active one to append to); given without
+    ``--append`` it fails with a hint rather than silently doing nothing.
+    Likewise ``--with-dictation`` only makes sense alongside ``--window``.
+
+    ``--window`` runs :class:`~local_flow.scratchpad.window.ScratchpadWindow`
+    as this process's own main program -- blocking on its Tk event loop,
+    exactly like ``local-flow tray``'s pystray icon -- rather than as a
+    thread inside `local-flow run` (see the module's docstring for why: Tk
+    needs a single main thread). ``--with-dictation`` additionally starts the
+    normal dictation run-loop on a worker thread (its own stop event +
+    `ConsoleReporter`) for the lifetime of the window, so one process can
+    both show the pad and dictate into it -- the loop is stopped and joined
+    (best-effort) once the window closes.
     """
     store = _build_note_store(config)
 
@@ -722,6 +738,35 @@ def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
             hint="Use `local-flow pad --append TEXT --note NAME`, or drop --note "
             "to target the active note.",
         )
+
+    if args.with_dictation and not args.window:
+        raise LocalFlowError(
+            "--with-dictation only makes sense together with --window.",
+            hint="Use `local-flow pad --window --with-dictation`.",
+        )
+
+    if args.window:
+        from local_flow.scratchpad.window import ScratchpadWindow
+
+        window = ScratchpadWindow(store)
+        stop_event: threading.Event | None = None
+        loop_thread: threading.Thread | None = None
+        if args.with_dictation:
+            stop_event = threading.Event()
+            loop_thread = threading.Thread(
+                target=_run_loop,
+                args=(config, config.mode, ConsoleReporter(), stop_event),
+                daemon=True,
+            )
+            loop_thread.start()
+        try:
+            window.run()
+        finally:
+            if stop_event is not None:
+                stop_event.set()
+            if loop_thread is not None:
+                loop_thread.join(timeout=_PAD_DICTATION_JOIN_TIMEOUT)
+        return 0
 
     if args.list:
         notes = store.list_notes()
@@ -943,9 +988,18 @@ class RunDependencies(NamedTuple):
     Built once by ``_build_run_dependencies`` from ``Config``; ``TrayApp``
     keeps the same instance across Start/Stop cycles, and tests construct one
     directly and positionally (``RunDependencies(pipeline, source, vad)``)
-    since ``pending_store``/``normalize_audio``/``max_utterance_min`` all
-    default -- replacing the old ad hoc 3-or-4-tuple ``dependencies``
-    parameter that ``_run_loop`` used to shape-sniff with ``*rest``.
+    since ``pending_store``/``normalize_audio``/``max_utterance_min``/
+    ``scratchpad_sink`` all default -- replacing the old ad hoc 3-or-4-tuple
+    ``dependencies`` parameter that ``_run_loop`` used to shape-sniff with
+    ``*rest``.
+
+    ``scratchpad_sink`` (E13): the :class:`~local_flow.scratchpad.sink.ScratchpadSink`
+    that the scratchpad dictate-to-pad hotkey (``config.scratchpad_hotkey``)
+    toggles routing into -- see ``_run_loop``'s ``pad_active`` holder and
+    ``_handle_utterance``'s ``sink_override``. ``None`` (e.g. in most tests,
+    which construct a ``RunDependencies`` directly without one) simply means
+    the hotkey has nothing to route to; ``_run_loop`` warns and disables the
+    hotkey rather than silently no-op'ing (see its scratchpad-hotkey block).
     """
 
     pipeline: DictationPipeline
@@ -954,6 +1008,7 @@ class RunDependencies(NamedTuple):
     pending_store: PendingAudioStore | None = None
     normalize_audio: bool = False
     max_utterance_min: int = 20
+    scratchpad_sink: TextSink | None = None
 
 
 def _handle_utterance(
@@ -964,6 +1019,7 @@ def _handle_utterance(
     pending_store: PendingAudioStore | None = None,
     normalize_audio: bool = False,
     max_utterance_min: int = 20,
+    sink_override: TextSink | None = None,
 ) -> None:
     """Run one captured utterance's PCM through the pipeline.
 
@@ -986,6 +1042,16 @@ def _handle_utterance(
     so a crash-recovered whisper-mode WAV is already boosted too, and ASR
     always sees the same bytes that were persisted.
 
+    ``sink_override`` (E13 scratchpad): resolved by the *caller* (``_run_loop``,
+    from its ``pad_active`` toggle holder) rather than threaded through as a
+    boolean flag here, so this function stays a plain, directly-testable
+    "run PCM through a pipeline" call -- it doesn't need to know anything
+    about hotkeys or toggles, just "here is the sink to force, if any". Only
+    passed on to ``pipeline.process_audio`` when not ``None``, so existing
+    callers/test doubles whose ``process_audio(pcm, sample_rate)`` doesn't
+    accept the keyword are unaffected -- ``None`` (the default) is
+    byte-identical to before this parameter existed.
+
     After processing, if the utterance's duration exceeds
     ``max_utterance_min`` minutes, an extra ``"warning"`` notification fires
     (informational only -- it does not truncate or otherwise change what was
@@ -998,7 +1064,8 @@ def _handle_utterance(
         pcm = normalize_peak(pcm)
     pending_path = pending_store.save(pcm, sample_rate) if pending_store is not None else None
     try:
-        result = pipeline.process_audio(pcm, sample_rate)
+        process_kwargs = {"sink_override": sink_override} if sink_override is not None else {}
+        result = pipeline.process_audio(pcm, sample_rate, **process_kwargs)
         for warning in result.warnings:
             reporter.notify("warning", warning)
         if result.final:
@@ -1118,8 +1185,16 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     pipeline). ``_cmd_run`` still goes through ``_run_loop`` with
     ``dependencies=None``, so this call sequence (and its exception
     behavior) is unchanged for the CLI path.
+
+    ``scratchpad_sink`` is always built (a ``NoteStore``/``ScratchpadSink``
+    pair costs nothing until something is actually appended -- no file is
+    created here) regardless of whether ``config.scratchpad_hotkey`` is set,
+    so the hotkey can be toggled on/off freely without rebuilding
+    dependencies; ``_run_loop`` only wires the hotkey listener itself when
+    ``scratchpad_hotkey`` is non-empty.
     """
     from local_flow.audio.capture import SounddeviceSource
+    from local_flow.scratchpad.sink import ScratchpadSink
 
     chat_client = _build_chat_client(config)
     sink = _build_sink(config)
@@ -1130,6 +1205,7 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     )
     vad = _build_vad(config)
     pending_store = _build_pending_store(config)
+    scratchpad_sink = ScratchpadSink(_build_note_store(config))
     return RunDependencies(
         pipeline=pipeline,
         source=source,
@@ -1137,6 +1213,7 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
         pending_store=pending_store,
         normalize_audio=config.vad_preset == "whisper",
         max_utterance_min=config.max_utterance_min,
+        scratchpad_sink=scratchpad_sink,
     )
 
 
@@ -1236,6 +1313,25 @@ def _run_transform_listener(transform_listener, on_tap: Callable[[], None]) -> N
             print(f"hint : {exc.hint}", file=sys.stderr)
 
 
+def _run_scratchpad_listener(pad_listener, on_tap: Callable[[], None]) -> None:
+    """Target for the scratchpad dictate-to-pad hotkey's daemon thread (see
+    ``_run_loop``).
+
+    Same visible-failure wrapper as ``_run_mouse_listener``/
+    ``_run_transform_listener``/``_run_command_hotkey_listener``: an uncaught
+    exception on a daemon thread is silently swallowed by Python -- no
+    traceback, no process exit -- so a startup failure (e.g. missing
+    Accessibility/Input Monitoring permission) is caught here and printed in
+    ``_fail``'s format instead of vanishing.
+    """
+    try:
+        pad_listener.run(on_tap)
+    except LocalFlowError as exc:
+        print(f"error: scratchpad hotkey stopped: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+
+
 def _run_command_hotkey_listener(
     command_listener,
     on_press: Callable[[], None],
@@ -1292,7 +1388,18 @@ def _run_loop(
         deps = dependencies if dependencies is not None else _build_run_dependencies(config)
     except LocalFlowError as exc:
         return _fail(exc)
-    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min = deps
+    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink = (
+        deps
+    )
+    # Toggled by the scratchpad dictate-to-pad hotkey (push-to-talk mode
+    # only, wired below alongside transform_hotkey/command_hotkey); a boxed
+    # list (not a bare bool) so the hotkey's callback closure can flip it in
+    # place. Read at both `_handle_utterance` call sites (hands-free and
+    # push-to-talk) so this holder -- not a parameter threaded through every
+    # call -- is the single source of truth for "is the pad active right
+    # now". Always `[False]` when the hotkey is unset (the default), so
+    # `sink_override` is always `None` below and behavior is unchanged.
+    pad_active = [False]
 
     try:
         if mode == "hands-free":
@@ -1346,6 +1453,7 @@ def _run_loop(
                     pending_store,
                     normalize_audio,
                     max_utterance_min,
+                    scratchpad_sink if pad_active[0] else None,
                 )
                 if preview_stream is not None:
                     # `segment_stream` only reveals an utterance boundary by
@@ -1467,6 +1575,7 @@ def _run_loop(
                         pending_store,
                         normalize_audio,
                         max_utterance_min,
+                        scratchpad_sink if pad_active[0] else None,
                     )
 
             def cancel() -> None:
@@ -1582,6 +1691,41 @@ def _run_loop(
                     threading.Thread(
                         target=_run_transform_listener,
                         args=(transform_listener, dispatcher.wrap(_transform_tap)),
+                        daemon=True,
+                    ).start()
+
+            if config.scratchpad_hotkey:
+                # `scratchpad_sink` is always built by `_build_run_dependencies`
+                # (see its docstring), so this only fires for a hand-built
+                # `RunDependencies` (as in some tests) that sets the hotkey
+                # without also providing a sink -- same "warn and disable
+                # just this one feature" precedent as an unknown
+                # `transform_default` above, rather than silently no-op'ing
+                # every tap.
+                if scratchpad_sink is None:
+                    reporter.notify(
+                        "warning",
+                        "scratchpad_hotkey is set but no scratchpad sink was "
+                        "built; scratchpad hotkey disabled",
+                    )
+                else:
+
+                    def _toggle_pad(sink=scratchpad_sink) -> None:
+                        pad_active[0] = not pad_active[0]
+                        if pad_active[0]:
+                            note = sink.store.active_note()
+                            reporter.notify(
+                                "warning", f"scratchpad on: dictating to {note!r}"
+                            )
+                        else:
+                            reporter.notify(
+                                "warning", "scratchpad off: dictating normally"
+                            )
+
+                    pad_listener = TapListener(config.scratchpad_hotkey)
+                    threading.Thread(
+                        target=_run_scratchpad_listener,
+                        args=(pad_listener, dispatcher.wrap(_toggle_pad)),
                         daemon=True,
                     ).start()
 
@@ -1872,7 +2016,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     pad_p = sub.add_parser(
-        "pad", help="markdown scratchpad notes: list/show/append/switch/create"
+        "pad",
+        help="markdown scratchpad notes: list/show/append/switch/create/window",
     )
     pad_group = pad_p.add_mutually_exclusive_group()
     pad_group.add_argument(
@@ -1897,8 +2042,20 @@ def main(argv: list[str] | None = None) -> int:
     pad_group.add_argument(
         "--new", metavar="NAME", help="create an empty note (no-op if it already exists)"
     )
+    pad_group.add_argument(
+        "--window",
+        action="store_true",
+        help="open the floating always-on-top scratchpad window (blocks; "
+        "requires a Tk-enabled Python)",
+    )
     pad_p.add_argument(
         "--note", metavar="NAME", help="target note for --append (default: active note)"
+    )
+    pad_p.add_argument(
+        "--with-dictation",
+        action="store_true",
+        help="alongside --window, also run the dictation loop on a worker "
+        "thread for the window's lifetime",
     )
 
     learn_p = sub.add_parser(

@@ -327,6 +327,89 @@ class TestContextRoutingThroughPipeline:
         assert history.recent()[0].app == ""
 
 
+class TestSinkOverride:
+    """`sink_override` (Phase 7 E13 scratchpad): wins over BOTH the router's
+    per-app sink and the pipeline's own configured sink -- this is what lets
+    the scratchpad dictate-to-pad hotkey force insertion into the active note
+    regardless of which app is frontmost. Style/app_id resolution (`ctx`) is
+    untouched either way.
+    """
+
+    def test_override_wins_over_per_app_router_sink(self, store):
+        provider = MockFrontmostApp(AppInfo("claude", "Claude Code"))
+        type_sink = FakeTextSink()
+        router = ContextRouter(
+            provider, {"claude": AppRule(insert="type")}, {"type": type_sink}
+        )
+        default_sink = FakeTextSink()
+        override_sink = FakeTextSink()
+        llm = MockChatClient(["polished text"])
+        pipeline = make_pipeline(store, llm, default_sink, router=router)
+
+        pipeline.process_transcript("hello world", sink_override=override_sink)
+
+        assert override_sink.events == [("insert", "polished text")]
+        assert type_sink.events == []
+        assert default_sink.events == []
+
+    def test_override_wins_over_plain_default_sink_when_no_router(self, store):
+        default_sink = FakeTextSink()
+        override_sink = FakeTextSink()
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(store, llm, default_sink, router=None)
+
+        pipeline.process_transcript("hello world", sink_override=override_sink)
+
+        assert override_sink.events == [("insert", "ok")]
+        assert default_sink.events == []
+
+    def test_history_app_id_and_style_are_unaffected_by_override(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        router = ContextRouter(
+            provider, {"com.tinyspeck.slackmacgap": AppRule(style="casual")}, {}
+        )
+        default_sink = FakeTextSink()
+        override_sink = FakeTextSink()
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(
+            store, llm, default_sink, history=history, router=router
+        )
+
+        pipeline.process_transcript("hey team quick update", sink_override=override_sink)
+
+        casual_rules = store.style_rules("casual")[1]
+        system = llm.requests[0][0]["content"]
+        assert casual_rules in system  # style override still applied
+        assert history.recent()[0].app == "com.tinyspeck.slackmacgap"
+        assert override_sink.events  # insertion still went to the override
+        assert default_sink.events == []
+
+    def test_none_is_byte_identical_to_before_the_parameter_existed(self, store):
+        sink = FakeTextSink()
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(store, llm, sink, router=None)
+
+        pipeline.process_transcript("hello world", sink_override=None)
+
+        assert sink.events == [("insert", "ok")]
+
+    def test_process_audio_threads_override_through_to_process_transcript(self, store):
+        from local_flow.asr.mock import MockTranscriber
+
+        default_sink = FakeTextSink()
+        override_sink = FakeTextSink()
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(
+            store, llm, default_sink, transcriber=MockTranscriber(["hi there"])
+        )
+
+        pipeline.process_audio(b"pcm-bytes", 16000, sink_override=override_sink)
+
+        assert override_sink.events == [("insert", "ok")]
+        assert default_sink.events == []
+
+
 class TestSpokenDictionaryAddition:
     """"add X to [the] dictionary" is pure rules; works with LM Studio down."""
 

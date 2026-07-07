@@ -159,6 +159,15 @@ class Config:
     # ConfigError when the pipeline is built (see `local_flow.app._build_pipeline`).
     auto_transform: str = ""
 
+    # Dictate-to-pad hotkey (see README "Scratchpad"): tap this key (push-to-
+    # talk mode only, like the transform/command hotkeys) to toggle routing
+    # live dictation into the scratchpad's active note instead of the
+    # configured insertion sink -- tap again to resume normal insertion.
+    # Empty (default) disables the feature entirely -- zero behavior change.
+    # Must be distinct from hotkey/transform_hotkey/command_hotkey. See
+    # `local_flow.app._run_loop`.
+    scratchpad_hotkey: str = ""
+
 
 def _read_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -324,16 +333,21 @@ def load_config(
         )
 
     # Every configured keyboard hotkey (the main hotkey, transform_hotkey,
-    # command_hotkey) must be distinct, case-insensitively -- two listeners
-    # bound to the same key would race for the same physical keypress with
-    # no defined winner. Checked pairwise, skipping any that are empty
-    # (disabled), so leaving transform_hotkey/command_hotkey unset (the
-    # default) never trips this.
+    # command_hotkey, scratchpad_hotkey) must be distinct, case-insensitively
+    # -- two listeners bound to the same key would race for the same physical
+    # keypress with no defined winner. Checked pairwise, skipping any that are
+    # empty (disabled), so leaving transform_hotkey/command_hotkey/
+    # scratchpad_hotkey unset (the default) never trips this. Mouse buttons
+    # (mouse_button/mouse_enter_button) are a separate input device/namespace
+    # -- "middle"/"x1"/"x2" -- and are validated on their own above; they
+    # can never collide with a keyboard key name, so they are not part of
+    # this check.
     seen_hotkeys: dict[str, str] = {}
     for field_name, value in (
         ("hotkey", config.hotkey),
         ("transform_hotkey", config.transform_hotkey),
         ("command_hotkey", config.command_hotkey),
+        ("scratchpad_hotkey", config.scratchpad_hotkey),
     ):
         if not value:
             continue
@@ -341,8 +355,9 @@ def load_config(
         if key in seen_hotkeys:
             raise ConfigError(
                 f"{field_name} and {seen_hotkeys[key]} cannot both be {value!r}.",
-                hint="hotkey, transform_hotkey, and command_hotkey must all be "
-                "distinct; leave transform_hotkey/command_hotkey empty to "
+                hint="hotkey, transform_hotkey, command_hotkey, and "
+                "scratchpad_hotkey must all be distinct; leave "
+                "transform_hotkey/command_hotkey/scratchpad_hotkey empty to "
                 "disable that feature.",
             )
         seen_hotkeys[key] = field_name

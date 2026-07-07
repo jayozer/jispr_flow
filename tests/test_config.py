@@ -268,6 +268,68 @@ class TestTransformAndCommandHotkeyFields:
         assert config.command_hotkey == "f7"
 
 
+class TestScratchpadHotkeyField:
+    """`scratchpad_hotkey` (Phase 7 E13): see `local_flow.app._run_loop`'s
+    scratchpad-hotkey block and `local_flow.scratchpad`.
+    """
+
+    def test_default_is_disabled(self):
+        config = load_config(env={})
+        assert config.scratchpad_hotkey == ""
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f8"})
+        assert config.scratchpad_hotkey == "f8"
+
+    def test_same_as_main_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="scratchpad_hotkey") as excinfo:
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "f9", "LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f9"}
+            )
+        assert "distinct" in excinfo.value.hint
+
+    def test_same_as_transform_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="scratchpad_hotkey"):
+            load_config(
+                env={
+                    "LOCAL_FLOW_HOTKEY": "fn",
+                    "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                    "LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f6",
+                }
+            )
+
+    def test_same_as_command_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="scratchpad_hotkey"):
+            load_config(
+                env={
+                    "LOCAL_FLOW_HOTKEY": "fn",
+                    "LOCAL_FLOW_COMMAND_HOTKEY": "f7",
+                    "LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f7",
+                }
+            )
+
+    def test_collision_check_is_case_insensitive(self):
+        with pytest.raises(ConfigError, match="scratchpad_hotkey"):
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "F9", "LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f9"}
+            )
+
+    def test_empty_never_collides_with_the_other_empty_hotkeys(self):
+        config = load_config(env={})
+        assert config.transform_hotkey == config.command_hotkey == config.scratchpad_hotkey == ""
+
+    def test_all_four_distinct_hotkeys_are_accepted(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_HOTKEY": "fn",
+                "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                "LOCAL_FLOW_COMMAND_HOTKEY": "f7",
+                "LOCAL_FLOW_SCRATCHPAD_HOTKEY": "f8",
+            }
+        )
+        assert config.scratchpad_hotkey == "f8"
+
+
 class TestMaxUtteranceMinField:
     """`max_utterance_min`: see local_flow/app.py `_handle_utterance`."""
 

@@ -265,9 +265,63 @@ racing to make the very first append to the same empty note at the same
 instant could both see it as empty and skip the blank-line separator
 between them, but a single writer -- the normal case -- is unaffected.
 
-This is CLI-only for now (headless, scriptable); a floating always-on-top
-window and a hotkey that routes live dictation straight into the active
-note are coming in a follow-up.
+#### Floating window
+
+`local-flow pad --window` opens `ScratchpadWindow`: a small, always-on-top
+editor over the active note (an `OptionMenu` to switch notes, a `Text`
+widget for the content). It requires a Tk-enabled Python (`import tkinter`
+must work -- `brew install python-tk@3.12` on macOS, `python3-tk` on
+Debian/Ubuntu; a missing tkinter fails with a hint instead of a traceback).
+Edits you type autosave to disk after a 1-second pause (debounced -- typing
+continuously keeps pushing the save back, so it never writes on every
+keystroke), and the window polls the active note's file every 500ms to pick
+up changes made elsewhere (another terminal's `pad --append`, or the
+dictate-to-pad hotkey below) -- except while you have unsaved edits in the
+window, when that external-refresh poll is skipped so it can never clobber
+what you're mid-typing.
+
+**Two-process design, on purpose:** `--window` runs as its own blocking main
+program (like `local-flow tray`'s menu-bar icon) rather than as a thread
+inside `local-flow run` -- tkinter needs a single main thread to behave
+reliably, especially on macOS, and `local-flow run` already has its own main
+thread doing hotkey/audio work. The window and `local-flow run` (in a
+separate terminal) stay in sync purely through the note files on disk --
+no socket, no IPC, nothing new to configure. If you'd rather not juggle two
+terminals, `--with-dictation` starts the normal dictation loop on a worker
+thread for the lifetime of the window (one process, one terminal):
+
+```bash
+uv run local-flow pad --window                    # just the window
+uv run local-flow pad --window --with-dictation   # window + dictation, one process
+```
+
+#### Dictate to scratchpad
+
+`LOCAL_FLOW_SCRATCHPAD_HOTKEY` (push-to-talk mode only, like the transform/
+command hotkeys) turns any tap into a toggle: while active, every dictated
+utterance's insertion is routed into the scratchpad's active note instead of
+the frontmost app -- tap again to resume normal insertion. Empty (the
+default) disables the feature entirely.
+
+```bash
+LOCAL_FLOW_SCRATCHPAD_HOTKEY=f8 uv run local-flow run   # tap F8 to start/stop
+                                                          # dictating into the pad
+```
+
+While active, this wins over *everything else* that would otherwise decide
+where text lands, including a per-app insert override from `app_styles.json`
+(see "Per-app styles & insertion") -- the scratchpad is a deliberate,
+explicit override the user just asked for, so it takes priority over an
+automatic per-app rule. History still records normally (including which app
+was frontmost) -- only where the text is *inserted* changes. The toggle
+notification is reported the same way other hotkey warnings are (see
+"Transform anywhere"): printed to the console and surfaced as a tray
+notification when running under `local-flow tray`.
+
+This is a routing-only feature -- the hotkey works whether or not a
+`pad --window` is even open in another terminal; notes are just files, and
+appending to one doesn't require a window to be watching it. Open the window
+if you want to see the words land live.
 
 ### Personal insights (`local-flow stats`)
 
@@ -843,12 +897,18 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   buttons) work on Windows and Linux/X11 but not macOS. It has no cancel
   gesture — use the keyboard cancel key. Runs alongside the keyboard hotkey,
   never instead of it.
-- Transform hotkey (`LOCAL_FLOW_TRANSFORM_HOTKEY`, see "Transform anywhere")
-  and voice command hotkey (`LOCAL_FLOW_COMMAND_HOTKEY`, see "Voice command
-  mode"): same plain-single-pynput-key-only limitation as the main hotkey —
-  no chords. Neither has a cancel gesture of its own. `local-flow run`
-  refuses to start if either is set to the same key as the main hotkey, each
-  other, or itself (a config error with a hint, not a runtime surprise).
+- Transform hotkey (`LOCAL_FLOW_TRANSFORM_HOTKEY`, see "Transform anywhere"),
+  voice command hotkey (`LOCAL_FLOW_COMMAND_HOTKEY`, see "Voice command
+  mode"), and the scratchpad hotkey (`LOCAL_FLOW_SCRATCHPAD_HOTKEY`, see
+  "Dictate to scratchpad"): same plain-single-pynput-key-only limitation as
+  the main hotkey — no chords. None has a cancel gesture of its own.
+  `local-flow run` refuses to start if any two of hotkey/transform_hotkey/
+  command_hotkey/scratchpad_hotkey are set to the same key (a config error
+  with a hint, not a runtime surprise).
+- `local-flow pad --window` needs a Tk-enabled Python (see "Scratchpad" →
+  "Floating window"); it runs as its own blocking main program, not inside
+  `local-flow run`, so tkinter's single-main-thread requirement is never in
+  tension with the hotkey/audio main thread.
 
 ## Manual test checklist
 
@@ -939,6 +999,15 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     real history; `--since 7d`/`--since all` narrow/widen the window, and an
     empty store (or empty window) prints a friendly message instead of
     zeros.
+31. `local-flow pad --append "first thought"` then `--show` → note content
+    printed; `local-flow pad --window` shows it, stays on top of other
+    windows, and picks up a second terminal's `pad --append` within ~500ms.
+    Typing in the window autosaves (check the `.md` file on disk) about a
+    second after you stop typing.
+32. `LOCAL_FLOW_SCRATCHPAD_HOTKEY=f8 uv run local-flow run` → tap F8, dictate
+    → text lands in the active scratchpad note, not the focused app; tap F8
+    again → normal insertion resumes. Works the same whether or not
+    `pad --window` is open in another terminal.
 
 ## Development
 
