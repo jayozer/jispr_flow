@@ -11,7 +11,11 @@ from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.pipeline import DictationPipeline
 from local_flow.polish.polisher import TranscriptPolisher
-from local_flow.polish.prompting import POLISH_SYSTEM_PROMPT, build_polish_messages
+from local_flow.polish.prompting import (
+    _CODE_SYNTAX_PROTECTION,
+    POLISH_SYSTEM_PROMPT,
+    build_polish_messages,
+)
 
 
 class TestCleanupLevelConfigField:
@@ -95,6 +99,18 @@ class TestPerLevelPromptContent:
     def test_return_only_instruction_present_in_every_llm_level(self, level):
         system = build_polish_messages("x", level=level)[0]["content"]
         assert "ONLY the cleaned text" in system
+
+    @pytest.mark.parametrize("level", ["light", "medium", "high"])
+    def test_code_syntax_protection_present_in_every_llm_level(self, level):
+        # Reachability check: `_CODE_SYNTAX_PROTECTION` is appended in
+        # `_system_prompt_for_level` for every LLM level (never folded into
+        # `POLISH_SYSTEM_PROMPT` itself, since that's pinned byte-identical
+        # -- see `TestMediumPromptPinned`). Assert a distinguishing substring
+        # actually makes it into the assembled prompt for each level, rather
+        # than only asserting against the standalone constant.
+        system = build_polish_messages("x", level=level)[0]["content"]
+        assert "spoken code-syntax phrases" in system
+        assert _CODE_SYNTAX_PROTECTION in system
 
 
 class TestPolisherLevelNone:

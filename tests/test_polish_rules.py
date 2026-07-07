@@ -260,18 +260,64 @@ class TestSpokenCodeSyntax:
         assert text == "orderTotal. user_id"
         assert count == 2
 
-    def test_greedy_matching_can_swallow_unrelated_words(self):
-        # Documented false-positive risk (see README): the rule always
-        # claims the maximum available run of up to four following words,
-        # so back-to-back trigger phrases joined by ordinary words can merge
-        # into one conversion instead of two.
+    def test_greedy_matching_can_still_merge_across_a_connector(self):
+        # Documented residual false-positive risk (see README): the greedy
+        # word-run still claims up to four following words, and connector
+        # bounding only stops the *conversion* at the first connector -- it
+        # does not re-scan the leftover words for a second trigger phrase.
+        # So a second trigger phrase folded into the first match's window
+        # (here "snake" gets swallowed as the 4th word of "camel case"'s
+        # window) is left as literal, unconverted text rather than being
+        # converted itself.
         text, count = apply_spoken_code_syntax(
             "camel case order total and snake case user id"
         )
-        assert text == "orderTotalAndSnake case user id"
+        assert text == "orderTotal and snake case user id"
         assert count == 1
 
     def test_embedded_in_a_sentence_with_trailing_punctuation(self):
         text, count = apply_spoken_code_syntax("please rename it to camel case order total.")
         assert text == "please rename it to orderTotal."
         assert count == 1
+
+
+class TestSpokenCodeSyntaxConnectorBounding:
+    """The word-run stops at common connector/filler words (see README),
+    so continuous speech like "... user id and then send it" doesn't fold
+    "and then" into the converted token.
+    """
+
+    @pytest.mark.parametrize(
+        "text, expected, count",
+        [
+            (
+                "snake case user id and then send it",
+                "user_id and then send it",
+                1,
+            ),
+            (
+                "camel case order total and more",
+                "orderTotal and more",
+                1,
+            ),
+        ],
+    )
+    def test_connector_bounds_the_conversion_window(self, text, expected, count):
+        result, actual_count = apply_spoken_code_syntax(text)
+        assert result == expected
+        assert actual_count == count
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "snake case and",
+            "camel case and then",
+        ],
+    )
+    def test_trigger_followed_only_by_connectors_is_left_untouched(self, text):
+        # If every word in the (up to four word) window is a connector, there
+        # is nothing to convert -- leave the whole phrase exactly as spoken
+        # rather than emitting an empty conversion.
+        result, count = apply_spoken_code_syntax(text)
+        assert result == text
+        assert count == 0

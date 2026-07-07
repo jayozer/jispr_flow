@@ -245,13 +245,26 @@ unreachable, and the phrase is protected from the LLM polish pass so it
 survives to be converted afterward. It is skipped entirely at
 `LOCAL_FLOW_CLEANUP_LEVEL=none` (verbatim mode: nothing is transformed).
 
-**Known false-positive risk:** this is a simple deterministic rule, not a
-language model — it always claims the maximum available run of up to four
-following words, so an ordinary sentence that happens to contain "camel
-case"/"snake case"/"all caps" followed by more words (e.g. "I still prefer
-snake case for variable names") will also get converted. Speak the trigger
-phrase right next to the words you want converted, with nothing else
-following, to avoid this.
+The conversion window (up to four words after the trigger) stops at the
+first common connector/filler word — "and", "then", "so", "but", "or",
+"with", "to", "for", "the", "a", "an", "is", "are", "was", "please" — so
+continuous dictation like "snake case user id and then send it" only
+converts "user id", leaving "and then send it" as ordinary trailing text
+instead of getting folded into the token. If the trigger is followed
+immediately by nothing but connector words (e.g. "snake case and"),
+there's nothing left to convert and the whole phrase is left exactly as
+spoken.
+
+**Known false-positive risk:** this is still a simple deterministic rule,
+not a language model. Connector bounding fixes the common case of a
+trigger phrase running on into unrelated trailing speech, but a sentence
+whose words right after the trigger aren't connectors will still convert
+(e.g. "I like snake case naming better" -> "I like naming_better"). Speak
+the trigger phrase right next to the words you want converted, with
+nothing else following, to avoid this. And because the window stops at
+connector words, an identifier you actually want that starts with one of
+them (e.g. the literal token `to_do`) can't be produced by this feature at
+all — add it to the dictionary or a snippet instead.
 
 ## Cleanup levels
 

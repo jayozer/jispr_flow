@@ -229,6 +229,20 @@ _SPOKEN_CODE_RE = re.compile(
     rf"(?i)\b(camel case|snake case|all caps)\s+((?:{_CODE_WORD}\s+){{0,3}}{_CODE_WORD})"
 )
 
+# Continuous speech runs the converted phrase straight into whatever comes
+# next ("snake case user id and then send it"), and the greedy word-run above
+# doesn't know where the identifier "ends" -- it would happily fold "and
+# then" into the token too. Post-filtering the matched words at the first of
+# these connector/filler words keeps the conversion bounded to the identifier
+# itself; everything from the connector onward is left as ordinary,
+# unconverted text. Lowercase comparison only (spoken words, no punctuation).
+_CODE_SYNTAX_CONNECTORS: frozenset[str] = frozenset(
+    {
+        "and", "then", "so", "but", "or", "with", "to", "for",
+        "the", "a", "an", "is", "are", "was", "please",
+    }
+)
+
 
 def _to_camel_case(words: list[str]) -> str:
     if not words:
@@ -260,6 +274,13 @@ def apply_spoken_code_syntax(text: str) -> tuple[str, int]:
     letters/digits only. Multiple occurrences in the same text are all
     converted.
 
+    The matched word-run stops at the first common connector/filler word
+    (see :data:`_CODE_SYNTAX_CONNECTORS`), so "snake case user id and then
+    send it" converts only "user id" and leaves "and then send it" as plain
+    text. If every word in the window is itself a connector (e.g. "snake
+    case and"), there is nothing to convert -- the whole phrase, trigger
+    included, is left exactly as spoken.
+
     Returns ``(text, count)`` where ``count`` is the number of phrases
     converted.
     """
@@ -267,9 +288,18 @@ def apply_spoken_code_syntax(text: str) -> tuple[str, int]:
 
     def _replace(match: re.Match[str]) -> str:
         nonlocal count
+        words = match.group(2).split()
+        boundary = next(
+            (i for i, w in enumerate(words) if w.lower() in _CODE_SYNTAX_CONNECTORS),
+            len(words),
+        )
+        if boundary == 0:
+            return match.group(0)
         transform = _SPOKEN_CODE_TRANSFORMS[match.group(1).lower()]
         count += 1
-        return transform(match.group(2).split())
+        converted = transform(words[:boundary])
+        remainder = " ".join(words[boundary:])
+        return f"{converted} {remainder}" if remainder else converted
 
     text = _SPOKEN_CODE_RE.sub(_replace, text)
     return normalize_whitespace(text), count
