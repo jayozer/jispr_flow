@@ -830,7 +830,7 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
             "(try `local-flow stats --since all`)."
         )
         if unparseable:
-            print(f"note: {unparseable} record(s) skipped (unparseable timestamp).")
+            print(f"note: {unparseable} record(s) skipped: unparseable timestamp")
         return 0
 
     stats = compute_stats(windowed, now)
