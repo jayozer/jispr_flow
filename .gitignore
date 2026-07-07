@@ -13,5 +13,8 @@ build/
 local-flow.toml
 .local-flow/
 
+# Tooling artifacts
+.understand-anything/
+
 # OS
 .DS_Store
