@@ -718,7 +718,13 @@ LLM-related) and never changes what gets typed/pasted beyond that.
 before your cursor, tail-capped at 1000 characters, plus any current
 selection) is sent only to your local LM Studio server as part of the
 existing polish prompt -- exactly like your dictation itself. It is never
-written to disk, never logged, and never sent anywhere else.
+written to disk, never logged, and never sent anywhere else. Secure fields
+(password inputs) are protected by macOS itself: the Accessibility API
+withholds a secure field's contents from any reader, this app included, so
+there's nothing for `MacAXFieldText` to read there in the first place --
+local-flow adds no extra guard of its own beyond that OS-level behavior, and
+whatever (non-secure) field text it does read is, as above, sent only to
+your local LM Studio server and never stored.
 
 **Platform support:** macOS only for now, via the Accessibility API (needs
 the same *Accessibility* permission already required for paste/type -- see

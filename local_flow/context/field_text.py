@@ -78,11 +78,14 @@ class MacAXFieldText(FieldTextProvider):
     ``AXUIElementCreateSystemWide`` -> ``kAXFocusedUIElementAttribute`` ->
     from that element, ``kAXValueAttribute`` (the full text) and
     ``kAXSelectedTextRangeAttribute`` (an opaque ``AXValue``-wrapped
-    ``CFRange``) via ``ApplicationServices`` (pyobjc) -- already a
-    transitive dependency of ``pynput`` on darwin (see pyproject's
-    ``desktop`` extra / ``pynput``'s own ``pyobjc-framework-
-    applicationservices`` dependency), so no new dependency is needed here;
-    verified importable in this environment.
+    ``CFRange``) via ``ApplicationServices`` (pyobjc). This module imports it
+    directly, so it's declared as its own line in pyproject's ``desktop``
+    extra (``pyobjc-framework-ApplicationServices``, darwin-only) alongside
+    the Quartz/Cocoa lines -- matching this project's precedent (see E1's
+    ``QuartzFnListener``/``local_flow.context.frontmost``) of declaring
+    direct imports explicitly rather than riding another package's (here,
+    ``pynput``'s) transitive dependency, even though ``pynput`` happens to
+    depend on it too on darwin.
 
     The selection range comes back wrapped in an opaque ``AXValueRef``;
     ``AXValueGetValue`` with ``kAXValueCFRangeType`` unwraps it to an

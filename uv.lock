@@ -361,6 +361,7 @@ all = [
     { name = "faster-whisper" },
     { name = "pillow" },
     { name = "pynput" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyperclip" },
@@ -377,6 +378,7 @@ audio = [
 ]
 desktop = [
     { name = "pynput" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyperclip" },
@@ -399,6 +401,7 @@ requires-dist = [
     { name = "local-flow", extras = ["audio", "asr", "desktop", "tray"], marker = "extra == 'all'" },
     { name = "pillow", marker = "extra == 'tray'", specifier = ">=10.0" },
     { name = "pynput", marker = "extra == 'desktop'", specifier = ">=1.8.0" },
+    { name = "pyobjc-framework-applicationservices", marker = "sys_platform == 'darwin' and extra == 'desktop'", specifier = ">=9.0" },
     { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' and extra == 'desktop'", specifier = ">=9.0" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'desktop'", specifier = ">=9.0" },
     { name = "pyperclip", marker = "extra == 'desktop'", specifier = ">=1.9.0" },
