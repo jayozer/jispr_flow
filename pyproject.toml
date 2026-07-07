@@ -26,8 +26,13 @@ desktop = [
     "pyobjc-framework-Quartz>=9.0; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa>=9.0; sys_platform == 'darwin'",
 ]
+# Menu-bar tray icon (pystray) + generated icon images (Pillow).
+tray = [
+    "pystray>=0.19",
+    "pillow>=10.0",
+]
 all = [
-    "local-flow[audio,asr,desktop]",
+    "local-flow[audio,asr,desktop,tray]",
 ]
 
 [project.scripts]
