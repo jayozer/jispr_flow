@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from datetime import datetime
 
 from local_flow import __version__
 from local_flow.config import Config, load_config
@@ -84,9 +85,18 @@ def _build_sink(config: Config):
     return InsertionManager(sinks)
 
 
+def _build_history_store(config: Config):
+    from local_flow.history.store import HistoryStore
+
+    return HistoryStore(
+        config.data_dir,
+        max_entries=config.history_max_entries,
+        retention=config.history_retention,
+    )
+
+
 def _build_pipeline(config: Config, chat_client, sink):
     from local_flow.commands.command_mode import CommandMode
-    from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
     from local_flow.polish.polisher import TranscriptPolisher
 
@@ -102,15 +112,7 @@ def _build_pipeline(config: Config, chat_client, sink):
         if chat_client is not None
         else None
     )
-    history = (
-        HistoryStore(
-            config.data_dir,
-            max_entries=config.history_max_entries,
-            retention=config.history_retention,
-        )
-        if config.history_enabled
-        else None
-    )
+    history = _build_history_store(config) if config.history_enabled else None
     return DictationPipeline(
         transcriber=_build_transcriber(config),
         polisher=polisher,
@@ -208,14 +210,17 @@ def _truncate(text: str, limit: int = 80) -> str:
     return flattened[:limit] + "..."
 
 
-def _cmd_history(args: argparse.Namespace, config: Config) -> int:
-    from local_flow.history.store import HistoryStore
+def _display_timestamp(raw: str) -> str:
+    """Trim a stored ISO timestamp to whole seconds for display."""
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    store = HistoryStore(
-        config.data_dir,
-        max_entries=config.history_max_entries,
-        retention=config.history_retention,
-    )
+
+def _cmd_history(args: argparse.Namespace, config: Config) -> int:
+    store = _build_history_store(config)
 
     if not config.history_enabled:
         print(
@@ -240,7 +245,7 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
 
     for record in records:
         tag = "llm" if record.used_llm else "raw"
-        line = f'{record.timestamp}  [{tag}]  "{_truncate(record.final)}"'
+        line = f'{_display_timestamp(record.timestamp)}  [{tag}]  "{_truncate(record.final)}"'
         if args.verbose:
             line += f' (rough: "{_truncate(record.rough)}")'
         print(line)

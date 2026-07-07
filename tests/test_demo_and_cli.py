@@ -1,5 +1,7 @@
 """Smoke tests for the headless demo and the CLI wiring."""
 
+import re
+
 from local_flow.app import main
 from local_flow.demo import run_demo
 from local_flow.history.store import HistoryStore
@@ -147,3 +149,17 @@ class TestHistoryCommand:
         out = capsys.readouterr().out
         assert "disabled" in out.lower()
         assert "Kept text." in out
+
+    def test_timestamp_displayed_in_whole_seconds(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="test", final="Test record.")
+
+        code = main(["history"])
+        assert code == 0
+        lines = capsys.readouterr().out.strip().splitlines()
+        assert len(lines) == 1
+        # Timestamp should match format YYYY-MM-DDTHH:MM:SSZ (whole seconds, no microseconds)
+        assert re.match(
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  \[(llm|raw)\]", lines[0]
+        )
