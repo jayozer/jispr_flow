@@ -7,6 +7,7 @@ from local_flow.polish.rules import (
     enforce_dictionary,
     enforce_dictionary_detailed,
     expand_snippets,
+    extract_dictionary_additions,
     remove_fillers,
 )
 
@@ -149,6 +150,45 @@ class TestDictionaryDetailedCounts:
         text_wrapper, total = enforce_dictionary(sample, terms)
         assert text_detailed == text_wrapper
         assert total == sum(counts.values())
+
+
+class TestExtractDictionaryAdditions:
+    def test_single_word_term(self):
+        text, terms = extract_dictionary_additions("add JiSpr to the dictionary")
+        assert terms == ["JiSpr"]
+        assert text == ""
+
+    def test_without_the(self):
+        text, terms = extract_dictionary_additions("add JiSpr to dictionary")
+        assert terms == ["JiSpr"]
+        assert text == ""
+
+    def test_multi_word_term(self):
+        text, terms = extract_dictionary_additions("add Kubernetes cluster to the dictionary")
+        assert terms == ["Kubernetes cluster"]
+        assert text == ""
+
+    def test_multiple_phrases_all_extracted(self):
+        text, terms = extract_dictionary_additions(
+            "add JiSpr to the dictionary and add PostgreSQL to dictionary"
+        )
+        assert terms == ["JiSpr", "PostgreSQL"]
+        assert text == "and"
+
+    def test_no_match_passthrough(self):
+        text, terms = extract_dictionary_additions("ship the release today")
+        assert terms == []
+        assert text == "ship the release today"
+
+    def test_mid_sentence_whitespace_repair(self):
+        text, terms = extract_dictionary_additions("please add JiSpr to the dictionary now")
+        assert terms == ["JiSpr"]
+        assert text == "please now"
+
+    def test_case_insensitive_match(self):
+        text, terms = extract_dictionary_additions("ADD Redis TO THE DICTIONARY")
+        assert terms == ["Redis"]
+        assert text == ""
 
 
 class TestSnippetReplacementCount:

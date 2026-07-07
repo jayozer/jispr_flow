@@ -148,6 +148,8 @@ uv run local-flow history                 # list recent dictations, newest first
 uv run local-flow history --search invoice --limit 5
 uv run local-flow history --verbose       # also show the rough (pre-polish) transcript
 uv run local-flow history --clear         # delete the local history file
+uv run local-flow learn                   # mine history for candidate dictionary terms
+uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dictionary
 ```
 
 ### History & privacy
@@ -164,6 +166,35 @@ It never leaves your machine and is plain, hand-editable text.
 - `LOCAL_FLOW_HISTORY_MAX_ENTRIES` caps the file size by rotating out the
   oldest entries beyond that count (default `5000`).
 - `uv run local-flow history --clear` deletes the file immediately.
+
+### Teach it your words
+
+local-flow can learn dictionary terms from what you actually say, two ways:
+
+**Mine your history** — `local-flow learn` scans recent dictations for
+words you use repeatedly that aren't in your dictionary yet: proper nouns,
+`CamelCase`/`ALLCAPS` names, and dotted identifiers like `config.py`. It
+prints a numbered list; add any of them without retyping:
+
+```bash
+uv run local-flow learn                 # 1. Kubernetes (x4) — "…deploy it on Kubernetes tomorrow…"
+                                         # 2. PostgreSQL (x3) — "…back up PostgreSQL nightly…"
+uv run local-flow learn --add 1 2       # add suggestions #1 and #2
+uv run local-flow learn --add-all       # add everything shown
+uv run local-flow learn --min-count 1 --limit 50   # see rarer/more candidates
+```
+
+Running `learn` again re-derives the same numbering as long as your history
+and dictionary haven't changed in between, so a number you saw in one run is
+safe to pass to `--add` in the next.
+
+**Say it while dictating** — mid-utterance, say "add \<term\> to the
+dictionary" (or "... to dictionary") and local-flow strips that phrase from
+the inserted text and adds `<term>` to your dictionary on the spot, e.g.
+"we should containerize this, add JiSpr Flow to the dictionary, before the
+demo" inserts "we should containerize this, before the demo" and adds
+"JiSpr Flow". This is pure rule-based text processing, so it keeps working
+even when LM Studio is unreachable.
 
 ## Architecture
 

@@ -7,6 +7,7 @@ These rules run locally with no model involved:
 - dictionary enforcement (canonical spellings such as "PostgreSQL")
 - snippet expansion (spoken trigger phrases -> stored text)
 - dictation commands ("new line", "new paragraph", trailing "press enter")
+- spoken dictionary additions ("add JiSpr to the dictionary")
 """
 
 from __future__ import annotations
@@ -186,3 +187,30 @@ def apply_dictation_commands(text: str) -> tuple[str, list[str]]:
     text = re.sub(r"(?i)[,.]?\s*\bnew\s+paragraph\b[,.]?\s*", "\n\n", text)
     text = re.sub(r"(?i)[,.]?\s*\b(?:new\s+line|newline)\b[,.]?\s*", "\n", text)
     return normalize_whitespace(text), actions
+
+
+# "add <1-4 words> to [the] dictionary" — the term is captured greedily up to
+# the trailing "to (the) dictionary" so multi-word terms ("Kubernetes
+# cluster") are captured whole rather than just their last word.
+_ADD_TO_DICTIONARY_RE = re.compile(
+    r"(?i)\badd\s+((?:\S+\s+){0,3}\S+)\s+to\s+(?:the\s+)?dictionary\b[.,!?]*"
+)
+
+
+def extract_dictionary_additions(text: str) -> tuple[str, list[str]]:
+    """Pull spoken "add X to [the] dictionary" phrases out of ``text``.
+
+    Returns ``(text, terms)``: ``terms`` lists each captured term (trimmed)
+    in the order spoken, and the matched phrases are removed from ``text``
+    with whitespace repaired via :func:`normalize_whitespace`. Multiple
+    occurrences in the same utterance are all extracted. Pure rules — this
+    runs whether or not LM Studio is reachable.
+    """
+    terms: list[str] = []
+
+    def _capture(match: re.Match[str]) -> str:
+        terms.append(match.group(1).strip())
+        return " "
+
+    text = _ADD_TO_DICTIONARY_RE.sub(_capture, text)
+    return normalize_whitespace(text), terms

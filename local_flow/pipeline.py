@@ -17,6 +17,7 @@ from local_flow.polish.rules import (
     enforce_dictionary,
     enforce_dictionary_detailed,
     expand_snippets,
+    extract_dictionary_additions,
 )
 
 
@@ -83,6 +84,7 @@ class DictationPipeline:
         dict_count = sum(dict_counts.values())
         text, snippet_count = expand_snippets(text, self.store.snippets())
         text, actions = apply_dictation_commands(text)
+        text, dictionary_additions = extract_dictionary_additions(text)
 
         result = DictationResult(
             rough=rough,
@@ -93,6 +95,12 @@ class DictationPipeline:
             used_llm=polish.used_llm,
             warnings=list(polish.warnings),
         )
+        for term in dictionary_additions:
+            if self.store.add_dictionary_term(term):
+                result.warnings.append(f"added '{term}' to dictionary")
+            else:
+                result.warnings.append(f"'{term}' already in dictionary")
+
         sink = ctx.sink or self.sink
         if text or actions:
             if text:

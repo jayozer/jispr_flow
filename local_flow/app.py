@@ -7,6 +7,7 @@ Subcommands:
 - ``command`` one-shot command mode: transform text per an instruction
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
+- ``learn``   mine history for candidate dictionary terms, optionally add them
 """
 
 from __future__ import annotations
@@ -316,6 +317,50 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_learn(args: argparse.Namespace, config: Config) -> int:
+    from local_flow.personalization.learn import suggest_terms
+
+    store = PersonalizationStore(config.data_dir)
+    history = _build_history_store(config)
+    records = list(history.all())
+    if not records:
+        print(f"no dictation history yet (file: {history.path})")
+        return 0
+
+    suggestions = suggest_terms(
+        records,
+        store.dictionary_terms(),
+        min_count=args.min_count,
+        limit=args.limit,
+    )
+    if not suggestions:
+        print(
+            "no new terms to suggest yet "
+            "(dictate more, or lower --min-count to see rarer candidates)."
+        )
+        return 0
+
+    for i, suggestion in enumerate(suggestions, start=1):
+        print(f'{i}. {suggestion.term} (x{suggestion.count}) — "{suggestion.sample}"')
+
+    numbers: set[int] = set()
+    if args.add_all:
+        numbers = set(range(1, len(suggestions) + 1))
+    elif args.add:
+        numbers = set(args.add)
+
+    for n in sorted(numbers):
+        if not (1 <= n <= len(suggestions)):
+            print(f"warning: no suggestion #{n}", file=sys.stderr)
+            continue
+        term = suggestions[n - 1].term
+        if store.add_dictionary_term(term):
+            print(f"added '{term}' to dictionary")
+        else:
+            print(f"'{term}' already in dictionary")
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.audio.vad import segment_stream
@@ -456,6 +501,29 @@ def main(argv: list[str] | None = None) -> int:
         "--verbose", action="store_true", help="also show the rough (pre-polish) transcript"
     )
 
+    learn_p = sub.add_parser(
+        "learn", help="mine dictation history for candidate dictionary terms"
+    )
+    learn_p.add_argument(
+        "--min-count",
+        type=int,
+        default=3,
+        help="minimum occurrences before a term is suggested (default: 3)",
+    )
+    learn_p.add_argument(
+        "--limit", type=int, default=20, help="maximum number of suggestions to show (default: 20)"
+    )
+    learn_p.add_argument(
+        "--add",
+        type=int,
+        nargs="+",
+        metavar="N",
+        help="add suggestion number(s) N (as shown in the listing) to the dictionary",
+    )
+    learn_p.add_argument(
+        "--add-all", action="store_true", help="add every suggestion shown to the dictionary"
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -473,6 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         "command": _cmd_command,
         "check": _cmd_check,
         "history": _cmd_history,
+        "learn": _cmd_learn,
     }
     try:
         return handlers[args.command](args, config)

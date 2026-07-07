@@ -269,6 +269,45 @@ class TestContextRoutingThroughPipeline:
         assert history.recent()[0].app == ""
 
 
+class TestSpokenDictionaryAddition:
+    """"add X to [the] dictionary" is pure rules; works with LM Studio down."""
+
+    def test_add_to_dictionary_with_llm_absent_adds_term_and_warns(self, tmp_path):
+        store = PersonalizationStore(tmp_path / "data")
+        polisher = TranscriptPolisher(None, store)  # chat_client=None: rules only
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=polisher,
+            store=store,
+            sink=sink,
+        )
+
+        result = pipeline.process_transcript("add JiSpr to dictionary")
+
+        assert result.used_llm is False
+        assert result.final == ""
+        assert result.inserted is False
+        assert "JiSpr" in store.dictionary_terms()
+        assert any("added 'JiSpr' to dictionary" in w for w in result.warnings)
+
+    def test_add_to_dictionary_when_already_present_notes_duplicate(self, tmp_path):
+        store = PersonalizationStore(tmp_path / "data")
+        store.add_dictionary_term("JiSpr")
+        polisher = TranscriptPolisher(None, store)
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=polisher,
+            store=store,
+            sink=sink,
+        )
+
+        result = pipeline.process_transcript("add JiSpr to dictionary")
+
+        assert any("'JiSpr' already in dictionary" in w for w in result.warnings)
+
+
 class TestDictionaryUsageTracking:
     """process_transcript records per-term usage back into the dictionary."""
 

@@ -1,5 +1,6 @@
 """Smoke tests for the headless demo and the CLI wiring."""
 
+import json
 import re
 
 from local_flow.app import main
@@ -163,3 +164,112 @@ class TestHistoryCommand:
         assert re.match(
             r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z  \[(llm|raw)\]", lines[0]
         )
+
+
+class TestLearnCommand:
+    def test_no_history_prints_friendly_message(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        code = main(["learn"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "no dictation history" in out.lower()
+
+    def test_no_suggestions_prints_friendly_message(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        history.append_new(rough="hello there", final="hello there")
+        code = main(["learn"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "no new terms" in out.lower()
+
+    def test_lists_numbered_suggestions_with_count_and_sample(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for _ in range(4):
+            history.append_new(
+                rough="deploy it on kubernetes tomorrow",
+                final="deploy it on Kubernetes tomorrow",
+            )
+
+        code = main(["learn"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert '1. Kubernetes (x4) — "deploy it on Kubernetes tomorrow"' in out
+
+    def test_add_by_number_writes_dictionary_json(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for _ in range(3):
+            history.append_new(rough="x", final="deploy it on Kubernetes tomorrow")
+
+        code = main(["learn", "--add", "1"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "added 'Kubernetes' to dictionary" in out
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert "Kubernetes" in on_disk["terms"]
+
+    def test_add_matches_same_numbering_as_plain_listing(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for _ in range(5):
+            history.append_new(rough="x", final="deploy it on Kubernetes tomorrow")
+        for _ in range(3):
+            history.append_new(rough="x", final="ping the Redis cache")
+
+        code = main(["learn"])
+        assert code == 0
+        listing = capsys.readouterr().out.strip().splitlines()
+
+        code = main(["learn", "--add", "2"])
+        assert code == 0
+        out = capsys.readouterr().out
+        add_listing = [line for line in out.strip().splitlines() if line.startswith(("1.", "2."))]
+
+        assert listing == add_listing
+        assert "added 'Redis' to dictionary" in out
+
+    def test_add_all_adds_every_suggestion_shown(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for _ in range(3):
+            history.append_new(rough="x", final="deploy it on Kubernetes tomorrow")
+        for _ in range(3):
+            history.append_new(rough="x", final="ping the Redis cache")
+
+        code = main(["learn", "--add-all"])
+        assert code == 0
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert "Kubernetes" in on_disk["terms"]
+        assert "Redis" in on_disk["terms"]
+
+    def test_min_count_and_limit_flags_are_honored(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for word in ["Kubernetes", "Redis", "Docker"]:
+            for _ in range(2):
+                history.append_new(rough="x", final=f"deploy it on {word} tomorrow")
+
+        code = main(["learn", "--min-count", "1", "--limit", "1"])
+        assert code == 0
+        out = capsys.readouterr().out
+        lines = [line for line in out.strip().splitlines() if line[:1].isdigit()]
+        assert len(lines) == 1
+
+    def test_add_out_of_range_number_warns_instead_of_crashing(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        history = HistoryStore(tmp_path)
+        for _ in range(3):
+            history.append_new(rough="x", final="deploy it on Kubernetes tomorrow")
+
+        code = main(["learn", "--add", "99"])
+        assert code == 0
+        err = capsys.readouterr().err
+        assert "no suggestion #99" in err
