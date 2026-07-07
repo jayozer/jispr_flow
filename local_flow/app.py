@@ -18,7 +18,7 @@ from datetime import datetime
 
 from local_flow import __version__
 from local_flow.config import Config, load_config
-from local_flow.errors import LocalFlowError
+from local_flow.errors import ConfigError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 
 
@@ -40,16 +40,23 @@ def _build_chat_client(config: Config):
 
 
 def _build_transcriber(config: Config):
+    if config.asr_language != "en" and config.asr_model.endswith(".en"):
+        raise ConfigError(
+            f"asr_language={config.asr_language!r} is not compatible with "
+            f"English-only model {config.asr_model!r}.",
+            hint="Use a multilingual model such as `small`, not `small.en`.",
+        )
     if config.asr_backend == "mock":
         from local_flow.asr.mock import MockTranscriber
 
-        return MockTranscriber(["(mock transcription)"])
+        return MockTranscriber(["(mock transcription)"], language=config.asr_language)
     from local_flow.asr.faster_whisper_asr import FasterWhisperTranscriber
 
     return FasterWhisperTranscriber(
         model=config.asr_model,
         device=config.asr_device,
         compute_type=config.asr_compute_type,
+        language=config.asr_language,
     )
 
 
@@ -174,6 +181,7 @@ def _cmd_command(args: argparse.Namespace, config: Config) -> int:
 def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"local-flow {__version__} environment check")
     print(f"  data dir      : {config.data_dir}")
+    print(f"  ASR model     : {config.asr_model} (language: {config.asr_language})")
 
     from local_flow.errors import LMStudioError
 

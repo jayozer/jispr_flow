@@ -45,6 +45,7 @@ class Config:
     asr_model: str = "small.en"  # name or path to a local model directory
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"
+    asr_language: str = "en"  # ISO 639-1 code (e.g. "fr"), or "auto" to detect
 
     # VAD
     vad_backend: str = "energy"  # energy | webrtc | mock

@@ -10,6 +10,7 @@ asr_backend = "faster-whisper" # faster-whisper | mock
 asr_model = "small.en"         # name or path to a CTranslate2 model dir
 asr_device = "auto"            # auto | cpu | cuda
 asr_compute_type = "int8"
+asr_language = "en"            # en | ISO 639-1 code | auto (detect); non-en needs multilingual
 
 vad_backend = "energy"         # energy | webrtc | mock
 vad_aggressiveness = 2

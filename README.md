@@ -59,15 +59,24 @@ speech recognition. ASR is a separate local adapter.
 
 ## Recommended ASR models (faster-whisper)
 
-| Model      | Speed  | Quality | Notes                       |
-|------------|--------|---------|-----------------------------|
-| `base.en`  | fast   | okay    | quick notes                 |
-| `small.en` | medium | good    | recommended default         |
-| `medium.en`| slow   | better  | if you have a GPU           |
+| Model            | Speed  | Quality | Notes                                    |
+|------------------|--------|---------|-------------------------------------------|
+| `base.en`        | fast   | okay    | quick notes (English only)                |
+| `small.en`       | medium | good    | recommended default (English only)        |
+| `medium.en`      | slow   | better  | if you have a GPU (English only)          |
+| `small`          | medium | good    | multilingual; recommended for `auto`      |
+| `medium`         | slow   | better  | multilingual, better quality, slower      |
+| `large-v3-turbo` | slower | best    | multilingual, needs decent hardware       |
 
-Model names are downloaded once into a local cache; you can also point
-`LOCAL_FLOW_ASR_MODEL` at a directory containing a CTranslate2 model for a
-fully offline install.
+`.en` models are English-only and cannot be combined with a non-English
+`LOCAL_FLOW_ASR_LANGUAGE` (see below). Model names are downloaded once into
+a local cache; you can also point `LOCAL_FLOW_ASR_MODEL` at a directory
+containing a CTranslate2 model for a fully offline install.
+
+Set `LOCAL_FLOW_ASR_LANGUAGE` to control speech recognition language:
+`en` (default), any ISO 639-1 code (e.g. `fr`, `de`, `es`), or `auto` to
+detect the spoken language per utterance. `auto` and non-`en` codes require
+a multilingual model (e.g. `small`, not `small.en`).
 
 ## Configure
 
@@ -80,6 +89,7 @@ environment > config file > defaults. Highlights:
 | LM Studio URL | `LOCAL_FLOW_LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` |
 | LM Studio model | `LOCAL_FLOW_LMSTUDIO_MODEL` | *(auto-pick)* |
 | ASR model | `LOCAL_FLOW_ASR_MODEL` | `small.en` |
+| ASR language | `LOCAL_FLOW_ASR_LANGUAGE` | `en` (or an ISO code, or `auto`) |
 | VAD backend | `LOCAL_FLOW_VAD_BACKEND` | `energy` (or `webrtc`) |
 | Mode | `LOCAL_FLOW_MODE` | `push-to-talk` (or `hands-free`) |
 | Hotkey | `LOCAL_FLOW_HOTKEY` | fn (macOS) / f9 |

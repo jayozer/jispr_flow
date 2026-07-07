@@ -10,8 +10,9 @@ from local_flow.asr.base import Transcriber
 class MockTranscriber(Transcriber):
     """Returns pre-scripted texts, one per call (last one repeats)."""
 
-    def __init__(self, scripted: Sequence[str]) -> None:
+    def __init__(self, scripted: Sequence[str], language: str | None = None) -> None:
         self._texts = list(scripted)
+        self._language = language  # accepted for interface parity; unused
         self.calls: list[tuple[int, int]] = []  # (pcm byte length, sample rate)
 
     def transcribe(self, pcm: bytes, sample_rate: int) -> str:

@@ -12,6 +12,7 @@ class FasterWhisperTranscriber(Transcriber):
         model: str = "small.en",
         device: str = "auto",
         compute_type: str = "int8",
+        language: str | None = "en",
     ) -> None:
         try:
             from faster_whisper import WhisperModel
@@ -22,6 +23,9 @@ class FasterWhisperTranscriber(Transcriber):
                 "(or set LOCAL_FLOW_ASR_BACKEND=mock for testing).",
             ) from exc
         self.model_name = model
+        # "auto" means whisper should detect the spoken language per utterance,
+        # which faster-whisper expresses as language=None.
+        self._language = None if language == "auto" else language
         try:
             self._model = WhisperModel(model, device=device, compute_type=compute_type)
         except Exception as exc:
@@ -44,5 +48,5 @@ class FasterWhisperTranscriber(Transcriber):
             if target_len > 0:
                 positions = np.linspace(0, len(audio) - 1, target_len)
                 audio = np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
-        segments, _info = self._model.transcribe(audio, beam_size=1)
+        segments, _info = self._model.transcribe(audio, beam_size=1, language=self._language)
         return " ".join(segment.text.strip() for segment in segments).strip()
