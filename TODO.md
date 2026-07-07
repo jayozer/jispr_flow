@@ -27,7 +27,7 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 
 ## Phase 4 — Latency
 
-- [ ] **E7 — Streaming insertion** — sentence-chunked insertion in hands-free mode, then live rough-text preview; `off` stays byte-identical to today
+- [x] **E7 — Streaming insertion** — sentence-chunked insertion in hands-free mode, then live rough-text preview; `off` stays byte-identical to today
 
 ## Phase 5 — Wispr-Pro parity: quick wins
 
