@@ -55,6 +55,13 @@ languages = ""                 # comma-separated ISO codes for the tray's Langua
 
 context_styles = true          # false disables app_styles.json / frontmost-app lookups
 
+# Field-text awareness (see README "Context-aware dictation"): best-effort
+# reading of the focused field's existing text so polish continues
+# sentences, matches tone, and reuses nearby name spellings. Best-effort and
+# platform-limited (macOS only for now; Windows/Linux are documented gaps).
+# Field text is sent only to your local LM Studio server, never stored.
+context_awareness = true
+
 insert_method = "auto"         # auto | paste | type | clipboard
 sample_rate = 16000
 # Crash-safe audio autosave (see README "Crash-safe audio recovery"): saves

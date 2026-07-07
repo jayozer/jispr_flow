@@ -15,12 +15,23 @@ Across light/medium/high the "protections" (dictation command phrases,
 snippet triggers, spoken "add ... to the dictionary") and the list-formatting
 instruction are shared verbatim; only the cleanup instruction itself varies
 per level.
+
+E10 context awareness (see ``local_flow.context.field_text``): when the
+caller has a non-empty :class:`~local_flow.context.field_text.FieldContext`
+(the focused field's existing text, best-effort), an extra block is appended
+*after* everything else so polish continues the sentence, matches its tone,
+and reuses name spellings already present, instead of re-greeting or
+clashing with what's already there. Absent/empty context appends nothing --
+the resulting prompt is then byte-identical to the pre-E10 prompt (pinned by
+``tests/test_field_context.py`` alongside ``tests/test_cleanup_levels.py``'s
+existing pins).
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
+from local_flow.context.field_text import MAX_BEFORE_CURSOR, FieldContext
 from local_flow.llm.base import Message
 
 # Shared across every LLM level: never let the polish pass eat phrases that
@@ -90,6 +101,38 @@ _CLEANUP_BY_LEVEL: dict[str, str] = {
     "high": _CLEANUP_HIGH,
 }
 
+# E10 context-continuation block: appended verbatim (with `before_cursor`'s
+# tail interpolated) after every other segment, only when there is actually
+# something to continue from. Exact wording is pinned by
+# `tests/test_field_context.py`.
+_FIELD_CONTEXT_TEMPLATE = (
+    "The user is continuing existing text that ends with: {before_cursor}. "
+    "Continue naturally from it: do not repeat it, match its tone and "
+    "formatting, and reuse the exact spellings of any names or terms "
+    "appearing in it. Return only the new text."
+)
+
+
+def _field_context_block(field_context: FieldContext | None) -> str:
+    """Build the optional E10 context-continuation block, or ``""``.
+
+    ``""`` (no block) whenever ``field_context`` is ``None`` or both of its
+    fields are empty -- that is what keeps a caller that never passes
+    ``field_context`` (or passes an all-empty one, e.g. because the
+    accessibility read failed) byte-identical to before E10 existed.
+
+    ``before_cursor`` is defensively re-capped at ``MAX_BEFORE_CURSOR``
+    characters here too, even though every ``FieldTextProvider`` is expected
+    to already cap it (see ``local_flow.context.field_text``) -- so the
+    prompt can never balloon regardless of what a provider hands back.
+    """
+    if field_context is None:
+        return ""
+    if not field_context.before_cursor and not field_context.selected:
+        return ""
+    tail = field_context.before_cursor[-MAX_BEFORE_CURSOR:]
+    return _FIELD_CONTEXT_TEMPLATE.format(before_cursor=tail)
+
 
 def _system_prompt_for_level(level: str) -> str:
     """Assemble the base system prompt for one LLM cleanup level.
@@ -114,6 +157,7 @@ def build_polish_messages(
     style_name: str = "default",
     style_rules: str = "",
     level: str = "medium",
+    field_context: FieldContext | None = None,
 ) -> list[Message]:
     system = _system_prompt_for_level(level)
     terms = [t for t in dictionary_terms if t.strip()]
@@ -121,6 +165,9 @@ def build_polish_messages(
         system += "\nSpell these terms exactly as given: " + ", ".join(terms) + "."
     if style_rules:
         system += f"\nWriting style ({style_name}): {style_rules}"
+    context_block = _field_context_block(field_context)
+    if context_block:
+        system += "\n" + context_block
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": cleaned_text},

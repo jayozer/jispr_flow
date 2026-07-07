@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from local_flow.asr.base import Transcriber
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
+from local_flow.context.field_text import FieldTextProvider
 from local_flow.context.router import ContextRouter, ResolvedContext
 from local_flow.errors import LMStudioError
 from local_flow.history.store import HistoryStore
@@ -47,6 +48,7 @@ class DictationPipeline:
         history: HistoryStore | None = None,
         router: ContextRouter | None = None,
         auto_transform_prompt: str | None = None,
+        field_text: FieldTextProvider | None = None,
     ) -> None:
         self.transcriber = transcriber
         self.polisher = polisher
@@ -61,6 +63,15 @@ class DictationPipeline:
         # text right before insertion. `None` (the default) is a complete
         # no-op, byte-identical to before this feature existed.
         self.auto_transform_prompt = auto_transform_prompt
+        # E10 field-text awareness (see `local_flow.context.field_text`):
+        # best-effort reader of the focused field's existing text, consulted
+        # once per utterance right alongside `router.resolve()` (see
+        # `process_transcript`) and passed to `self.polisher.polish` as
+        # `field_context`. `None` (the default, and what every non-desktop
+        # build gets since `local_flow.app._build_pipeline` only constructs
+        # one when `config.context_awareness` is on) is a complete no-op --
+        # byte-identical to before this feature existed.
+        self.field_text = field_text
         self.last_transcript: str = ""
 
     def process_audio(
@@ -104,7 +115,17 @@ class DictationPipeline:
         """
         ctx = self.router.resolve() if self.router is not None else ResolvedContext()
 
-        polish = self.polisher.polish(rough, style=ctx.style)
+        field_context = None
+        if self.field_text is not None and self.polisher.level != "none":
+            # Best-effort, consulted once per utterance right alongside the
+            # router above (see `FieldTextProvider.current`'s never-raises
+            # contract). Skipped entirely at cleanup_level="none": that
+            # level never calls the LLM at all (see `TranscriptPolisher.
+            # polish`), so there is nothing for a context block to feed and
+            # reading the focused field would be pure overhead.
+            field_context = self.field_text.current()
+
+        polish = self.polisher.polish(rough, style=ctx.style, field_context=field_context)
         text, dict_counts = enforce_dictionary_detailed(
             polish.polished, self.store.dictionary_terms()
         )

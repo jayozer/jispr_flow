@@ -242,6 +242,23 @@ def _build_router(config: Config, store: PersonalizationStore):
     )
 
 
+def _build_field_text(config: Config):
+    """Build the E10 field-text provider, or ``None`` when the feature is off.
+
+    Mirrors ``_build_router``'s gating: skip constructing a provider
+    entirely when ``config.context_awareness`` is off, rather than building
+    a ``NullFieldText``/stub that would cost nothing per-call but is still
+    pointless to construct -- and gives ``DictationPipeline`` a clean signal
+    (``field_text is None``) to skip resolving context at all (see
+    ``local_flow.pipeline.DictationPipeline.process_transcript``).
+    """
+    if not config.context_awareness:
+        return None
+    from local_flow.context.field_text import create_field_text_provider
+
+    return create_field_text_provider()
+
+
 def _build_pipeline(config: Config, chat_client, sink):
     from local_flow.commands.command_mode import CommandMode
     from local_flow.pipeline import DictationPipeline
@@ -275,6 +292,7 @@ def _build_pipeline(config: Config, chat_client, sink):
         history=history,
         router=_build_router(config, store),
         auto_transform_prompt=auto_transform_prompt,
+        field_text=_build_field_text(config),
     )
 
 

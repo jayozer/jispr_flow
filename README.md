@@ -118,6 +118,7 @@ environment > config file > defaults. Highlights:
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
 | Streaming | `LOCAL_FLOW_STREAMING` | `off` (or `sentence`/`live-preview`, hands-free only; see "Streaming") |
 | Streaming pause | `LOCAL_FLOW_STREAMING_PAUSE_MS` | `300` |
+| Context-aware dictation | `LOCAL_FLOW_CONTEXT_AWARENESS` | `true` (see "Context-aware dictation") |
 
 Personalization lives in the data dir as hand-editable JSON:
 `dictionary.json` (canonical terms), `snippets.json` (trigger → expansion),
@@ -699,6 +700,38 @@ utterance by utterance.
 LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run   # every dictation gets an extra polish pass
 ```
 
+### Context-aware dictation
+
+local-flow can peek at the focused field's *existing* text (best-effort,
+read-only) so the polish pass continues what's already there instead of
+re-greeting or clashing with it: dictating "thanks for the referral" after a
+note that ends "Dear Dr. Adithya," comes back as a continuation, not a
+second greeting, and any name spelled in the field (e.g. "Adithya") is
+reused verbatim rather than re-guessed from audio.
+
+This is on by default (`LOCAL_FLOW_CONTEXT_AWARENESS=true`); set it to
+`false` to disable entirely. It only affects the LLM polish prompt (skipped
+completely at `LOCAL_FLOW_CLEANUP_LEVEL=none`, same as everything else
+LLM-related) and never changes what gets typed/pasted beyond that.
+
+**Privacy:** the little bit of field text this reads (the text immediately
+before your cursor, tail-capped at 1000 characters, plus any current
+selection) is sent only to your local LM Studio server as part of the
+existing polish prompt -- exactly like your dictation itself. It is never
+written to disk, never logged, and never sent anywhere else.
+
+**Platform support:** macOS only for now, via the Accessibility API (needs
+the same *Accessibility* permission already required for paste/type -- see
+"Platform permission notes" below); if the read fails for any reason
+(permission denied, an app that doesn't expose it, etc.) it silently
+degrades to no context, same as if the feature were off. Windows and Linux
+currently always report no context: Windows would need COM interop
+(`comtypes`), a dependency this project doesn't have yet, so `local-flow`
+ships an honest stub there rather than untested COM-automation code; Linux
+has no accessibility-text adapter yet. Dictation itself is unaffected on
+either platform -- this is strictly an extra hint for the polish pass when
+available.
+
 ## Cleanup levels
 
 `LOCAL_FLOW_CLEANUP_LEVEL` controls how aggressively the polish pass rewrites
@@ -913,6 +946,11 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   "Floating window"); it runs as its own blocking main program, not inside
   `local-flow run`, so tkinter's single-main-thread requirement is never in
   tension with the hotkey/audio main thread.
+- Context-aware dictation (`LOCAL_FLOW_CONTEXT_AWARENESS`, see
+  "Context-aware dictation") reuses the same macOS *Accessibility*
+  permission as paste/type — no separate grant needed. It is macOS-only for
+  now; on Windows/Linux it always reports no context (a documented gap, not
+  a bug) and dictation is otherwise unaffected.
 
 ## Manual test checklist
 
@@ -1012,6 +1050,11 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     → text lands in the active scratchpad note, not the focused app; tap F8
     again → normal insertion resumes. Works the same whether or not
     `pad --window` is open in another terminal.
+33. (macOS) Focus a text field/document ending "Dear Dr. Adithya," and
+    dictate "thanks for the referral" → the polished result continues
+    naturally (no repeated greeting) and "Adithya" keeps its exact spelling.
+    `LOCAL_FLOW_CONTEXT_AWARENESS=false uv run local-flow run` → the same
+    dictation instead polishes with no awareness of the existing text.
 
 ## Development
 

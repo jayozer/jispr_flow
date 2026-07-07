@@ -107,6 +107,19 @@ class Config:
     # Per-app context awareness (frontmost app -> style/insert overrides)
     context_styles: bool = True
 
+    # Field-text awareness (E10, see README "Context-aware dictation"):
+    # best-effort reading of the focused field's existing text (the tail
+    # before the cursor, plus any selection) so the polish pass continues
+    # sentences, matches tone, and reuses nearby name spellings instead of
+    # re-greeting or clashing with what's already there. Best-effort and
+    # platform-limited (see `local_flow.context.field_text`) -- Windows
+    # currently ships a stub that always returns empty context, so this flag
+    # has no observable effect there beyond skipping a no-op provider
+    # construction. Field text is sent only to the local LM Studio server
+    # (`lmstudio_base_url`) as part of the polish prompt -- it is never
+    # stored or sent anywhere else.
+    context_awareness: bool = True
+
     # Text insertion
     insert_method: str = "auto"  # auto | paste | type | clipboard
 
@@ -247,6 +260,7 @@ def load_config(
         "history_enabled": bool,
         "history_max_entries": int,
         "context_styles": bool,
+        "context_awareness": bool,
         "streaming_pause_ms": int,
         "audio_recovery": bool,
         "max_utterance_min": int,

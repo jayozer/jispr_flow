@@ -43,8 +43,8 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 
 ## Phase 7 — Deep platform work
 
-- [ ] **E13 — Scratchpad** — floating always-on-top notepad (markdown files in your data dir), hotkey toggle, dictate straight into it
-- [ ] **E10 — Context-aware dictation** — reads the text already in the focused field (macOS AX / Windows UIA) so polish continues sentences, matches tone, and spells nearby names correctly *(hardest platform work — last)*
+- [x] **E13 — Scratchpad** — floating always-on-top notepad (markdown files in your data dir), hotkey toggle, dictate straight into it *(window = `pad --window`, separate process from `run`; live window checks manual)*
+- [x] **E10 — Context-aware dictation** — reads the text already in the focused field (macOS AX; Windows UIA ships as a documented stub) so polish continues sentences, matches tone, and spells nearby names correctly *(hardest platform work — last)*
 
 ## Already shipped (MVP)
 

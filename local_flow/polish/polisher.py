@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from local_flow.context.field_text import FieldContext
 from local_flow.errors import LMStudioError
 from local_flow.llm.base import ChatClient
 from local_flow.personalization.store import PersonalizationStore
@@ -71,13 +72,26 @@ class TranscriptPolisher:
     def level(self, value: str) -> None:
         self._level = value
 
-    def polish(self, rough: str, style: str | None = None) -> PolishResult:
+    def polish(
+        self,
+        rough: str,
+        style: str | None = None,
+        field_context: FieldContext | None = None,
+    ) -> PolishResult:
         """Rules first, then an LLM polish pass using ``style``.
 
         ``style`` overrides the constructor default for this one call
         (``None`` keeps using ``self.style``); this is how per-app style
         overrides from :class:`local_flow.context.router.ContextRouter` reach
         the polisher without changing any other call site.
+
+        ``field_context`` (E10, see ``local_flow.context.field_text``) is the
+        focused field's existing text, best-effort and resolved once per
+        utterance by :class:`local_flow.pipeline.DictationPipeline`; ``None``
+        (the default) adds nothing to the prompt, so callers that never pass
+        it are unaffected. Forwarded straight to
+        :func:`~local_flow.polish.prompting.build_polish_messages`, which
+        only appends a continuation block when it is non-empty.
 
         At ``level == "none"`` this returns ``rough`` untouched in both
         ``cleaned`` and ``polished`` -- no rule-based cleanup runs and
@@ -106,6 +120,7 @@ class TranscriptPolisher:
             style_name=style_name,
             style_rules=style_rules,
             level=self._level,
+            field_context=field_context,
         )
         try:
             polished = self.chat_client.chat(messages)
