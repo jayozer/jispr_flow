@@ -743,21 +743,16 @@ def _cmd_learn(args: argparse.Namespace, config: Config) -> int:
 def _parse_history_timestamp(raw: str) -> datetime | None:
     """Parse a stored history timestamp, tolerating a trailing ``Z``.
 
-    Same tolerant idiom as ``_display_timestamp`` (and
-    ``local_flow.history.store._parse_timestamp`` /
-    ``local_flow.insights.stats._parse_timestamp``) -- duplicated rather
-    than imported, consistent with how those already each independently
-    re-implement it. Used by ``_cmd_stats`` for the ``--since`` window
-    cutoff; a naive value is treated as UTC, matching how every timestamp in
-    this project is generated (see ``HistoryStore.append_new``).
+    Reuses the same implementation as ``local_flow.insights.stats._parse_timestamp``
+    (avoiding duplication while maintaining consistency with
+    ``local_flow.history.store._parse_timestamp``). Used by ``_cmd_stats`` for
+    the ``--since`` window cutoff; a naive value is treated as UTC, matching
+    how every timestamp in this project is generated (see
+    ``HistoryStore.append_new``).
     """
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed
+    from local_flow.insights.stats import _parse_timestamp
+
+    return _parse_timestamp(raw)
 
 
 def _parse_since(raw: str) -> timedelta | None:
@@ -806,12 +801,15 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
             "(LOCAL_FLOW_HISTORY_ENABLED=false); showing existing records, if any."
         )
 
+    # Validate --since early, even before checking if history is empty,
+    # so invalid values (e.g., "banana") always raise an error.
+    cutoff = _parse_since(args.since)
+
     all_records = list(store.all())
     if not all_records:
         print(f"no dictation history yet (file: {store.path})")
         return 0
 
-    cutoff = _parse_since(args.since)
     now = datetime.now(UTC)
     since_at = now - cutoff if cutoff is not None else None
 
@@ -862,6 +860,12 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
         print(f"  {label:<{width}} : {value}")
     if unparseable:
         print(f"  (note: {unparseable} record(s) skipped: unparseable timestamp)")
+    # Note when streaks are windowed by the --since cutoff (not when --since all)
+    if cutoff is not None:
+        print(
+            "  (note: streaks are measured within the --since window; "
+            "use --since all for all-time)"
+        )
 
     print()
     print("last 8 weeks:")

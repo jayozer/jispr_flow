@@ -273,13 +273,18 @@ Notes on the numbers:
 - **top apps** shows the 5 most-dictated-into apps by count; an empty app
   name (context styles off, or an app that didn't report one) is bucketed as
   `(unknown)`.
-- **current streak** counts consecutive active days ending today OR
-  yesterday -- dictating yesterday but not yet today still shows a live
-  streak; it only resets to `0` once a full calendar day passes with zero
-  dictations (today *and* yesterday both empty). **longest streak** is the
-  longest run found within the records the current `--since` window
-  includes -- pass `--since all` for a true all-time longest streak, since a
-  narrower window naturally can't see runs before it.
+- **current streak** and **longest streak** count consecutive active days
+  within the records the current `--since` window includes; both are
+  measured from "today or yesterday back" (current) or across any historical
+  gap (longest). Pass `--since all` for true all-time streaks, since a
+  narrower window naturally can't see runs before it. Current streak counts
+  consecutive active days ending today OR yesterday -- dictating yesterday
+  but not yet today still shows a live streak; it only resets to `0` once a
+  full calendar day passes with zero dictations (today *and* yesterday both
+  empty).
+- **failed (LM Studio skipped)** is informational: failed records still count
+  in total dictations, total words, and WPM, since their rule-cleaned text
+  was inserted; the failed field shows how many times LLM polish was skipped.
 - A record whose timestamp can't be parsed is excluded from the report
   entirely (every field, not just the ones that need a date) rather than
   being arbitrarily counted in one window or another; if any were skipped

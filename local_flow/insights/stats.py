@@ -67,12 +67,16 @@ class Stats:
 
     Every field is computed from the SAME record set the caller passes to
     :func:`compute_stats` -- there is no separate "all time" vs. "windowed"
-    split inside this dataclass. In particular ``longest_streak`` is the
-    longest run found *within whatever records were given*, not necessarily
-    an absolute all-time record: pass every record ever stored (the CLI's
-    ``--since all``) to get a true all-time longest streak; a narrower
-    window naturally caps what ``longest_streak`` can see, exactly like
-    every other field here.
+    split inside this dataclass. In particular both ``current_streak`` and
+    ``longest_streak`` are measured *within whatever records were given*, not
+    necessarily absolute all-time records: pass every record ever stored (the
+    CLI's ``--since all``) to get true all-time streaks; a narrower window
+    naturally caps what both can see, exactly like every other field here.
+
+    The ``failed`` field (count of records where LLM polish was skipped) is
+    informational only: failed records' text still counts in
+    ``total_dictations``, ``total_words``, and ``words_per_minute``, since
+    their rule-cleaned text was inserted into the document.
     """
 
     total_dictations: int
@@ -99,6 +103,11 @@ def compute_stats(records: Iterable[HistoryRecord], now: datetime) -> Stats:
     field (see module docstring). ``now`` should be UTC (as
     ``datetime.now(UTC)``); a naive ``now`` is treated as already-UTC,
     matching the tolerance this module applies to record timestamps.
+
+    Failed records (where LLM polish was skipped) still count toward
+    ``total_dictations``, ``total_words``, and ``words_per_minute``, since
+    their rule-cleaned text was inserted; the ``failed`` field is
+    informational only.
 
     Streak semantics (documented once here, since both fields share it):
 

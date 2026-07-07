@@ -344,3 +344,65 @@ class TestStatsCommand:
         out = capsys.readouterr().out
         assert "unparseable" in out.lower()
         assert _stat_value(out, "total dictations") == "1"
+
+    def test_invalid_since_with_empty_history_still_errors(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """--since validation should happen even with no history."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        # Empty store created implicitly by just setting the data dir
+
+        code = main(["stats", "--since", "banana"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "banana" in err
+        assert "invalid" in err.lower()
+
+    def test_invalid_since_zero_days_rejected(self, capsys, tmp_path, monkeypatch):
+        """--since 0d should be rejected (must be positive)."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="x", final="hello")
+
+        code = main(["stats", "--since", "0d"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "0d" in err or "invalid" in err.lower()
+
+    def test_invalid_since_negative_days_rejected(self, capsys, tmp_path, monkeypatch):
+        """--since value starting with minus should be rejected."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="x", final="hello")
+
+        code = main(["stats", "--since", "minus3d"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "invalid" in err.lower()
+
+    def test_streak_windowing_note_appears_with_since_window(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Output should note that streaks are windowed when --since is not 'all'."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="x", final="hello world")
+
+        code = main(["stats", "--since", "7d"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "streaks are measured within the --since window" in out
+        assert "--since all" in out
+
+    def test_streak_windowing_note_absent_with_since_all(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Output should NOT note windowing when --since is 'all'."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="x", final="hello world")
+
+        code = main(["stats", "--since", "all"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "streaks are measured within the --since window" not in out
