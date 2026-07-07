@@ -9,11 +9,15 @@ hand-editable files that are created with commented defaults on first use:
   spoken trigger phrases expanded into stored text.
 - ``styles.json``: ``{"active": "default", "styles": {name: rules_text}}`` —
   writing-style instructions injected into the polish prompt.
+- ``app_styles.json``: ``{app_id_or_substring: "style" | {"style": ..., "insert": ...}}``
+  — optional per-app overrides; unlike the other three files this one is
+  *never* created automatically (a missing file just means "no rules yet").
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from local_flow.errors import ConfigError
@@ -28,7 +32,42 @@ DEFAULT_STYLES: dict[str, str] = {
     "casual": (
         "Casual: relaxed tone, contractions are fine, keep it light and short."
     ),
+    "email": (
+        "structure as an email: greeting, short paragraphs, sign-off; formal tone"
+    ),
+    "chat": ("casual tone, concise, no greeting or sign-off"),
 }
+
+
+@dataclass(frozen=True)
+class AppRule:
+    """Per-app override: which style to polish with and how to insert text."""
+
+    style: str = ""
+    insert: str = ""
+
+
+def match_app_rule(rules: dict[str, AppRule], app_id: str, title: str) -> AppRule | None:
+    """Resolve the rule that applies to a frontmost app.
+
+    Case-insensitive. An exact match on ``app_id`` always wins; otherwise the
+    longest rule key that appears as a substring of ``app_id`` or ``title``
+    wins (so a more specific key like "slackmacgap" beats "slack").
+    """
+    if not rules:
+        return None
+    app_id_l = (app_id or "").lower()
+    title_l = (title or "").lower()
+    normalized = {key.lower(): rule for key, rule in rules.items()}
+    if app_id_l and app_id_l in normalized:
+        return normalized[app_id_l]
+    candidates = [
+        key for key in normalized if key and (key in app_id_l or key in title_l)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=len, reverse=True)
+    return normalized[candidates[0]]
 
 
 class PersonalizationStore:
@@ -38,6 +77,7 @@ class PersonalizationStore:
         self._dictionary_path = self.data_dir / "dictionary.json"
         self._snippets_path = self.data_dir / "snippets.json"
         self._styles_path = self.data_dir / "styles.json"
+        self._app_styles_path = self.data_dir / "app_styles.json"
         self._ensure_defaults()
 
     def _ensure_defaults(self) -> None:
@@ -114,3 +154,32 @@ class PersonalizationStore:
             )
         data["active"] = name
         self._write(self._styles_path, data)
+
+    # --- per-app rules -----------------------------------------------------
+    def app_rules(self) -> dict[str, AppRule]:
+        """Read ``app_styles.json``, tolerant of it being absent or garbage.
+
+        Unlike the other files, this one is never auto-created: a missing
+        file, invalid JSON, or a non-dict top-level value all just mean
+        "no per-app rules configured" and yield ``{}``.
+        """
+        try:
+            raw = json.loads(self._app_styles_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        rules: dict[str, AppRule] = {}
+        for key, value in raw.items():
+            key_l = str(key).strip().lower()
+            if not key_l:
+                continue
+            if isinstance(value, str):
+                rules[key_l] = AppRule(style=value)
+            elif isinstance(value, dict):
+                rules[key_l] = AppRule(
+                    style=str(value.get("style", "")),
+                    insert=str(value.get("insert", "")),
+                )
+            # anything else (int, list, null, ...) is garbage; skip it
+        return rules

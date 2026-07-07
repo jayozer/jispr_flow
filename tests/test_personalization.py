@@ -5,7 +5,7 @@ import json
 import pytest
 
 from local_flow.errors import ConfigError
-from local_flow.personalization.store import PersonalizationStore
+from local_flow.personalization.store import AppRule, PersonalizationStore, match_app_rule
 from local_flow.polish.rules import enforce_dictionary, expand_snippets
 
 
@@ -110,3 +110,111 @@ class TestPersonalizationStore:
         with pytest.raises(ConfigError) as excinfo:
             store.dictionary_terms()
         assert "dictionary.json" in str(excinfo.value)
+
+
+class TestBuiltinStyles:
+    def test_fresh_store_includes_email_and_chat_styles(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        styles = store.styles()
+        assert "email" in styles
+        assert "chat" in styles
+        assert "email" in styles["email"].lower()
+        assert "casual" in styles["chat"].lower()
+        # active style is unaffected by seeding the new named styles
+        assert store.style_rules()[0] == "default"
+
+    def test_existing_styles_file_is_not_overwritten(self, tmp_path):
+        (tmp_path / "styles.json").write_text(
+            json.dumps({"active": "mine", "styles": {"mine": "just mine"}})
+        )
+        store = PersonalizationStore(tmp_path)
+        assert store.styles() == {"mine": "just mine"}
+        assert "email" not in store.styles()
+        assert "chat" not in store.styles()
+
+
+class TestAppRules:
+    def test_plain_string_value_is_style_only(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(
+            json.dumps({"com.tinyspeck.slackmacgap": "casual"})
+        )
+        assert store.app_rules() == {
+            "com.tinyspeck.slackmacgap": AppRule(style="casual"),
+        }
+
+    def test_dict_value_reads_style_and_insert(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(
+            json.dumps({"com.apple.mail": {"style": "email", "insert": "paste"}})
+        )
+        assert store.app_rules() == {
+            "com.apple.mail": AppRule(style="email", insert="paste"),
+        }
+
+    def test_unknown_keys_in_dict_value_are_ignored(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(
+            json.dumps({"claude": {"insert": "type", "bogus": "ignored"}})
+        )
+        assert store.app_rules() == {"claude": AppRule(insert="type")}
+
+    def test_keys_are_lowercased(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(json.dumps({"Com.Apple.Mail": "email"}))
+        assert store.app_rules() == {"com.apple.mail": AppRule(style="email")}
+
+    def test_missing_file_returns_empty_dict(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        assert store.app_rules() == {}
+
+    def test_invalid_json_returns_empty_dict(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text("{not json")
+        assert store.app_rules() == {}
+
+    def test_non_dict_top_level_returns_empty_dict(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(json.dumps(["a", "b"]))
+        assert store.app_rules() == {}
+
+    def test_garbage_values_are_skipped(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(
+            json.dumps({"good": "casual", "bad": 42, "also_bad": [1, 2]})
+        )
+        assert store.app_rules() == {"good": AppRule(style="casual")}
+
+
+class TestMatchAppRule:
+    def test_exact_app_id_match_wins(self):
+        rules = {
+            "com.apple.mail": AppRule(style="email"),
+            "mail": AppRule(style="casual"),
+        }
+        assert match_app_rule(rules, "com.apple.mail", "Mail") == AppRule(style="email")
+
+    def test_longest_substring_key_wins(self):
+        rules = {
+            "slack": AppRule(style="casual"),
+            "slackmacgap": AppRule(style="chat"),
+        }
+        result = match_app_rule(rules, "com.tinyspeck.slackmacgap", "Slack")
+        assert result == AppRule(style="chat")
+
+    def test_substring_matches_against_title_too(self):
+        rules = {"claude": AppRule(insert="type")}
+        result = match_app_rule(rules, "com.unknown.app", "Claude Code")
+        assert result == AppRule(insert="type")
+
+    def test_case_insensitive_matching(self):
+        rules = {"slack": AppRule(style="casual")}
+        result = match_app_rule(rules, "COM.TINYSPECK.SLACKMACGAP", "")
+        assert result == AppRule(style="casual")
+
+    def test_no_match_returns_none(self):
+        rules = {"slack": AppRule(style="casual")}
+        assert match_app_rule(rules, "com.apple.mail", "Mail") is None
+
+    def test_empty_rules_returns_none(self):
+        assert match_app_rule({}, "anything", "Anything") is None
