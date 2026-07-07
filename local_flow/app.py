@@ -16,11 +16,16 @@ import argparse
 import sys
 import threading
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from local_flow import __version__
 from local_flow.config import Config, load_config
 from local_flow.errors import ConfigError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
+from local_flow.status import ConsoleReporter, StatusReporter
+
+if TYPE_CHECKING:
+    from local_flow.pipeline import DictationPipeline
 
 
 def _fail(exc: LocalFlowError) -> int:
@@ -367,7 +372,36 @@ def _cmd_learn(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
-def _cmd_run(args: argparse.Namespace, config: Config) -> int:
+def _handle_utterance(
+    pipeline: DictationPipeline,
+    reporter: StatusReporter,
+    pcm: bytes,
+    sample_rate: int,
+) -> None:
+    """Run one captured utterance's PCM through the pipeline.
+
+    Reports ``processing`` before the pipeline call, ``warning`` per pipeline
+    warning, ``inserted`` (with the final text's ``repr``) on success,
+    ``error`` if the pipeline raises, and ``idle`` once the utterance is
+    fully handled either way. Extracted from ``_run_loop`` so it can be
+    exercised directly in tests without mocking audio capture or hotkeys.
+    """
+    reporter.notify("processing")
+    try:
+        result = pipeline.process_audio(pcm, sample_rate)
+        for warning in result.warnings:
+            reporter.notify("warning", warning)
+        if result.final:
+            reporter.notify("inserted", repr(result.final))
+    except LocalFlowError as exc:
+        reporter.notify("error", exc.message)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+    finally:
+        reporter.notify("idle")
+
+
+def _run_loop(config: Config, mode: str, reporter: StatusReporter) -> int:
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.audio.vad import segment_stream
 
@@ -380,21 +414,10 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     except LocalFlowError as exc:
         return _fail(exc)
 
-    mode = args.mode or config.mode
-
-    def handle(pcm: bytes) -> None:
-        try:
-            result = pipeline.process_audio(pcm, config.sample_rate)
-            for warning in result.warnings:
-                print(f"warning: {warning}", file=sys.stderr)
-            if result.final:
-                print(f"inserted: {result.final!r}")
-        except LocalFlowError as exc:
-            _fail(exc)
-
     try:
         if mode == "hands-free":
             print("hands-free dictation: speak; pause to insert. Ctrl+C to quit.")
+            reporter.notify("recording")
             for segment in segment_stream(
                 source.frames(config.vad_frame_ms),
                 vad,
@@ -402,7 +425,7 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
                 frame_ms=config.vad_frame_ms,
                 silence_ms=config.vad_silence_ms,
             ):
-                handle(segment)
+                _handle_utterance(pipeline, reporter, segment, config.sample_rate)
         else:
             from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
 
@@ -420,6 +443,7 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
 
             def start() -> None:
                 stop.clear()
+                reporter.notify("recording")
 
                 def record() -> None:
                     captured["pcm"] = source.record_until(stop, config.vad_frame_ms)
@@ -434,7 +458,7 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
                     thread.join(timeout=5)
                 pcm = captured.pop("pcm", b"")
                 if pcm:
-                    handle(pcm)
+                    _handle_utterance(pipeline, reporter, pcm, config.sample_rate)
 
             def cancel() -> None:
                 stop.set()
@@ -454,6 +478,11 @@ def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     except LocalFlowError as exc:
         return _fail(exc)
     return 0
+
+
+def _cmd_run(args: argparse.Namespace, config: Config) -> int:
+    mode = args.mode or config.mode
+    return _run_loop(config, mode, ConsoleReporter())
 
 
 def main(argv: list[str] | None = None) -> int:
