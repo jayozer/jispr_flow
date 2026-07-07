@@ -178,8 +178,8 @@ class PersonalizationStore:
                 rules[key_l] = AppRule(style=value)
             elif isinstance(value, dict):
                 rules[key_l] = AppRule(
-                    style=str(value.get("style", "")),
-                    insert=str(value.get("insert", "")),
+                    style=str(value.get("style") or ""),
+                    insert=str(value.get("insert") or ""),
                 )
             # anything else (int, list, null, ...) is garbage; skip it
         return rules

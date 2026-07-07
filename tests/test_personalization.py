@@ -185,6 +185,18 @@ class TestAppRules:
         )
         assert store.app_rules() == {"good": AppRule(style="casual")}
 
+    def test_empty_dict_value_is_harmless(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(json.dumps({"claude": {}}))
+        assert store.app_rules() == {"claude": AppRule("", "")}
+
+    def test_null_sub_values_do_not_stringify_to_none(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(
+            json.dumps({"claude": {"style": None, "insert": None}})
+        )
+        assert store.app_rules() == {"claude": AppRule("", "")}
+
 
 class TestMatchAppRule:
     def test_exact_app_id_match_wins(self):

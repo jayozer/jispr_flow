@@ -40,13 +40,22 @@ class TranscriptPolisher:
         self.style = style
         self.fallback_to_rules = fallback_to_rules
 
-    def polish(self, rough: str) -> PolishResult:
+    def polish(self, rough: str, style: str | None = None) -> PolishResult:
+        """Rules first, then an LLM polish pass using ``style``.
+
+        ``style`` overrides the constructor default for this one call
+        (``None`` keeps using ``self.style``); this is how per-app style
+        overrides from :class:`local_flow.context.router.ContextRouter` reach
+        the polisher without changing any other call site.
+        """
         cleaned = clean_transcript(rough)
         result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
         if not cleaned or self.chat_client is None:
             return result
 
-        style_name, style_rules = self.store.style_rules(self.style)
+        style_name, style_rules = self.store.style_rules(
+            style if style is not None else self.style
+        )
         messages = build_polish_messages(
             cleaned,
             dictionary_terms=self.store.dictionary_terms(),

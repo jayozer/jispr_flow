@@ -102,6 +102,39 @@ Personalization lives in the data dir as hand-editable JSON:
 `dictionary.json` (canonical terms), `snippets.json` (trigger → expansion),
 `styles.json` (named style rules + the active one).
 
+## Per-app styles & insertion
+
+local-flow can look at the frontmost app/window when a dictation finishes and
+apply a different polish style and/or insertion method for it. Add
+`app_styles.json` to your data dir — it's the only personalization file that
+is *not* auto-created, so it simply does nothing until you add one:
+
+```json
+{
+  "com.tinyspeck.slackmacgap": "casual",
+  "com.apple.mail": {"style": "email", "insert": "paste"},
+  "claude": {"insert": "type"}
+}
+```
+
+Keys are matched case-insensitively against the frontmost app's bundle
+id/executable/`WM_CLASS` and its window title: an exact match on the app id
+wins outright, otherwise the longest key that appears as a substring of
+either wins (so `"slackmacgap"` beats a plainer `"slack"`). A plain string
+value sets only the style (e.g. `"casual"`, matching a name in
+`styles.json`, which also ships built-in `email` and `chat` styles); a
+`{"style": ..., "insert": ...}` object can also override the insertion method
+for that app (`auto` | `paste` | `type` | `clipboard`).
+
+The `"claude": {"insert": "type"}` entry is a tip for terminal apps
+(including Claude Code): the default `paste` keystroke lands as a giant
+clipboard blob that many terminals render as `[Pasted N lines]` instead of
+real text, so routing terminal/Claude-Code windows to `"insert": "type"`
+(synthetic keystrokes) types the text in directly instead.
+
+Set `LOCAL_FLOW_CONTEXT_STYLES=false` to disable frontmost-app lookups
+entirely (e.g. if you don't want local-flow querying the active window).
+
 ## Use
 
 ```bash

@@ -77,6 +77,13 @@ class TestConfigObject:
         config = load_config(env={"LOCAL_FLOW_HISTORY_ENABLED": "false"})
         assert config.history_enabled is False
 
+    def test_context_styles_defaults_true(self):
+        assert load_config(env={}).context_styles is True
+
+    def test_context_styles_false_from_env(self):
+        config = load_config(env={"LOCAL_FLOW_CONTEXT_STYLES": "false"})
+        assert config.context_styles is False
+
 
 class TestHotkeyDefaults:
     def test_hotkey_defaults_to_fn_on_macos(self, monkeypatch):

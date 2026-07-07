@@ -70,26 +70,53 @@ def _build_vad(config: Config):
     return EnergyVAD(config.vad_energy_threshold)
 
 
-def _build_sink(config: Config):
-    from local_flow.insertion.base import InsertionManager
+def _insertion_sinks(method: str) -> list | None:
+    """Return the ordered list of low-level sinks for one ``insert_method``.
+
+    Shared by ``_build_sink`` (single sink for ``config.insert_method``) and
+    ``_build_sinks_by_method`` (one :class:`InsertionManager` per method, used
+    by the :class:`~local_flow.context.router.ContextRouter` for per-app
+    insert overrides) so both stay in lockstep.
+    """
     from local_flow.insertion.desktop import (
         ClipboardOnlySink,
         ClipboardPasteSink,
         TypingSink,
     )
 
-    sinks = {
+    return {
         "paste": [ClipboardPasteSink()],
         "type": [TypingSink()],
         "clipboard": [ClipboardOnlySink()],
         "auto": [ClipboardPasteSink(), TypingSink(), ClipboardOnlySink()],
-    }.get(config.insert_method)
+    }.get(method)
+
+
+def _build_sink(config: Config):
+    from local_flow.insertion.base import InsertionManager
+
+    sinks = _insertion_sinks(config.insert_method)
     if sinks is None:
         raise LocalFlowError(
             f"Unknown insert method {config.insert_method!r}.",
             hint="Use one of: auto, paste, type, clipboard.",
         )
     return InsertionManager(sinks)
+
+
+def _build_sinks_by_method() -> dict[str, object]:
+    """Build one :class:`InsertionManager` per known insert method.
+
+    Used by the context router so a per-app ``"insert": "type"`` rule can
+    route to a different sink than the pipeline's configured default.
+    """
+    from local_flow.insertion.base import InsertionManager
+
+    return {
+        method: InsertionManager(sinks)
+        for method in ("auto", "paste", "type", "clipboard")
+        if (sinks := _insertion_sinks(method)) is not None
+    }
 
 
 def _build_history_store(config: Config):
@@ -99,6 +126,28 @@ def _build_history_store(config: Config):
         config.data_dir,
         max_entries=config.history_max_entries,
         retention=config.history_retention,
+    )
+
+
+def _build_router(config: Config, store: PersonalizationStore):
+    """Build the context router, or ``None`` when context styles are off/unused.
+
+    Only constructed when ``config.context_styles`` is enabled AND
+    ``app_styles.json`` actually has rules configured, so the common case
+    (no per-app rules) never pays for a frontmost-app lookup per utterance.
+    """
+    if not config.context_styles:
+        return None
+    rules = store.app_rules()
+    if not rules:
+        return None
+    from local_flow.context.frontmost import create_frontmost_provider
+    from local_flow.context.router import ContextRouter
+
+    return ContextRouter(
+        provider=create_frontmost_provider(),
+        rules=rules,
+        sinks_by_method=_build_sinks_by_method(),
     )
 
 
@@ -127,6 +176,7 @@ def _build_pipeline(config: Config, chat_client, sink):
         sink=sink,
         command_mode=command_mode,
         history=history,
+        router=_build_router(config, store),
     )
 
 
@@ -182,6 +232,12 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"local-flow {__version__} environment check")
     print(f"  data dir      : {config.data_dir}")
     print(f"  ASR model     : {config.asr_model} (language: {config.asr_language})")
+
+    from local_flow.context.frontmost import create_frontmost_provider
+
+    info = create_frontmost_provider().current()
+    frontmost_label = info.app_id or info.title or "(unknown)"
+    print(f"  frontmost app : {frontmost_label}")
 
     from local_flow.errors import LMStudioError
 

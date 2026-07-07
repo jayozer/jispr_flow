@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from local_flow.asr.base import Transcriber
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
+from local_flow.context.router import ContextRouter, ResolvedContext
 from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import TextSink
 from local_flow.personalization.store import PersonalizationStore
@@ -39,6 +40,7 @@ class DictationPipeline:
         sink: TextSink,
         command_mode: CommandMode | None = None,
         history: HistoryStore | None = None,
+        router: ContextRouter | None = None,
     ) -> None:
         self.transcriber = transcriber
         self.polisher = polisher
@@ -46,6 +48,7 @@ class DictationPipeline:
         self.sink = sink
         self.command_mode = command_mode
         self.history = history
+        self.router = router
         self.last_transcript: str = ""
 
     def process_audio(
@@ -70,7 +73,9 @@ class DictationPipeline:
 
     def process_transcript(self, rough: str, duration_s: float = 0.0) -> DictationResult:
         """Run the text half of the pipeline and insert the result."""
-        polish = self.polisher.polish(rough)
+        ctx = self.router.resolve() if self.router is not None else ResolvedContext()
+
+        polish = self.polisher.polish(rough, style=ctx.style)
         text, dict_count = enforce_dictionary(polish.polished, self.store.dictionary_terms())
         text, snippet_count = expand_snippets(text, self.store.snippets())
         text, actions = apply_dictation_commands(text)
@@ -84,11 +89,12 @@ class DictationPipeline:
             used_llm=polish.used_llm,
             warnings=list(polish.warnings),
         )
+        sink = ctx.sink or self.sink
         if text or actions:
             if text:
-                self.sink.insert(text)
+                sink.insert(text)
             for action in actions:
-                self.sink.press_key(action)
+                sink.press_key(action)
             result.inserted = True
             if text:
                 self.last_transcript = text
@@ -98,7 +104,7 @@ class DictationPipeline:
                 rough=rough,
                 final=result.final,
                 used_llm=result.used_llm,
-                app="",
+                app=ctx.app_id,
                 duration_s=duration_s,
                 replacements=dict_count + snippet_count,
             )

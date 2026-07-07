@@ -11,11 +11,15 @@ import pytest
 import local_flow.context.frontmost as frontmost
 from local_flow.context import (
     AppInfo,
+    ContextRouter,
     FrontmostAppProvider,
     MockFrontmostApp,
+    ResolvedContext,
     create_frontmost_provider,
 )
 from local_flow.context.frontmost import MacFrontmostApp, WindowsFrontmostApp, X11FrontmostApp
+from local_flow.insertion.base import FakeTextSink
+from local_flow.personalization.store import AppRule
 
 
 class TestAppInfo:
@@ -272,3 +276,78 @@ class TestX11FrontmostApp:
 
     def test_timeout_budget_is_short(self):
         assert X11FrontmostApp._TIMEOUT <= 0.5
+
+
+class TestResolvedContext:
+    def test_defaults_mean_use_pipeline_defaults(self):
+        ctx = ResolvedContext()
+        assert ctx.app_id == ""
+        assert ctx.style is None
+        assert ctx.sink is None
+
+
+class TestContextRouter:
+    def test_mapped_app_resolves_style_and_sink(self):
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        type_sink = FakeTextSink()
+        rules = {"com.tinyspeck.slackmacgap": AppRule(style="casual", insert="type")}
+        router = ContextRouter(provider, rules, {"type": type_sink})
+
+        ctx = router.resolve()
+
+        assert ctx.app_id == "com.tinyspeck.slackmacgap"
+        assert ctx.style == "casual"
+        assert ctx.sink is type_sink
+
+    def test_unmapped_app_falls_back_to_pipeline_defaults(self):
+        provider = MockFrontmostApp(AppInfo("com.apple.mail", "Mail"))
+        rules = {"com.tinyspeck.slackmacgap": AppRule(style="casual")}
+        router = ContextRouter(provider, rules, {})
+
+        ctx = router.resolve()
+
+        assert ctx.app_id == "com.apple.mail"
+        assert ctx.style is None
+        assert ctx.sink is None
+
+    def test_no_rules_configured_falls_back_to_pipeline_defaults(self):
+        provider = MockFrontmostApp(AppInfo("com.apple.mail", "Mail"))
+        router = ContextRouter(provider, {}, {})
+
+        ctx = router.resolve()
+
+        assert ctx.app_id == "com.apple.mail"
+        assert ctx.style is None
+        assert ctx.sink is None
+
+    def test_empty_rule_is_harmless(self):
+        # A rule with neither style nor insert set (e.g. from `{"claude": {}}`)
+        # must resolve to pipeline defaults, not blow up or set an empty string
+        # style/sink lookup key.
+        provider = MockFrontmostApp(AppInfo("claude", "Claude"))
+        rules = {"claude": AppRule()}
+        router = ContextRouter(provider, rules, {"type": FakeTextSink()})
+
+        ctx = router.resolve()
+
+        assert ctx.app_id == "claude"
+        assert ctx.style is None
+        assert ctx.sink is None
+
+    def test_insert_method_not_in_sinks_map_falls_back_to_default_sink(self):
+        provider = MockFrontmostApp(AppInfo("claude", "Claude Code"))
+        rules = {"claude": AppRule(insert="type")}
+        router = ContextRouter(provider, rules, {})  # no "type" sink registered
+
+        ctx = router.resolve()
+
+        assert ctx.sink is None
+
+    def test_matches_against_title_when_app_id_unknown(self):
+        provider = MockFrontmostApp(AppInfo("", "Claude Code"))
+        rules = {"claude": AppRule(style="formal")}
+        router = ContextRouter(provider, rules, {})
+
+        ctx = router.resolve()
+
+        assert ctx.style == "formal"

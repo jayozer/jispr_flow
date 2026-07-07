@@ -64,6 +64,9 @@ class Config:
     style: str = "default"
     data_dir: Path = field(default_factory=_default_data_dir)
 
+    # Per-app context awareness (frontmost app -> style/insert overrides)
+    context_styles: bool = True
+
     # Text insertion
     insert_method: str = "auto"  # auto | paste | type | clipboard
 
@@ -153,6 +156,7 @@ def load_config(
         "hotkey_space_hold_ms": int,
         "history_enabled": bool,
         "history_max_entries": int,
+        "context_styles": bool,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}

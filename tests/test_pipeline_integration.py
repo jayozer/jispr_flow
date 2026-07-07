@@ -8,11 +8,13 @@ import pytest
 from local_flow.asr.mock import MockTranscriber
 from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
+from local_flow.context.frontmost import AppInfo, MockFrontmostApp
+from local_flow.context.router import ContextRouter
 from local_flow.errors import LMStudioConnectionError
 from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import FakeTextSink, InsertionManager
 from local_flow.llm.mock import MockChatClient
-from local_flow.personalization.store import PersonalizationStore
+from local_flow.personalization.store import AppRule, PersonalizationStore
 from local_flow.pipeline import DictationPipeline
 from local_flow.polish.polisher import TranscriptPolisher
 
@@ -35,7 +37,7 @@ def store(tmp_path):
     return store
 
 
-def make_pipeline(store, llm, sink, transcriber=None, history=None):
+def make_pipeline(store, llm, sink, transcriber=None, history=None, router=None):
     return DictationPipeline(
         transcriber=transcriber or MockTranscriber(["placeholder"]),
         polisher=TranscriptPolisher(llm, store),
@@ -43,6 +45,7 @@ def make_pipeline(store, llm, sink, transcriber=None, history=None):
         sink=sink,
         command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
         history=history,
+        router=router,
     )
 
 
@@ -186,3 +189,79 @@ class TestHistoryRecording:
         assert len(records) == 1
         assert records[0].duration_s == pytest.approx(expected_duration)
         assert expected_duration > 0
+
+
+class TestContextRoutingThroughPipeline:
+    """The router is consulted once per utterance and affects style/sink/history."""
+
+    def test_mapped_app_polishes_with_its_style(self, store):
+        # "casual" is one of the built-in seeded styles (relaxed tone, no
+        # greeting/sign-off); its rules text must reach the polish prompt.
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        router = ContextRouter(
+            provider, {"com.tinyspeck.slackmacgap": AppRule(style="casual")}, {}
+        )
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(store, llm, FakeTextSink(), router=router)
+
+        pipeline.process_transcript("hey team quick update")
+
+        casual_rules = store.style_rules("casual")[1]
+        system = llm.requests[0][0]["content"]
+        assert casual_rules in system
+
+    def test_unmapped_app_polishes_with_default_style(self, store):
+        provider = MockFrontmostApp(AppInfo("com.apple.mail", "Mail"))
+        router = ContextRouter(
+            provider, {"com.tinyspeck.slackmacgap": AppRule(style="casual")}, {}
+        )
+        llm = MockChatClient(["ok"])
+        pipeline = make_pipeline(store, llm, FakeTextSink(), router=router)
+
+        pipeline.process_transcript("hey team quick update")
+
+        casual_rules = store.style_rules("casual")[1]
+        default_rules = store.style_rules("default")[1]
+        system = llm.requests[0][0]["content"]
+        assert casual_rules not in system
+        assert default_rules in system
+
+    def test_per_app_insert_routes_to_the_configured_sink(self, store):
+        provider = MockFrontmostApp(AppInfo("claude", "Claude Code"))
+        type_sink = FakeTextSink()
+        router = ContextRouter(
+            provider, {"claude": AppRule(insert="type")}, {"type": type_sink}
+        )
+        default_sink = FakeTextSink()
+        llm = MockChatClient(["polished text"])
+        pipeline = make_pipeline(store, llm, default_sink, router=router)
+
+        pipeline.process_transcript("hello world")
+
+        assert type_sink.events
+        assert default_sink.events == []
+
+    def test_history_records_app_id_resolved_by_router(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        router = ContextRouter(provider, {}, {})
+        llm = MockChatClient(["hello"])
+        pipeline = make_pipeline(store, llm, FakeTextSink(), history=history, router=router)
+
+        pipeline.process_transcript("hello")
+
+        records = history.recent()
+        assert len(records) == 1
+        assert records[0].app == "com.tinyspeck.slackmacgap"
+
+    def test_router_none_is_byte_identical_to_no_routing(self, store, tmp_path):
+        """Guards the `router=None` default: same style, same sink, `app=""`."""
+        history = HistoryStore(tmp_path / "history")
+        llm = MockChatClient(["ok"])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink, history=history, router=None)
+
+        pipeline.process_transcript("hello world")
+
+        assert sink.events == [("insert", "ok")]
+        assert history.recent()[0].app == ""

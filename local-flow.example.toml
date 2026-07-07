@@ -26,6 +26,8 @@ cancel_hotkey = "esc"          # discards the in-flight dictation
 style = "default"              # a style name from styles.json
 data_dir = "~/.local/share/local-flow"
 
+context_styles = true          # false disables app_styles.json / frontmost-app lookups
+
 insert_method = "auto"         # auto | paste | type | clipboard
 sample_rate = 16000
 
