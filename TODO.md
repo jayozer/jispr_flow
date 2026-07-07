@@ -23,7 +23,7 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 
 ## Phase 3 — UX shell
 
-- [ ] **E6 — Tray app + setup wizard** — menu-bar icon with recording states, style + language quick-switch menus, desktop notifications, `local-flow setup` onboarding
+- [x] **E6 — Tray app + setup wizard** — menu-bar icon with recording states, style + language quick-switch menus, desktop notifications, `local-flow setup` onboarding *(live tray appearance = manual checklist in README)*
 
 ## Phase 4 — Latency
 
