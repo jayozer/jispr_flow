@@ -101,7 +101,26 @@ uv run local-flow run --mode hands-free   # VAD-segmented, no hotkey needed
 uv run local-flow polish "um send the uh draft, scratch that, the final doc"
 uv run local-flow command "make this formal" --text "hey can u fix the bug"
 uv run local-flow demo       # headless end-to-end proof with mocks
+uv run local-flow history                 # list recent dictations, newest first
+uv run local-flow history --search invoice --limit 5
+uv run local-flow history --verbose       # also show the rough (pre-polish) transcript
+uv run local-flow history --clear         # delete the local history file
 ```
+
+### History & privacy
+
+Every completed dictation (rough transcript, polished final, whether LM Studio
+was used, duration, replacement count) is appended as one JSON line to a local
+file: `<data dir>/history.jsonl` (e.g. `~/.local/share/local-flow/history.jsonl`).
+It never leaves your machine and is plain, hand-editable text.
+
+- Disable recording entirely with `LOCAL_FLOW_HISTORY_ENABLED=false`.
+- Control how long entries are kept with `LOCAL_FLOW_HISTORY_RETENTION`:
+  `forever` (default), `24h` (prune anything older on each write), or `off`
+  (never write).
+- `LOCAL_FLOW_HISTORY_MAX_ENTRIES` caps the file size by rotating out the
+  oldest entries beyond that count (default `5000`).
+- `uv run local-flow history --clear` deletes the file immediately.
 
 ## Architecture
 

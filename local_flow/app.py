@@ -6,6 +6,7 @@ Subcommands:
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``command`` one-shot command mode: transform text per an instruction
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
+- ``history`` list/search/clear the local dictation history
 """
 
 from __future__ import annotations
@@ -200,6 +201,52 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _truncate(text: str, limit: int = 80) -> str:
+    flattened = " ".join(text.split())
+    if len(flattened) <= limit:
+        return flattened
+    return flattened[:limit] + "..."
+
+
+def _cmd_history(args: argparse.Namespace, config: Config) -> int:
+    from local_flow.history.store import HistoryStore
+
+    store = HistoryStore(
+        config.data_dir,
+        max_entries=config.history_max_entries,
+        retention=config.history_retention,
+    )
+
+    if not config.history_enabled:
+        print(
+            "note: history recording is currently disabled "
+            "(LOCAL_FLOW_HISTORY_ENABLED=false); showing existing records, if any."
+        )
+
+    if args.clear:
+        path = store.path
+        store.clear()
+        print(f"cleared history: {path}")
+        return 0
+
+    records = (
+        store.search(args.search, limit=args.limit)
+        if args.search
+        else store.recent(limit=args.limit)
+    )
+    if not records:
+        print(f"no dictation history yet (file: {store.path})")
+        return 0
+
+    for record in records:
+        tag = "llm" if record.used_llm else "raw"
+        line = f'{record.timestamp}  [{tag}]  "{_truncate(record.final)}"'
+        if args.verbose:
+            line += f' (rough: "{_truncate(record.rough)}")'
+        print(line)
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.audio.vad import segment_stream
@@ -326,6 +373,20 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("check", help="diagnose LM Studio / ASR / audio / clipboard setup")
 
+    history_p = sub.add_parser("history", help="list/search/clear the local dictation history")
+    history_p.add_argument(
+        "--search", help="only show records containing this text (case-insensitive)"
+    )
+    history_p.add_argument(
+        "--limit", type=int, default=20, help="maximum number of records to show (default: 20)"
+    )
+    history_p.add_argument(
+        "--clear", action="store_true", help="delete the local history file"
+    )
+    history_p.add_argument(
+        "--verbose", action="store_true", help="also show the rough (pre-polish) transcript"
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -342,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         "polish": _cmd_polish,
         "command": _cmd_command,
         "check": _cmd_check,
+        "history": _cmd_history,
     }
     try:
         return handlers[args.command](args, config)

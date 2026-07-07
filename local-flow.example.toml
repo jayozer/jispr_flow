@@ -27,3 +27,7 @@ data_dir = "~/.local/share/local-flow"
 
 insert_method = "auto"         # auto | paste | type | clipboard
 sample_rate = 16000
+
+history_enabled = true         # false stops recording (existing history stays readable)
+history_max_entries = 5000     # rotate out the oldest entries beyond this count
+history_retention = "forever"  # forever | 24h (prune on each write) | off (never write)
