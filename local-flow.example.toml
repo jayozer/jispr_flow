@@ -10,18 +10,103 @@ asr_backend = "faster-whisper" # faster-whisper | mock
 asr_model = "small.en"         # name or path to a CTranslate2 model dir
 asr_device = "auto"            # auto | cpu | cuda
 asr_compute_type = "int8"
+asr_language = "en"            # en | ISO 639-1 code | auto (detect); non-en needs multilingual
 
 vad_backend = "energy"         # energy | webrtc | mock
 vad_aggressiveness = 2
 vad_frame_ms = 30
 vad_silence_ms = 600
 vad_energy_threshold = 500.0
+# Preset for quiet/whispered speech (see README "Microphone priority and
+# whisper mode"): normal (default) | whisper (lowers vad_energy_threshold to
+# 150 unless set explicitly, and peak-normalizes each utterance before ASR).
+vad_preset = "normal"
 
 mode = "push-to-talk"          # push-to-talk | hands-free
-hotkey = "f9"
+# Push-to-talk key: fn (macOS) | space | pynput key name; default fn on
+# macOS, f9 elsewhere. Left unset/commented here so the file works
+# unmodified on every platform.
+# hotkey = "fn"
+hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
+cancel_hotkey = "esc"          # discards the in-flight dictation
+# Priority-ordered, comma-separated microphone name substrings (case-
+# insensitive), e.g. "AirPods, USB"; empty (default) means system default.
+mic_priority = ""
+
+# Mouse-button push-to-talk (see README "Mouse push-to-talk"): an optional
+# second listener that runs alongside the keyboard hotkey. Non-primary
+# buttons only -- left/right are reserved for normal clicking and rejected
+# at load. Empty (default) disables it entirely.
+mouse_button = ""              # "" (disabled) | middle | x1 | x2
+mouse_mode = "hold"            # hold (press-and-hold) | toggle (click on/off)
+# A second, always-on click handler independent of mouse_mode: pressing this
+# button sends "enter" through the configured sink. Same allowed values as
+# mouse_button; empty (default) disables it.
+mouse_enter_button = ""
 
 style = "default"              # a style name from styles.json
+# Auto-cleanup level for the polish pass (see README "Cleanup levels").
+# none (verbatim, no rule cleanup/LM Studio call) | light (fillers/grammar
+# only) | medium (default) | high (rewrite for concision). Dictionary/
+# snippets/dictation commands still apply at "none" -- personalization, not
+# cleanup.
+cleanup_level = "medium"
 data_dir = "~/.local/share/local-flow"
+
+languages = ""                 # comma-separated ISO codes for the tray's Language
+                                # quick-switch menu (e.g. "en,de,fr"); empty hides it
+
+context_styles = true          # false disables app_styles.json / frontmost-app lookups
+
+# Field-text awareness (see README "Context-aware dictation"): best-effort
+# reading of the focused field's existing text so polish continues
+# sentences, matches tone, and reuses nearby name spellings. Best-effort and
+# platform-limited (macOS only for now; Windows/Linux are documented gaps).
+# Field text is sent only to your local LM Studio server, never stored.
+context_awareness = true
 
 insert_method = "auto"         # auto | paste | type | clipboard
 sample_rate = 16000
+# Crash-safe audio autosave (see README "Crash-safe audio recovery"): saves
+# each utterance's PCM under <data dir>/pending/ before processing, deletes
+# it once handled. `local-flow recover` replays anything a crash left behind.
+audio_recovery = true
+# Utterances longer than this (minutes) log a warning after processing
+# (does not truncate or otherwise change what gets inserted).
+max_utterance_min = 20
+
+history_enabled = true         # false stops recording (existing history stays readable)
+history_max_entries = 5000     # rotate out the oldest entries beyond this count
+history_retention = "forever"  # forever | 24h (prune on each write) | off (never write)
+
+# Streaming / low-latency insertion (hands-free mode only; see README "Streaming").
+# Ignored (with a one-line notice) in push-to-talk mode.
+streaming = "off"              # off | sentence (insert each sentence early) | live-preview
+streaming_pause_ms = 300       # "sentence" mode: pause (ms) that closes/inserts a chunk
+
+# Transform-in-place hotkey (see README "Transform anywhere"): tap this key
+# to apply transform_default to the current OS selection, in place. Empty
+# (default) disables the feature entirely. Must be distinct from hotkey and
+# command_hotkey.
+transform_hotkey = ""
+transform_default = "Polish"   # a transforms.json name
+
+# Voice command mode hotkey (see README "Voice command mode"): hold this key
+# and speak an edit instruction instead of typing one; applied to the
+# current selection (if any) or your last dictation. Empty (default)
+# disables it entirely. Must be distinct from hotkey and transform_hotkey.
+command_hotkey = ""
+
+# Auto-transform (see README "Auto-transform"): a transforms.json name to
+# run on every dictation's final text, right before insertion. Empty
+# (default) disables it entirely -- zero behavior change. Skipped at
+# cleanup_level="none" or with no LM Studio client configured; an unknown
+# name fails fast at startup.
+auto_transform = ""
+
+# Scratchpad dictate-to-pad hotkey (see README "Dictate to scratchpad"): tap
+# this key to toggle routing live dictation into the scratchpad's active
+# note instead of the configured insertion sink; tap again to resume normal
+# insertion. Empty (default) disables it entirely. Must be distinct from
+# hotkey, transform_hotkey, and command_hotkey.
+scratchpad_hotkey = ""

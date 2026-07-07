@@ -7,6 +7,8 @@ These rules run locally with no model involved:
 - dictionary enforcement (canonical spellings such as "PostgreSQL")
 - snippet expansion (spoken trigger phrases -> stored text)
 - dictation commands ("new line", "new paragraph", trailing "press enter")
+- spoken dictionary additions ("add JiSpr to the dictionary")
+- spoken code syntax ("camel case order total" -> "orderTotal")
 """
 
 from __future__ import annotations
@@ -103,33 +105,59 @@ def clean_transcript(text: str, fillers: Iterable[str] = FILLER_WORDS) -> str:
     return remove_fillers(apply_backtracking(text), fillers)
 
 
-def enforce_dictionary(text: str, terms: Iterable[str]) -> str:
+def enforce_dictionary_detailed(text: str, terms: Iterable[str]) -> tuple[str, dict[str, int]]:
     """Rewrite case-insensitive matches of each term to its canonical form.
 
     Multi-word terms tolerate flexible whitespace, so ``"jispr   flow"``
     still becomes ``"JiSpr Flow"``. Matches respect word boundaries.
+
+    Returns ``(text, counts)`` where ``counts`` maps each term to the number
+    of substitutions performed for it; terms with zero matches are omitted.
     """
+    counts: dict[str, int] = {}
     for term in terms:
-        if not term.strip():
+        stripped = term.strip()
+        if not stripped:
             continue
-        escaped = re.escape(term.strip()).replace(r"\ ", r"\s+")
-        text = re.sub(rf"(?i)(?<!\w){escaped}(?!\w)", term.strip(), text)
-    return text
+        escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", stripped, text)
+        if count:
+            counts[stripped] = counts.get(stripped, 0) + count
+    return text, counts
 
 
-def expand_snippets(text: str, snippets: Mapping[str, str]) -> str:
+def enforce_dictionary(text: str, terms: Iterable[str]) -> tuple[str, int]:
+    """Rewrite case-insensitive matches of each term to its canonical form.
+
+    Multi-word terms tolerate flexible whitespace, so ``"jispr   flow"``
+    still becomes ``"JiSpr Flow"``. Matches respect word boundaries.
+
+    Returns ``(text, count)`` where ``count`` is the number of substitutions
+    performed across all terms. Thin wrapper around
+    :func:`enforce_dictionary_detailed` for callers that only need the total.
+    """
+    text, counts = enforce_dictionary_detailed(text, terms)
+    return text, sum(counts.values())
+
+
+def expand_snippets(text: str, snippets: Mapping[str, str]) -> tuple[str, int]:
     """Replace spoken trigger phrases with their stored expansions.
 
     Triggers match case-insensitively on word boundaries; longer triggers win
     so ``"sig block work"`` is preferred over ``"sig block"``.
+
+    Returns ``(text, count)`` where ``count`` is the number of substitutions
+    performed across all triggers.
     """
+    total = 0
     for trigger in sorted(snippets, key=len, reverse=True):
         if not trigger.strip():
             continue
         escaped = re.escape(trigger.strip()).replace(r"\ ", r"\s+")
         expansion = snippets[trigger]
-        text = re.sub(rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _e=expansion: _e, text)
-    return text
+        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _e=expansion: _e, text)
+        total += count
+    return text, total
 
 
 def apply_dictation_commands(text: str) -> tuple[str, list[str]]:
@@ -160,3 +188,118 @@ def apply_dictation_commands(text: str) -> tuple[str, list[str]]:
     text = re.sub(r"(?i)[,.]?\s*\bnew\s+paragraph\b[,.]?\s*", "\n\n", text)
     text = re.sub(r"(?i)[,.]?\s*\b(?:new\s+line|newline)\b[,.]?\s*", "\n", text)
     return normalize_whitespace(text), actions
+
+
+# "add <1-4 words> to [the] dictionary" — the term is captured greedily up to
+# the trailing "to (the) dictionary" so multi-word terms ("Kubernetes
+# cluster") are captured whole rather than just their last word.
+_ADD_TO_DICTIONARY_RE = re.compile(
+    r"(?i)\badd\s+((?:\S+\s+){0,3}\S+)\s+to\s+(?:the\s+)?dictionary\b[.,!?]*"
+)
+
+
+def extract_dictionary_additions(text: str) -> tuple[str, list[str]]:
+    """Pull spoken "add X to [the] dictionary" phrases out of ``text``.
+
+    Returns ``(text, terms)``: ``terms`` lists each captured term (trimmed)
+    in the order spoken, and the matched phrases are removed from ``text``
+    with whitespace repaired via :func:`normalize_whitespace`. Multiple
+    occurrences in the same utterance are all extracted. Pure rules — this
+    runs whether or not LM Studio is reachable.
+    """
+    terms: list[str] = []
+
+    def _capture(match: re.Match[str]) -> str:
+        terms.append(match.group(1).strip())
+        return " "
+
+    text = _ADD_TO_DICTIONARY_RE.sub(_capture, text)
+    return normalize_whitespace(text), terms
+
+
+# "camel case <1-4 words>" / "snake case <1-4 words>" / "all caps <1-4 words>":
+# the trigger is followed by up to four letters/digits-only words (greedy --
+# always claims the maximum available run up to four, it does not try to
+# guess where a "natural" phrase boundary is). This is a simple deterministic
+# rule, not a language model, so the same trigger words used as ordinary
+# language ("I like snake case better") will also convert -- a known,
+# accepted false-positive risk for this MVP feature (see README).
+_CODE_WORD = r"[A-Za-z0-9]+"
+_SPOKEN_CODE_RE = re.compile(
+    rf"(?i)\b(camel case|snake case|all caps)\s+((?:{_CODE_WORD}\s+){{0,3}}{_CODE_WORD})"
+)
+
+# Continuous speech runs the converted phrase straight into whatever comes
+# next ("snake case user id and then send it"), and the greedy word-run above
+# doesn't know where the identifier "ends" -- it would happily fold "and
+# then" into the token too. Post-filtering the matched words at the first of
+# these connector/filler words keeps the conversion bounded to the identifier
+# itself; everything from the connector onward is left as ordinary,
+# unconverted text. Lowercase comparison only (spoken words, no punctuation).
+_CODE_SYNTAX_CONNECTORS: frozenset[str] = frozenset(
+    {
+        "and", "then", "so", "but", "or", "with", "to", "for",
+        "the", "a", "an", "is", "are", "was", "please",
+    }
+)
+
+
+def _to_camel_case(words: list[str]) -> str:
+    if not words:
+        return ""
+    return words[0].lower() + "".join(w.capitalize() for w in words[1:])
+
+
+def _to_snake_case(words: list[str]) -> str:
+    return "_".join(w.lower() for w in words)
+
+
+def _to_all_caps(words: list[str]) -> str:
+    return " ".join(w.upper() for w in words)
+
+
+_SPOKEN_CODE_TRANSFORMS = {
+    "camel case": _to_camel_case,
+    "snake case": _to_snake_case,
+    "all caps": _to_all_caps,
+}
+
+
+def apply_spoken_code_syntax(text: str) -> tuple[str, int]:
+    """Convert spoken code-syntax phrases into literal code tokens.
+
+    ``"camel case order total"`` -> ``"orderTotal"``; ``"snake case user
+    id"`` -> ``"user_id"``; ``"all caps api key"`` -> ``"API KEY"``. Each
+    trigger phrase (case-insensitive) is followed by 1-4 words made up of
+    letters/digits only. Multiple occurrences in the same text are all
+    converted.
+
+    The matched word-run stops at the first common connector/filler word
+    (see :data:`_CODE_SYNTAX_CONNECTORS`), so "snake case user id and then
+    send it" converts only "user id" and leaves "and then send it" as plain
+    text. If every word in the window is itself a connector (e.g. "snake
+    case and"), there is nothing to convert -- the whole phrase, trigger
+    included, is left exactly as spoken.
+
+    Returns ``(text, count)`` where ``count`` is the number of phrases
+    converted.
+    """
+    count = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal count
+        words = match.group(2).split()
+        boundary = next(
+            (i for i, w in enumerate(words) if w.lower() in _CODE_SYNTAX_CONNECTORS),
+            len(words),
+        )
+        if boundary == 0:
+            return match.group(0)
+        transform = _SPOKEN_CODE_TRANSFORMS[match.group(1).lower()]
+        count += 1
+        converted = transform(words[:boundary])
+        remainder = " ".join(words[boundary:])
+        return f"{converted} {remainder}" if remainder else converted
+
+    text = _SPOKEN_CODE_RE.sub(_replace, text)
+    return normalize_whitespace(text), count
