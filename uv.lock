@@ -360,6 +360,7 @@ dependencies = [
 all = [
     { name = "faster-whisper" },
     { name = "pynput" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyperclip" },
     { name = "sounddevice" },
@@ -374,6 +375,7 @@ audio = [
 ]
 desktop = [
     { name = "pynput" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin'" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin'" },
     { name = "pyperclip" },
 ]
@@ -390,6 +392,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "local-flow", extras = ["audio", "asr", "desktop"], marker = "extra == 'all'" },
     { name = "pynput", marker = "extra == 'desktop'", specifier = ">=1.8.0" },
+    { name = "pyobjc-framework-cocoa", marker = "sys_platform == 'darwin' and extra == 'desktop'", specifier = ">=9.0" },
     { name = "pyobjc-framework-quartz", marker = "sys_platform == 'darwin' and extra == 'desktop'", specifier = ">=9.0" },
     { name = "pyperclip", marker = "extra == 'desktop'", specifier = ">=1.9.0" },
     { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.4.7" },
