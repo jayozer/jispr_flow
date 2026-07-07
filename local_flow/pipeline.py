@@ -67,9 +67,12 @@ class DictationPipeline:
         # best-effort reader of the focused field's existing text, consulted
         # once per utterance right alongside `router.resolve()` (see
         # `process_transcript`) and passed to `self.polisher.polish` as
-        # `field_context`. `None` (the default, and what every non-desktop
-        # build gets since `local_flow.app._build_pipeline` only constructs
-        # one when `config.context_awareness` is on) is a complete no-op --
+        # `field_context` -- except when that call's `sink_override` is set,
+        # in which case it's skipped entirely (the frontmost field isn't
+        # where the text is landing, see `process_transcript`). `None` (the
+        # default, and what every non-desktop build gets since
+        # `local_flow.app._build_pipeline` only constructs one when
+        # `config.context_awareness` is on) is a complete no-op --
         # byte-identical to before this feature existed.
         self.field_text = field_text
         self.last_transcript: str = ""
@@ -112,17 +115,32 @@ class DictationPipeline:
         applied normally either way -- only the SINK portion of routing is
         overridden. ``None`` (the default) is byte-identical to before this
         parameter existed.
+
+        ``sink_override`` also disables ``self.field_text`` for this call:
+        the focused field's existing text describes wherever the CURSOR
+        happens to be, not wherever this utterance is actually landing (the
+        scratchpad note), so consulting it would steer polish off a field
+        the text never touches.
         """
         ctx = self.router.resolve() if self.router is not None else ResolvedContext()
 
         field_context = None
-        if self.field_text is not None and self.polisher.level != "none":
+        if (
+            self.field_text is not None
+            and self.polisher.level != "none"
+            and sink_override is None
+        ):
             # Best-effort, consulted once per utterance right alongside the
             # router above (see `FieldTextProvider.current`'s never-raises
             # contract). Skipped entirely at cleanup_level="none": that
             # level never calls the LLM at all (see `TranscriptPolisher.
             # polish`), so there is nothing for a context block to feed and
-            # reading the focused field would be pure overhead.
+            # reading the focused field would be pure overhead. Also skipped
+            # whenever `sink_override` is set (the scratchpad dictate-to-pad
+            # hotkey, see this method's docstring): the frontmost field is
+            # NOT where this utterance's text is about to land, so its
+            # existing text is irrelevant to -- and would actively mis-steer
+            # -- the polish prompt's "continue this field" instructions.
             field_context = self.field_text.current()
 
         polish = self.polisher.polish(rough, style=ctx.style, field_context=field_context)

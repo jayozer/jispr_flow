@@ -183,6 +183,17 @@ class Config:
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
+    """Parse a minimal ``.env``-style file into a ``{KEY: value}`` dict.
+
+    Blank lines and full-line ``#`` comments are skipped; surrounding
+    single/double quotes on the value are stripped. A trailing `` #``
+    -prefixed (space-then-hash) inline comment is also stripped from the
+    value, e.g. ``KEY=value   # comment`` -> ``"value"`` -- values in this
+    project never legitimately contain a space followed by a hash, so this
+    is unambiguous. Without this, a copy-pasted example line with an inline
+    comment (see ``.env.example``) would silently become part of the value
+    and fail whatever validation that field has.
+    """
     values: dict[str, str] = {}
     if not path.is_file():
         return values
@@ -191,7 +202,11 @@ def _read_dotenv(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
-        values[key.strip()] = value.strip().strip("'\"")
+        value = value.strip()
+        comment_at = value.find(" #")
+        if comment_at != -1:
+            value = value[:comment_at].rstrip()
+        values[key.strip()] = value.strip("'\"")
     return values
 
 
@@ -346,19 +361,22 @@ def load_config(
             hint="Use a different button for each, or leave one of them empty.",
         )
 
-    # Every configured keyboard hotkey (the main hotkey, transform_hotkey,
-    # command_hotkey, scratchpad_hotkey) must be distinct, case-insensitively
-    # -- two listeners bound to the same key would race for the same physical
-    # keypress with no defined winner. Checked pairwise, skipping any that are
-    # empty (disabled), so leaving transform_hotkey/command_hotkey/
-    # scratchpad_hotkey unset (the default) never trips this. Mouse buttons
-    # (mouse_button/mouse_enter_button) are a separate input device/namespace
-    # -- "middle"/"x1"/"x2" -- and are validated on their own above; they
+    # Every configured keyboard hotkey (the main hotkey, cancel_hotkey,
+    # transform_hotkey, command_hotkey, scratchpad_hotkey) must be distinct,
+    # case-insensitively -- two listeners bound to the same key would race
+    # for the same physical keypress with no defined winner. Checked
+    # pairwise. cancel_hotkey has no "disabled" state (unlike the optional
+    # trio below) so it always participates; transform_hotkey/command_hotkey/
+    # scratchpad_hotkey are skipped when empty (disabled), so leaving them
+    # unset (the default) never trips this. Mouse buttons (mouse_button/
+    # mouse_enter_button) are a separate input device/namespace --
+    # "middle"/"x1"/"x2" -- and are validated on their own above; they
     # can never collide with a keyboard key name, so they are not part of
     # this check.
     seen_hotkeys: dict[str, str] = {}
     for field_name, value in (
         ("hotkey", config.hotkey),
+        ("cancel_hotkey", config.cancel_hotkey),
         ("transform_hotkey", config.transform_hotkey),
         ("command_hotkey", config.command_hotkey),
         ("scratchpad_hotkey", config.scratchpad_hotkey),
@@ -369,10 +387,11 @@ def load_config(
         if key in seen_hotkeys:
             raise ConfigError(
                 f"{field_name} and {seen_hotkeys[key]} cannot both be {value!r}.",
-                hint="hotkey, transform_hotkey, command_hotkey, and "
-                "scratchpad_hotkey must all be distinct; leave "
+                hint="hotkey, cancel_hotkey, transform_hotkey, command_hotkey, "
+                "and scratchpad_hotkey must all be distinct; leave "
                 "transform_hotkey/command_hotkey/scratchpad_hotkey empty to "
-                "disable that feature.",
+                "disable that feature (cancel_hotkey has no disabled state, "
+                "so it must be reassigned instead).",
             )
         seen_hotkeys[key] = field_name
 

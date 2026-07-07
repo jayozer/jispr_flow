@@ -23,7 +23,10 @@ vad_energy_threshold = 500.0
 vad_preset = "normal"
 
 mode = "push-to-talk"          # push-to-talk | hands-free
-hotkey = "fn"                  # fn (macOS) | space | pynput key name; default f9 off-macOS
+# Push-to-talk key: fn (macOS) | space | pynput key name; default fn on
+# macOS, f9 elsewhere. Left unset/commented here so the file works
+# unmodified on every platform.
+# hotkey = "fn"
 hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
 cancel_hotkey = "esc"          # discards the in-flight dictation
 # Priority-ordered, comma-separated microphone name substrings (case-

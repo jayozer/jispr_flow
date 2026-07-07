@@ -21,7 +21,9 @@ pynput for hotkeys, ...).
 
 GUI behavior itself (does the window actually appear, stay on top, redraw on
 an external edit) is manual-verify only -- see the README's manual checklist.
-Only construction and the tkinter-missing error path are exercised in tests.
+Only construction, the tkinter-missing error path, and the pure decision
+helpers (`_should_autosave`, `_should_abort_note_switch`) are exercised in
+tests.
 """
 
 from __future__ import annotations
@@ -58,6 +60,23 @@ def _should_autosave(disk_mtime: float | None, known_mtime: float | None) -> boo
     return disk_mtime == known_mtime
 
 
+def _should_abort_note_switch(*, was_dirty: bool, flush_succeeded: bool) -> bool:
+    """Whether `_on_note_selected` must abort switching notes rather than
+    proceed with the newly-picked note.
+
+    True only when the OLD note's buffer had unsaved edits (`was_dirty`)
+    AND the flush attempted before switching (`_autosave`) was refused due
+    to an on-disk conflict (`not flush_succeeded`) -- i.e. exactly the case
+    where proceeding would silently discard the user's unsaved text with no
+    way to recover it. When the buffer was clean there was nothing to flush
+    (always proceed); when the flush succeeded, the buffer is safely on
+    disk under the OLD note (also always proceed). A pure function of the
+    two booleans so the decision itself is unit-testable without a real
+    `Tk` instance.
+    """
+    return was_dirty and not flush_succeeded
+
+
 class ScratchpadWindow:
     """A small always-on-top editor over one `NoteStore`'s active note.
 
@@ -85,8 +104,14 @@ class ScratchpadWindow:
     silently destroying that external write (the old behavior), the stale
     autosave is a no-op: the user's buffer stays in the widget untouched,
     the external content on disk stays untouched, and the window title
-    flips to a visible conflict notice until the user switches notes (or
-    otherwise reconciles the mtimes) -- no data lost on either side.
+    flips to a visible conflict notice. Switching notes is ALSO refused
+    while that conflict is unresolved (`_on_note_selected`/
+    `_should_abort_note_switch`) -- previously switching still flushed and
+    proceeded even on a refused autosave, silently dropping the buffer,
+    exactly the data loss this whole mechanism exists to prevent. The way
+    out is to copy the buffer's text somewhere safe, then reload (e.g.
+    restart the window) to pick up the external content fresh -- no data
+    lost on either side.
     """
 
     def __init__(self, store: NoteStore) -> None:
@@ -174,7 +199,7 @@ class ScratchpadWindow:
             self.root.after_cancel(self._autosave_job)
         self._autosave_job = self.root.after(_AUTOSAVE_DEBOUNCE_MS, self._autosave)
 
-    def _autosave(self) -> None:
+    def _autosave(self) -> bool:
         """Write the Text widget's buffer to disk -- unless `_should_autosave`
         says the note file changed on disk since this window last loaded or
         saved it (see the class docstring's third sync rule). On a conflict,
@@ -184,27 +209,45 @@ class ScratchpadWindow:
         external content already on disk is untouched), and the window title
         gets a conflict notice so the stall isn't invisible to the user. The
         next edit re-arms the debounce timer as usual, so this re-checks
-        (and can resolve) the next time the user types or switches notes.
+        (and can resolve) the next time the user types.
+
+        Returns whether the write actually happened (`True`) or was refused
+        due to a conflict (`False`) -- `_on_note_selected` uses this to
+        decide whether it's safe to switch notes without losing the buffer
+        (see `_should_abort_note_switch`).
         """
         self._autosave_job = None
         disk_mtime = self._mtime()
         if not _should_autosave(disk_mtime, self._note_mtime):
             self.root.title(
                 f"local-flow scratchpad — {self._current_note} — conflict: "
-                "note changed on disk; copy your text or switch notes"
+                "note changed on disk; copy your text, then reload"
             )
-            return
+            return False
         content = self.text.get("1.0", "end-1c")
         self.store.write(content, name=self._current_note)
         self._dirty = False
         self._note_mtime = self._mtime()
+        return True
 
     def _on_note_selected(self, name: str) -> None:
-        if self._dirty:
+        was_dirty = self._dirty
+        flush_succeeded = True
+        if was_dirty:
             # Flush pending edits to the OLD note before switching, so
             # picking a different note from the menu never silently drops
             # unsaved work.
-            self._autosave()
+            flush_succeeded = self._autosave()
+        if _should_abort_note_switch(was_dirty=was_dirty, flush_succeeded=flush_succeeded):
+            # The flush was conflict-refused (see `_autosave`): the OLD
+            # note's buffer is still unsaved and switching now would discard
+            # it with no way back. Abort -- reset the OptionMenu selection
+            # back to the note that's still showing (tkinter's OptionMenu
+            # already flipped `self._note_var` to `name` before invoking
+            # this callback) and leave everything else untouched; the
+            # conflict title `_autosave` just set explains what to do next.
+            self._note_var.set(self._current_note)
+            return
         self._current_note = name
         self.store.set_active(name)
         self.root.title(f"local-flow scratchpad — {name}")

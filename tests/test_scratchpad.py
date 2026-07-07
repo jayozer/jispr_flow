@@ -8,7 +8,11 @@ from local_flow.app import main
 from local_flow.errors import LocalFlowError
 from local_flow.scratchpad.sink import ScratchpadSink
 from local_flow.scratchpad.store import NoteStore
-from local_flow.scratchpad.window import ScratchpadWindow, _should_autosave
+from local_flow.scratchpad.window import (
+    ScratchpadWindow,
+    _should_abort_note_switch,
+    _should_autosave,
+)
 
 
 class TestNoteStoreBasics:
@@ -512,3 +516,34 @@ class TestShouldAutosave:
         # still a change since our last known state, so still not safe to
         # blindly overwrite (recreate) without the user's awareness.
         assert _should_autosave(None, 100.0) is False
+
+
+class TestShouldAbortNoteSwitch:
+    """`_should_abort_note_switch` (pure helper, review fix): before this
+    fix, `_on_note_selected` flushed via `_autosave()` and then switched
+    notes UNCONDITIONALLY, even when `_autosave` had just refused to write
+    because of an on-disk conflict (see `TestShouldAutosave`) -- silently
+    dropping the user's unsaved buffer, exactly the data loss the README
+    promises never happens ("neither side's text is ever silently
+    destroyed"). `_on_note_selected` now aborts the switch (and resets the
+    `OptionMenu` selection back to the current note) whenever the flush it
+    just attempted was refused. This helper is the pure yes/no decision
+    behind that; the actual `OptionMenu`/title side effects need a real
+    `Tk` instance and are manual-verify only.
+    """
+
+    def test_clean_buffer_never_aborts(self):
+        # Nothing was dirty, so nothing needed to flush -- the switch always
+        # proceeds.
+        assert _should_abort_note_switch(was_dirty=False, flush_succeeded=True) is False
+
+    def test_dirty_buffer_with_successful_flush_does_not_abort(self):
+        # The old note's edits made it to disk safely -- switching now loses
+        # nothing.
+        assert _should_abort_note_switch(was_dirty=True, flush_succeeded=True) is False
+
+    def test_dirty_buffer_with_refused_flush_aborts(self):
+        # The flush was conflict-refused (an external write landed on the
+        # OLD note while it was dirty) -- switching now would discard the
+        # user's unsaved edits with no way back.
+        assert _should_abort_note_switch(was_dirty=True, flush_succeeded=False) is True

@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from local_flow.config import Config, load_config
+from local_flow.config import Config, _read_dotenv, load_config
 from local_flow.errors import ConfigError
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class TestDefaults:
@@ -343,3 +345,97 @@ class TestMaxUtteranceMinField:
     def test_bad_numeric_value_raises_config_error(self):
         with pytest.raises(ConfigError, match="max_utterance_min"):
             load_config(env={"LOCAL_FLOW_MAX_UTTERANCE_MIN": "soon"})
+
+
+class TestCancelHotkeyCollision:
+    """`cancel_hotkey` joins the hotkey-distinctness check (review finding):
+    it previously covered only hotkey/transform_hotkey/command_hotkey/
+    scratchpad_hotkey pairwise, so setting `cancel_hotkey` to the same key as
+    any of those silently created an undefined-winner race between two
+    listeners on the same physical keypress.
+    """
+
+    def test_same_as_main_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="cancel_hotkey") as excinfo:
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "f9", "LOCAL_FLOW_CANCEL_HOTKEY": "f9"}
+            )
+        assert "distinct" in excinfo.value.hint
+
+    def test_same_as_transform_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="cancel_hotkey"):
+            load_config(
+                env={
+                    "LOCAL_FLOW_HOTKEY": "fn",
+                    "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                    "LOCAL_FLOW_CANCEL_HOTKEY": "f6",
+                }
+            )
+
+    def test_default_esc_does_not_collide_with_default_hotkey(self):
+        # cancel_hotkey defaults to "esc", the main hotkey to "fn" (macOS) or
+        # "f9" elsewhere -- neither must ever be treated as a collision out
+        # of the box.
+        config = load_config(env={})
+        assert config.cancel_hotkey == "esc"
+        assert config.hotkey != config.cancel_hotkey
+
+    def test_all_defaults_together_are_accepted(self):
+        # Every hotkey field at its default (cancel_hotkey="esc", the others
+        # empty/platform-default) must load without raising.
+        config = load_config(env={})
+        assert config.cancel_hotkey == "esc"
+        assert config.transform_hotkey == config.command_hotkey == config.scratchpad_hotkey == ""
+
+
+class TestReadDotenvInlineComments:
+    """`_read_dotenv` (review finding): a copy-pasted `.env.example` line like
+    ``LOCAL_FLOW_MOUSE_MODE=hold             # hold (press-and-hold) | ...``
+    used to leave the trailing comment IN the parsed value (`"hold ... #
+    ... toggle (click on/off)"`), which then failed `mouse_mode`'s enum
+    check -- bricking onboarding for anyone who followed the README's "copy
+    .env.example to .env" instruction. `_read_dotenv` now strips a trailing
+    `` #``-prefixed (space-then-hash) inline comment from the value.
+    """
+
+    def test_inline_comment_is_stripped_to_a_clean_value(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "LOCAL_FLOW_MOUSE_MODE=hold             "
+            "# hold (press-and-hold) | toggle (click on/off)\n",
+            encoding="utf-8",
+        )
+        values = _read_dotenv(env_file)
+        assert values["LOCAL_FLOW_MOUSE_MODE"] == "hold"
+
+    def test_value_with_no_inline_comment_is_unaffected(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("LOCAL_FLOW_HOTKEY=f9\n", encoding="utf-8")
+        assert _read_dotenv(env_file)["LOCAL_FLOW_HOTKEY"] == "f9"
+
+    def test_quoted_value_with_inline_comment_still_strips_quotes(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            'LOCAL_FLOW_STYLE="default"   # a style name from styles.json\n',
+            encoding="utf-8",
+        )
+        assert _read_dotenv(env_file)["LOCAL_FLOW_STYLE"] == "default"
+
+
+class TestEnvExampleFileIsValid:
+    """Regression pin (review finding): `.env.example` copied verbatim to
+    `.env`, exactly as the README instructs, must always produce a loadable
+    config. Pins the whole file, not just the one line that broke it, so any
+    future uncommented inline comment (or other stray value) fails this test
+    instead of silently bricking onboarding again.
+    """
+
+    def test_env_example_loads_without_error(self, tmp_path):
+        env_example = REPO_ROOT / ".env.example"
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(env_example.read_text(encoding="utf-8"), encoding="utf-8")
+
+        values = _read_dotenv(dotenv_path)
+        config = load_config(env=values)
+
+        assert isinstance(config, Config)

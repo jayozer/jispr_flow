@@ -515,6 +515,39 @@ class TestPipelineFieldTextIntegration:
         assert field_provider.calls == 0
         assert llm.requests == []
 
+    def test_provider_not_consulted_when_sink_override_is_set(self, tmp_path):
+        # sink_override (scratchpad dictate-to-pad hotkey) means this
+        # utterance's text is NOT going into the frontmost field -- it's
+        # going into the scratchpad note. Reading the frontmost field's text
+        # and feeding it to polish as "existing text in the target field"
+        # would be wrong in that case, so the provider must be skipped
+        # entirely rather than just its output being discarded.
+        llm = MockChatClient(["polished"])
+        field_provider = _CountingFieldText(FieldContext(before_cursor="Dear Dr. Adithya,"))
+        pipeline = self._pipeline(tmp_path, llm, field_provider)
+        override_sink = FakeTextSink()
+
+        pipeline.process_transcript(
+            "thanks for the referral", sink_override=override_sink
+        )
+
+        assert field_provider.calls == 0
+        system = llm.requests[0][0]["content"]
+        assert "Dear Dr. Adithya," not in system
+        assert "continuing existing text" not in system
+        assert override_sink.events == [("insert", "polished")]
+
+    def test_provider_still_consulted_without_sink_override(self, tmp_path):
+        llm = MockChatClient(["polished"])
+        field_provider = _CountingFieldText(FieldContext(before_cursor="Dear Dr. Adithya,"))
+        pipeline = self._pipeline(tmp_path, llm, field_provider)
+
+        pipeline.process_transcript("thanks for the referral")
+
+        assert field_provider.calls == 1
+        system = llm.requests[0][0]["content"]
+        assert "Dear Dr. Adithya," in system
+
     def test_history_is_unaffected_by_field_context(self, tmp_path):
         from local_flow.history.store import HistoryStore
 

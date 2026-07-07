@@ -282,8 +282,9 @@ window, when that external-refresh poll is skipped so it can never clobber
 what you're mid-typing. The reverse race is guarded too: if an external
 write lands on disk while you have unsaved edits, the next autosave notices
 the note's mtime moved and refuses to overwrite it, instead flipping the
-window title to a conflict notice until you copy your text out or switch
-notes -- so neither side's text is ever silently destroyed.
+window title to a conflict notice and refusing to switch notes until you
+copy your text out, then reload (e.g. restart the window) -- so neither
+side's text is ever silently destroyed.
 
 **Two-process design, on purpose:** `--window` runs as its own blocking main
 program (like `local-flow tray`'s menu-bar icon) rather than as a thread
@@ -1009,11 +1010,17 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     works with `local-flow check`/`local-flow run` without edits.
 20. Re-running `setup` against an existing config asks to overwrite; answering
     anything but `y` leaves the existing file untouched.
+
+Microphone priority & whisper mode:
+
 21. `LOCAL_FLOW_MIC_PRIORITY="AirPods"` with AirPods connected → `local-flow
     check`'s input-device listing marks the AirPods entry as selected.
 22. `LOCAL_FLOW_VAD_PRESET=whisper` with `--mode hands-free` → speaking at a
     whisper still transcribes (compare against `vad_preset=normal`, where the
     same whisper often goes undetected).
+
+Mouse push-to-talk:
+
 23. `LOCAL_FLOW_MOUSE_BUTTON=middle uv run local-flow run` → hold the middle
     mouse button to dictate, release to insert (also works with a side-button
     mouse via `x1`/`x2` on Windows/Linux). With `LOCAL_FLOW_MOUSE_MODE=toggle`,
@@ -1026,6 +1033,9 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     `LOCAL_FLOW_MOUSE_BUTTON` unset) → clicking the middle button presses
     Enter through the sink; no mouse push-to-talk is offered (only the
     keyboard hotkey dictates).
+
+Transcribe & text transforms:
+
 25. `uv run local-flow transcribe memo.m4a --polish` → polished notes print
     to stdout; with two files, each is preceded by a `== filename ==` header.
 26. Highlight text in any app, run `uv run local-flow transform Polish
@@ -1043,6 +1053,9 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
 29. `LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run` → every
     dictation lands pre-polished by the named transform, on top of the
     normal cleanup level.
+
+Personal insights & scratchpad:
+
 30. `uv run local-flow stats` → totals, streak, and heatmap print for your
     real history; `--since 7d`/`--since all` narrow/widen the window, and an
     empty store (or empty window) prints a friendly message instead of
@@ -1056,6 +1069,9 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     → text lands in the active scratchpad note, not the focused app; tap F8
     again → normal insertion resumes. Works the same whether or not
     `pad --window` is open in another terminal.
+
+Context-aware dictation:
+
 33. (macOS) Focus a text field/document ending "Dear Dr. Adithya," and
     dictate "thanks for the referral" → the polished result continues
     naturally (no repeated greeting) and "Adithya" keeps its exact spelling.
