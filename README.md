@@ -1,9 +1,14 @@
-# local-flow
+# Jispr Flow
 
 Local-first, open-source desktop dictation in the spirit of "flow"-style
 dictation apps — built from scratch, with **no** proprietary code, branding,
 assets, or network services. Speak; a local ASR model transcribes; a local
 LM Studio model polishes; the result lands in your active app.
+
+> **Name:** the app is **Jispr Flow**. Its CLI command and Python package are
+> `local-flow` and `local_flow` — that's what you type in the examples below
+> (e.g. `uv run local-flow run`), and what config filenames, paths, and
+> `LOCAL_FLOW_*` environment variables are keyed on.
 
 **Privacy statement:** everything runs on your machine. Audio never leaves
 your computer; transcripts are only sent to *your own* LM Studio server
@@ -62,7 +67,7 @@ Entry points: `uv run local-flow` or `uv run python -m local_flow`.
    - **Qwen2.5 3B Instruct** or **Phi-3.5 mini** on weaker hardware
 3. Load the model, open the **Developer** tab, and **Start Server**
    (default `http://localhost:1234`).
-4. Optionally set `LOCAL_FLOW_LMSTUDIO_MODEL`; left empty, local-flow
+4. Optionally set `LOCAL_FLOW_LMSTUDIO_MODEL`; left empty, Jispr Flow
    auto-picks the first loaded model.
 
 LM Studio is used **only** for text polish and command mode — never for
@@ -126,7 +131,7 @@ Personalization lives in the data dir as hand-editable JSON:
 
 ## Per-app styles & insertion
 
-local-flow can look at the frontmost app/window when a dictation finishes and
+Jispr Flow can look at the frontmost app/window when a dictation finishes and
 apply a different polish style and/or insertion method for it. Add
 `app_styles.json` to your data dir — it's the only personalization file that
 is *not* auto-created, so it simply does nothing until you add one:
@@ -155,7 +160,7 @@ real text, so routing terminal/Claude-Code windows to `"insert": "type"`
 (synthetic keystrokes) types the text in directly instead.
 
 Set `LOCAL_FLOW_CONTEXT_STYLES=false` to disable frontmost-app lookups
-entirely (e.g. if you don't want local-flow querying the active window).
+entirely (e.g. if you don't want Jispr Flow querying the active window).
 
 ## Use
 
@@ -400,7 +405,7 @@ Notes on the numbers:
 Before an utterance's audio is handed to the pipeline, its raw PCM is saved
 as a WAV file under `<data dir>/pending/` (a uuid-named file, no clock
 dependency); the file is deleted the moment that utterance finishes
-processing successfully. If local-flow crashes, is force-quit, or the
+processing successfully. If Jispr Flow crashes, is force-quit, or the
 insertion step fails partway through, the WAV is left behind instead of the
 dictation being silently lost.
 
@@ -494,7 +499,7 @@ setting `x1`/`x2` there raises an actionable error at listener start.
 
 ### Teach it your words
 
-local-flow can learn dictionary terms from what you actually say, two ways:
+Jispr Flow can learn dictionary terms from what you actually say, two ways:
 
 **Mine your history** — `local-flow learn` scans recent dictations for
 words you use repeatedly that aren't in your dictionary yet: proper nouns,
@@ -514,7 +519,7 @@ and dictionary haven't changed in between, so a number you saw in one run is
 safe to pass to `--add` in the next.
 
 **Say it while dictating** — mid-utterance, say "add \<term\> to the
-dictionary" (or "... to dictionary") and local-flow strips that phrase from
+dictionary" (or "... to dictionary") and Jispr Flow strips that phrase from
 the inserted text and adds `<term>` to your dictionary on the spot, e.g.
 "we should containerize this, add JiSpr Flow to the dictionary, before the
 demo" inserts "we should containerize this, before the demo" and adds
@@ -527,7 +532,7 @@ line") can't be added this way — use `local-flow learn` or edit
 ### Spoken code syntax
 
 Say "camel case", "snake case", or "all caps" followed by 1-4 words and
-local-flow converts them into the literal code token, e.g.:
+Jispr Flow converts them into the literal code token, e.g.:
 
 - "camel case order total" -> `orderTotal`
 - "snake case user id" -> `user_id`
@@ -608,7 +613,7 @@ hand-editable like `styles.json`/`snippets.json`. Two ship built in:
 **Polish** (clarity/concision rewrite) and **Prompt Engineer** (restructures
 text into a goal/context/constraints/output-format AI prompt). They're
 seeded into `transforms.json` only the first time the store is created --
-add, remove, or edit entries freely afterward and local-flow leaves your file
+add, remove, or edit entries freely afterward and Jispr Flow leaves your file
 alone (unlike `styles.json`, built-ins added in a later version are *not*
 backfilled into an existing `transforms.json`).
 
@@ -703,7 +708,7 @@ LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run   # every dictation gets 
 
 ### Context-aware dictation
 
-local-flow can peek at the focused field's *existing* text (best-effort,
+Jispr Flow can peek at the focused field's *existing* text (best-effort,
 read-only) so the polish pass continues what's already there instead of
 re-greeting or clashing with it: dictating "thanks for the referral" after a
 note that ends "Dear Dr. Adithya," comes back as a continuation, not a
@@ -723,7 +728,7 @@ written to disk, never logged, and never sent anywhere else. Secure fields
 (password inputs) are protected by macOS itself: the Accessibility API
 withholds a secure field's contents from any reader, this app included, so
 there's nothing for `MacAXFieldText` to read there in the first place --
-local-flow adds no extra guard of its own beyond that OS-level behavior, and
+Jispr Flow adds no extra guard of its own beyond that OS-level behavior, and
 whatever (non-secure) field text it does read is, as above, sent only to
 your local LM Studio server and never stored.
 
@@ -733,7 +738,7 @@ the same *Accessibility* permission already required for paste/type -- see
 (permission denied, an app that doesn't expose it, etc.) it silently
 degrades to no context, same as if the feature were off. Windows and Linux
 currently always report no context: Windows would need COM interop
-(`comtypes`), a dependency this project doesn't have yet, so `local-flow`
+(`comtypes`), a dependency this project doesn't have yet, so Jispr Flow
 ships an honest stub there rather than untested COM-automation code; Linux
 has no accessibility-text adapter yet. Dictation itself is unaffected on
 either platform -- this is strictly an extra hint for the polish pass when
@@ -911,7 +916,7 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
 
 ## Platform permission notes & hotkey limitations
 
-- **macOS** — the terminal running local-flow needs *Microphone*,
+- **macOS** — the terminal running Jispr Flow needs *Microphone*,
   *Accessibility* (to paste/type), and *Input Monitoring* (global hotkey)
   permissions under System Settings → Privacy & Security. macOS prompts on
   first use; restart the terminal after granting.
@@ -934,7 +939,7 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   the `fn` hotkey only `esc` is supported as the cancel key).
   Note: using Fn as a modifier (e.g. Fn+arrow) also triggers dictation
   start/stop — pick another key if you use Fn combos heavily.
-  When paste fails, local-flow falls back to synthetic typing, then to
+  When paste fails, Jispr Flow falls back to synthetic typing, then to
   clipboard-only with a message — the text is never lost.
 - Mouse push-to-talk (`LOCAL_FLOW_MOUSE_BUTTON`, see "Mouse push-to-talk"):
   `middle` works everywhere pynput's mouse backend runs; `x1`/`x2` (side
