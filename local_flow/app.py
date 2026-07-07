@@ -30,6 +30,7 @@ from local_flow.status import ConsoleReporter, StatusReporter
 
 if TYPE_CHECKING:
     from local_flow.asr.base import Transcriber
+    from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
 
 
@@ -304,6 +305,29 @@ def _display_timestamp(raw: str) -> str:
     return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _resolve_history_record(store: HistoryStore, n: int):
+    """Resolve record ``n`` (1-based) against the plain newest-first listing.
+
+    Used by ``--show``/``--reinsert-raw``: both operate on the same ordering
+    as the unfiltered ``local-flow history`` listing, ignoring any
+    ``--search``/``--limit`` given alongside them, so a number a user saw in
+    a plain listing always resolves to the same record.
+    """
+    if n < 1:
+        raise LocalFlowError(
+            f"invalid record number {n}.",
+            hint="record numbers start at 1, as shown by `local-flow history`.",
+        )
+    records = store.recent(limit=n)
+    if len(records) < n:
+        count = len(records)
+        raise LocalFlowError(
+            f"no record #{n} (history has {count} record{'s' if count != 1 else ''}).",
+            hint="run `local-flow history` to see valid record numbers.",
+        )
+    return records[n - 1]
+
+
 def _cmd_history(args: argparse.Namespace, config: Config) -> int:
     store = _build_history_store(config)
 
@@ -317,6 +341,21 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
         path = store.path
         store.clear()
         print(f"cleared history: {path}")
+        return 0
+
+    if args.show is not None:
+        record = _resolve_history_record(store, args.show)
+        tag = "llm" if record.used_llm else "raw"
+        print(f"{_display_timestamp(record.timestamp)}  [{tag}]  record #{args.show}")
+        print(f"rough: {record.rough}")
+        print(f"final: {record.final}")
+        return 0
+
+    if args.reinsert_raw is not None:
+        record = _resolve_history_record(store, args.reinsert_raw)
+        sink = _build_sink(config)
+        sink.insert(record.rough)
+        print(f"reinserted rough text from record #{args.reinsert_raw}: {record.rough!r}")
         return 0
 
     records = (
@@ -708,6 +747,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     history_p.add_argument(
         "--verbose", action="store_true", help="also show the rough (pre-polish) transcript"
+    )
+    history_p.add_argument(
+        "--show",
+        type=int,
+        metavar="N",
+        help="print record N's full rough and final text (1-based, newest-first "
+        "as in the plain listing; ignores --search/--limit)",
+    )
+    history_p.add_argument(
+        "--reinsert-raw",
+        type=int,
+        metavar="N",
+        help="undo a bad AI edit: re-insert record N's rough (pre-polish) transcript "
+        "verbatim through the configured text sink (1-based, newest-first as in "
+        "the plain listing; ignores --search/--limit)",
     )
 
     learn_p = sub.add_parser(

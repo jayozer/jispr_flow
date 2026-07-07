@@ -8,6 +8,7 @@ These rules run locally with no model involved:
 - snippet expansion (spoken trigger phrases -> stored text)
 - dictation commands ("new line", "new paragraph", trailing "press enter")
 - spoken dictionary additions ("add JiSpr to the dictionary")
+- spoken code syntax ("camel case order total" -> "orderTotal")
 """
 
 from __future__ import annotations
@@ -214,3 +215,61 @@ def extract_dictionary_additions(text: str) -> tuple[str, list[str]]:
 
     text = _ADD_TO_DICTIONARY_RE.sub(_capture, text)
     return normalize_whitespace(text), terms
+
+
+# "camel case <1-4 words>" / "snake case <1-4 words>" / "all caps <1-4 words>":
+# the trigger is followed by up to four letters/digits-only words (greedy --
+# always claims the maximum available run up to four, it does not try to
+# guess where a "natural" phrase boundary is). This is a simple deterministic
+# rule, not a language model, so the same trigger words used as ordinary
+# language ("I like snake case better") will also convert -- a known,
+# accepted false-positive risk for this MVP feature (see README).
+_CODE_WORD = r"[A-Za-z0-9]+"
+_SPOKEN_CODE_RE = re.compile(
+    rf"(?i)\b(camel case|snake case|all caps)\s+((?:{_CODE_WORD}\s+){{0,3}}{_CODE_WORD})"
+)
+
+
+def _to_camel_case(words: list[str]) -> str:
+    if not words:
+        return ""
+    return words[0].lower() + "".join(w.capitalize() for w in words[1:])
+
+
+def _to_snake_case(words: list[str]) -> str:
+    return "_".join(w.lower() for w in words)
+
+
+def _to_all_caps(words: list[str]) -> str:
+    return " ".join(w.upper() for w in words)
+
+
+_SPOKEN_CODE_TRANSFORMS = {
+    "camel case": _to_camel_case,
+    "snake case": _to_snake_case,
+    "all caps": _to_all_caps,
+}
+
+
+def apply_spoken_code_syntax(text: str) -> tuple[str, int]:
+    """Convert spoken code-syntax phrases into literal code tokens.
+
+    ``"camel case order total"`` -> ``"orderTotal"``; ``"snake case user
+    id"`` -> ``"user_id"``; ``"all caps api key"`` -> ``"API KEY"``. Each
+    trigger phrase (case-insensitive) is followed by 1-4 words made up of
+    letters/digits only. Multiple occurrences in the same text are all
+    converted.
+
+    Returns ``(text, count)`` where ``count`` is the number of phrases
+    converted.
+    """
+    count = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal count
+        transform = _SPOKEN_CODE_TRANSFORMS[match.group(1).lower()]
+        count += 1
+        return transform(match.group(2).split())
+
+    text = _SPOKEN_CODE_RE.sub(_replace, text)
+    return normalize_whitespace(text), count

@@ -14,6 +14,7 @@ from local_flow.personalization.store import PersonalizationStore
 from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.polish.rules import (
     apply_dictation_commands,
+    apply_spoken_code_syntax,
     enforce_dictionary,
     enforce_dictionary_detailed,
     expand_snippets,
@@ -84,6 +85,12 @@ class DictationPipeline:
         dict_count = sum(dict_counts.values())
         text, snippet_count = expand_snippets(text, self.store.snippets())
         text, actions = apply_dictation_commands(text)
+        code_count = 0
+        if self.polisher.level != "none":
+            # Skipped at cleanup_level="none": that level is a full verbatim
+            # bypass (see TranscriptPolisher.polish), so spoken code-syntax
+            # phrases are left as literally spoken rather than converted.
+            text, code_count = apply_spoken_code_syntax(text)
         text, dictionary_additions = extract_dictionary_additions(text)
 
         result = DictationResult(
@@ -121,7 +128,7 @@ class DictationPipeline:
                 used_llm=result.used_llm,
                 app=ctx.app_id,
                 duration_s=duration_s,
-                replacements=dict_count + snippet_count,
+                replacements=dict_count + snippet_count + code_count,
             )
 
         return result

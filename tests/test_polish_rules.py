@@ -1,8 +1,11 @@
 """Unit tests for the deterministic transcript cleanup rules."""
 
+import pytest
+
 from local_flow.polish.rules import (
     apply_backtracking,
     apply_dictation_commands,
+    apply_spoken_code_syntax,
     clean_transcript,
     enforce_dictionary,
     enforce_dictionary_detailed,
@@ -208,3 +211,67 @@ class TestSnippetReplacementCount:
         )
         assert text == "SIG now and SIG again"
         assert count == 2
+
+
+class TestSpokenCodeSyntax:
+    @pytest.mark.parametrize(
+        "text, expected, count",
+        [
+            ("camel case order total", "orderTotal", 1),
+            ("snake case user id", "user_id", 1),
+            ("all caps api key", "API KEY", 1),
+            ("all caps api", "API", 1),
+            ("snake case id", "id", 1),
+            ("camel case id", "id", 1),
+            ("CAMEL CASE order Total", "orderTotal", 1),
+            ("snake case Foo Bar BAZ", "foo_bar_baz", 1),
+        ],
+    )
+    def test_table_driven_conversions(self, text, expected, count):
+        result, actual_count = apply_spoken_code_syntax(text)
+        assert result == expected
+        assert actual_count == count
+
+    def test_trigger_absent_leaves_text_unchanged(self):
+        text = "just a normal sentence about nothing special"
+        result, count = apply_spoken_code_syntax(text)
+        assert result == text
+        assert count == 0
+
+    def test_trigger_with_no_following_words_is_unchanged(self):
+        text = "that formatting is all caps"
+        result, count = apply_spoken_code_syntax(text)
+        assert result == text
+        assert count == 0
+
+    def test_claims_at_most_four_following_words(self):
+        text, count = apply_spoken_code_syntax("snake case foo bar baz qux quux")
+        assert text == "foo_bar_baz_qux quux"
+        assert count == 1
+
+    def test_multiple_occurrences_all_converted(self):
+        # Separated by a period (not a word) so each match's greedy word-run
+        # stops there instead of swallowing into the next trigger phrase --
+        # see `test_greedy_matching_can_swallow_unrelated_words` below for
+        # the documented false-positive case when a plain word separates them.
+        text, count = apply_spoken_code_syntax(
+            "camel case order total. snake case user id"
+        )
+        assert text == "orderTotal. user_id"
+        assert count == 2
+
+    def test_greedy_matching_can_swallow_unrelated_words(self):
+        # Documented false-positive risk (see README): the rule always
+        # claims the maximum available run of up to four following words,
+        # so back-to-back trigger phrases joined by ordinary words can merge
+        # into one conversion instead of two.
+        text, count = apply_spoken_code_syntax(
+            "camel case order total and snake case user id"
+        )
+        assert text == "orderTotalAndSnake case user id"
+        assert count == 1
+
+    def test_embedded_in_a_sentence_with_trailing_punctuation(self):
+        text, count = apply_spoken_code_syntax("please rename it to camel case order total.")
+        assert text == "please rename it to orderTotal."
+        assert count == 1

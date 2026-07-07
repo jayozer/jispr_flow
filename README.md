@@ -161,6 +161,8 @@ uv run local-flow history                 # list recent dictations, newest first
 uv run local-flow history --search invoice --limit 5
 uv run local-flow history --verbose       # also show the rough (pre-polish) transcript
 uv run local-flow history --clear         # delete the local history file
+uv run local-flow history --show 1        # print record #1's full rough + final text
+uv run local-flow history --reinsert-raw 1   # undo a bad AI edit: re-insert record #1's rough text
 uv run local-flow learn                   # mine history for candidate dictionary terms
 uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dictionary
 uv run local-flow tray                    # menu-bar app (see "Tray app" below)
@@ -180,6 +182,21 @@ It never leaves your machine and is plain, hand-editable text.
 - `LOCAL_FLOW_HISTORY_MAX_ENTRIES` caps the file size by rotating out the
   oldest entries beyond that count (default `5000`).
 - `uv run local-flow history --clear` deletes the file immediately.
+
+**Undo a bad AI edit** — `N` in `--show N`/`--reinsert-raw N` is always
+1-based against the plain, unfiltered `local-flow history` listing (newest
+first); `--search`/`--limit` given alongside them are ignored, so the number
+you see in a plain listing always means the same record.
+
+- `local-flow history --show N` prints record `N`'s full rough (pre-polish)
+  and final (post-polish) text, untruncated — useful for seeing exactly what
+  the polish pass changed.
+- `local-flow history --reinsert-raw N` re-inserts record `N`'s rough
+  transcript, verbatim, through your configured insertion method — an undo
+  for when the AI polish mangled something: dictate again over the bad
+  result, or paste the raw words back in yourself and fix them by hand.
+- Out-of-range `N` fails with a friendly error naming how many records
+  exist, instead of a traceback.
 
 ### Teach it your words
 
@@ -212,6 +229,29 @@ even when LM Studio is unreachable. Spoken adds are extracted *after*
 dictation commands, so a term that is itself a command phrase (e.g. "new
 line") can't be added this way — use `local-flow learn` or edit
 `dictionary.json` directly for those.
+
+### Spoken code syntax
+
+Say "camel case", "snake case", or "all caps" followed by 1-4 words and
+local-flow converts them into the literal code token, e.g.:
+
+- "camel case order total" -> `orderTotal`
+- "snake case user id" -> `user_id`
+- "all caps api key" -> `API KEY`
+
+This is pure rule-based text processing (`apply_spoken_code_syntax` in
+`local_flow/polish/rules.py`), so it keeps working even when LM Studio is
+unreachable, and the phrase is protected from the LLM polish pass so it
+survives to be converted afterward. It is skipped entirely at
+`LOCAL_FLOW_CLEANUP_LEVEL=none` (verbatim mode: nothing is transformed).
+
+**Known false-positive risk:** this is a simple deterministic rule, not a
+language model — it always claims the maximum available run of up to four
+following words, so an ordinary sentence that happens to contain "camel
+case"/"snake case"/"all caps" followed by more words (e.g. "I still prefer
+snake case for variable names") will also get converted. Speak the trigger
+phrase right next to the words you want converted, with nothing else
+following, to avoid this.
 
 ## Cleanup levels
 

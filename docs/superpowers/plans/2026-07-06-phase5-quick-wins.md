@@ -32,7 +32,7 @@ Standard set (local-only, lazy platform imports, Config/env/TOML pattern with va
 
 **Tests:** table-driven conversions (multi-word, single word, mixed case input, trigger absent → unchanged, count); pipeline integration LLM-down; `--show`/`--reinsert-raw` against a seeded history (incl. out-of-range N friendly error).
 
-- [ ] TDD → commit `feat(polish): spoken code syntax and history undo/reinsert-raw`
+- [x] TDD → commit `feat(polish): spoken code syntax and history undo/reinsert-raw`
 
 ### Task 3 (E11): Crash-safe audio + retry
 

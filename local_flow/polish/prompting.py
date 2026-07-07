@@ -43,6 +43,19 @@ _LIST_FORMATTING = (
     "them as a proper numbered or bulleted list instead of a run-on sentence."
 )
 
+# Shared across every LLM level: spoken code-syntax phrases (see
+# `local_flow.polish.rules.apply_spoken_code_syntax`) must survive polish
+# untouched so the rules stage can still convert them afterward. Appended
+# separately from `_PROTECTIONS` (rather than folded into it) because
+# `_PROTECTIONS` feeds `POLISH_SYSTEM_PROMPT`, which is pinned byte-identical
+# to the pre-cleanup-levels prompt (see
+# `tests/test_cleanup_levels.py::TestMediumPromptPinned`).
+_CODE_SYNTAX_PROTECTION = (
+    "Also keep spoken code-syntax phrases like 'camel case ...', 'snake case "
+    "...', and 'all caps ...' exactly as spoken, word for word, so they can "
+    "still be converted afterward."
+)
+
 # The cleanup instruction proper -- this is the only segment that differs
 # between levels; everything else above is shared.
 _CLEANUP_LIGHT = (
@@ -87,9 +100,12 @@ def _system_prompt_for_level(level: str) -> str:
     before calling this).
     """
     cleanup = _CLEANUP_BY_LEVEL.get(level, _CLEANUP_MEDIUM)
-    # For `medium` this equals `POLISH_SYSTEM_PROMPT` + " " + `_LIST_FORMATTING`,
-    # so the assembled prompt still starts with `POLISH_SYSTEM_PROMPT` verbatim.
-    return f"{cleanup} {_PROTECTIONS} {_RETURN_ONLY} {_LIST_FORMATTING}"
+    # For `medium` this starts with `POLISH_SYSTEM_PROMPT` verbatim, followed
+    # by `_LIST_FORMATTING` and `_CODE_SYNTAX_PROTECTION`.
+    return (
+        f"{cleanup} {_PROTECTIONS} {_RETURN_ONLY} {_LIST_FORMATTING} "
+        f"{_CODE_SYNTAX_PROTECTION}"
+    )
 
 
 def build_polish_messages(

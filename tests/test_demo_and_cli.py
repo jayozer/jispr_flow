@@ -211,6 +211,140 @@ class TestHistoryCommand:
         )
 
 
+class TestHistoryShowAndReinsertRaw:
+    """`history --show N` / `--reinsert-raw N`: 1-based, newest-first ordering
+    matching the plain listing, ignoring --search/--limit (see docstring on
+    `local_flow.app._resolve_history_record`).
+    """
+
+    def test_show_prints_full_rough_and_final_of_record_n(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="rough one " * 20, final="Final one " * 20)
+        store.append_new(rough="rough two " * 20, final="Final two " * 20)
+
+        # Newest first: record #1 is the most recently appended ("two").
+        code = main(["history", "--show", "1"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert ("rough two " * 20).strip() in out
+        assert ("Final two " * 20).strip() in out
+
+        code = main(["history", "--show", "2"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert ("rough one " * 20).strip() in out
+        assert ("Final one " * 20).strip() in out
+
+    def test_show_ignores_search_and_limit(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="alpha", final="Alpha.")
+        store.append_new(rough="beta", final="Beta.")
+
+        code = main(["history", "--show", "2", "--search", "beta", "--limit", "1"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "alpha" in out
+
+    def test_show_out_of_range_gives_friendly_error(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="only one", final="Only one.")
+
+        code = main(["history", "--show", "5"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "no record #5" in err
+        assert "hint" in err
+
+    def test_reinsert_raw_sends_rough_through_the_configured_sink(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        from local_flow.insertion.base import FakeTextSink
+
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="the rough words", final="A polished rewrite.")
+
+        fake_sink = FakeTextSink()
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_sink", lambda config: fake_sink)
+
+        code = main(["history", "--reinsert-raw", "1"])
+        assert code == 0
+        assert fake_sink.events == [("insert", "the rough words")]
+        out = capsys.readouterr().out
+        assert "the rough words" in out
+
+    def test_reinsert_raw_out_of_range_gives_friendly_error(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        code = main(["history", "--reinsert-raw", "1"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "no record #1" in err
+        assert "hint" in err
+
+
+class TestSpokenCodeSyntaxPipelineIntegration:
+    """`apply_spoken_code_syntax` runs in the pipeline, LLM-down included."""
+
+    def _make_pipeline(self, tmp_path, level="medium"):
+        from local_flow.asr.mock import MockTranscriber
+        from local_flow.insertion.base import FakeTextSink
+        from local_flow.pipeline import DictationPipeline
+        from local_flow.polish.polisher import TranscriptPolisher
+
+        store = PersonalizationStore(tmp_path)
+        sink = FakeTextSink()
+        polisher = TranscriptPolisher(None, store, level=level)  # no chat client: LLM down
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=polisher,
+            store=store,
+            sink=sink,
+        )
+        return pipeline, sink
+
+    def test_converts_camel_case_with_llm_down(self, tmp_path):
+        pipeline, sink = self._make_pipeline(tmp_path)
+        result = pipeline.process_transcript("camel case order total")
+        assert result.final == "orderTotal"
+        assert sink.events[0] == ("insert", "orderTotal")
+
+    def test_converts_snake_case_and_all_caps_with_llm_down(self, tmp_path):
+        pipeline, sink = self._make_pipeline(tmp_path)
+        result = pipeline.process_transcript("snake case user id")
+        assert result.final == "user_id"
+
+        pipeline, sink = self._make_pipeline(tmp_path)
+        result = pipeline.process_transcript("all caps api key")
+        assert result.final == "API KEY"
+
+    def test_replacements_count_includes_code_syntax_conversions(self, tmp_path):
+        from local_flow.history.store import HistoryStore
+
+        history = HistoryStore(tmp_path / "history")
+        pipeline, _sink = self._make_pipeline(tmp_path)
+        pipeline.history = history
+
+        pipeline.process_transcript("camel case order total")
+
+        record = history.recent()[0]
+        assert record.replacements == 1
+
+    def test_skipped_entirely_at_cleanup_level_none(self, tmp_path):
+        pipeline, sink = self._make_pipeline(tmp_path, level="none")
+        result = pipeline.process_transcript("camel case order total")
+        assert result.final == "camel case order total"
+        assert sink.events[0] == ("insert", "camel case order total")
+
+
 class TestLearnCommand:
     def test_no_history_prints_friendly_message(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
