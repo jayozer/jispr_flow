@@ -7,6 +7,7 @@ Subcommands:
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``transcribe`` transcribe audio file(s) through the local ASR (+ polish)
 - ``command`` one-shot command mode: transform text per an instruction
+- ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
 - ``learn``   mine history for candidate dictionary terms, optionally add them
@@ -82,6 +83,22 @@ def _build_chat_client(config: Config):
         model=config.lmstudio_model,
         timeout=config.lmstudio_timeout,
     )
+
+
+def _build_selection_capture(config: Config):
+    """Build the real (pynput/pyperclip-backed) :class:`SelectionCapture`.
+
+    A standalone function -- rather than constructing it inline in
+    ``_cmd_transform`` -- so tests can monkeypatch
+    ``local_flow.app._build_selection_capture`` to inject a
+    :class:`~local_flow.transforms.selection.MockSelectionBackend`, the same
+    seam ``_build_chat_client``/``_build_sink`` provide for their adapters.
+    ``config`` is unused today but kept for signature symmetry with those
+    builders (and in case a future config knob tunes poll timing).
+    """
+    from local_flow.transforms.selection import PynputSelectionBackend, SelectionCapture
+
+    return SelectionCapture(PynputSelectionBackend())
 
 
 def _build_transcriber(config: Config):
@@ -311,6 +328,73 @@ def _cmd_command(args: argparse.Namespace, config: Config) -> int:
         style_rules=style_rules,
     )
     print(command_mode.run(args.instruction, target_text=args.text))
+    return 0
+
+
+def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
+    """Apply a named transform (``transforms.json``) to ``--text`` or the
+    current OS selection.
+
+    ``--list`` short-circuits before any name/text/selection validation.
+    Otherwise exactly one of ``--text``/``--selection`` is required; a
+    selection capture that finds nothing highlighted fails with a hint
+    rather than silently transforming an empty string. The chat client is
+    only built once there is confirmed text to send it, so ``--list`` and a
+    "nothing selected" failure never need LM Studio reachable.
+    """
+    store = PersonalizationStore(config.data_dir)
+    transforms = store.transforms()
+
+    if args.list:
+        if not transforms:
+            print("no transforms configured")
+        else:
+            for name in transforms:
+                print(name)
+        return 0
+
+    if not args.name:
+        raise LocalFlowError(
+            "transform needs a name.",
+            hint="Run `local-flow transform --list` to see available names.",
+        )
+    if args.name not in transforms:
+        raise LocalFlowError(
+            f"Unknown transform {args.name!r}.",
+            hint=f"Known transforms: {', '.join(transforms) or '(none)'}. "
+            f"Edit {config.data_dir / 'transforms.json'} to add one.",
+        )
+
+    text_given = args.text is not None
+    selection_given = args.selection
+    if text_given == selection_given:  # both or neither
+        raise LocalFlowError(
+            "transform needs exactly one of --text or --selection.",
+            hint='Pass either --text "..." or --selection, not both/neither.',
+        )
+
+    from local_flow.transforms.registry import apply_transform
+
+    prompt = transforms[args.name]
+
+    if selection_given:
+        capture = _build_selection_capture(config)
+        selected = capture.capture()
+        if not selected:
+            raise LocalFlowError(
+                "No text is selected.",
+                hint="Highlight some text in the frontmost app before running "
+                "`local-flow transform ... --selection`.",
+            )
+        chat_client = _build_chat_client(config)
+        result = apply_transform(chat_client, prompt, selected)
+        capture.replace(result)
+        print(f"replaced selection with the {args.name!r} transform.", file=sys.stderr)
+        return 0
+
+    chat_client = _build_chat_client(config)
+    result = apply_transform(chat_client, prompt, args.text)
+    print(result)
     return 0
 
 
@@ -1163,6 +1247,24 @@ def main(argv: list[str] | None = None) -> int:
         help="use a mock LLM (echoes input) instead of LM Studio",
     )
 
+    transform_p = sub.add_parser(
+        "transform", help="apply a named AI rewrite to --text or the current OS selection"
+    )
+    transform_p.add_argument(
+        "name", nargs="?", help="transform name, e.g. Polish (see --list)"
+    )
+    transform_p.add_argument(
+        "--text", help="transform this text and print the result (headless)"
+    )
+    transform_p.add_argument(
+        "--selection",
+        action="store_true",
+        help="capture the current OS selection, transform it, and replace it in place",
+    )
+    transform_p.add_argument(
+        "--list", action="store_true", help="list available transform names and exit"
+    )
+
     sub.add_parser("check", help="diagnose LM Studio / ASR / audio / clipboard setup")
 
     sub.add_parser(
@@ -1253,6 +1355,7 @@ def main(argv: list[str] | None = None) -> int:
         "polish": _cmd_polish,
         "transcribe": _cmd_transcribe,
         "command": _cmd_command,
+        "transform": _cmd_transform,
         "check": _cmd_check,
         "history": _cmd_history,
         "learn": _cmd_learn,

@@ -11,9 +11,14 @@ hand-editable files that are created with commented defaults on first use:
   spoken trigger phrases expanded into stored text.
 - ``styles.json``: ``{"active": "default", "styles": {name: rules_text}}`` —
   writing-style instructions injected into the polish prompt.
+- ``transforms.json``: ``{"transforms": {name: prompt_text}}`` — named AI
+  rewrites for ``local-flow transform`` (see
+  ``local_flow.transforms.registry``); seeded with built-in **Polish** and
+  **Prompt Engineer** transforms on first use only (unlike ``styles.json``,
+  a pre-existing file is never backfilled with built-ins added later).
 - ``app_styles.json``: ``{app_id_or_substring: "style" | {"style": ..., "insert": ...}}``
-  — optional per-app overrides; unlike the other three files this one is
-  *never* created automatically (a missing file just means "no rules yet").
+  — optional per-app overrides; unlike the other files this one is *never*
+  created automatically (a missing file just means "no rules yet").
 """
 
 from __future__ import annotations
@@ -69,6 +74,18 @@ DEFAULT_STYLES: dict[str, str] = {
 }
 
 
+DEFAULT_TRANSFORMS: dict[str, str] = {
+    "Polish": (
+        "Rewrite the text for clarity and concision. Preserve meaning and tone. "
+        "Return only the rewritten text."
+    ),
+    "Prompt Engineer": (
+        "Restructure the text into a well-formed AI prompt: state the goal, "
+        "context, constraints, and desired output format. Return only the prompt."
+    ),
+}
+
+
 @dataclass(frozen=True)
 class AppRule:
     """Per-app override: which style to polish with and how to insert text."""
@@ -107,6 +124,7 @@ class PersonalizationStore:
         self._dictionary_path = self.data_dir / "dictionary.json"
         self._snippets_path = self.data_dir / "snippets.json"
         self._styles_path = self.data_dir / "styles.json"
+        self._transforms_path = self.data_dir / "transforms.json"
         self._app_styles_path = self.data_dir / "app_styles.json"
         self._ensure_defaults()
 
@@ -119,6 +137,8 @@ class PersonalizationStore:
             self._write(self._styles_path, {"active": "default", "styles": DEFAULT_STYLES})
         else:
             self._merge_default_styles()
+        if not self._transforms_path.exists():
+            self._write(self._transforms_path, {"transforms": DEFAULT_TRANSFORMS})
 
     def _merge_default_styles(self) -> None:
         """Backfill built-in style names missing from an existing ``styles.json``.
@@ -295,6 +315,19 @@ class PersonalizationStore:
             )
         data["active"] = name
         self._write(self._styles_path, data)
+
+    # --- transforms --------------------------------------------------------
+    def transforms(self) -> dict[str, str]:
+        """Read ``transforms.json``'s name -> prompt mapping, insertion-ordered.
+
+        Seeded with the built-in ``Polish``/``Prompt Engineer`` transforms on
+        first store creation only (like ``dictionary.json``/``snippets.json``);
+        once the file exists, whatever the user has there (added, removed, or
+        edited transforms) is returned as-is -- there is no ``styles.json``-
+        style backfill of built-ins added in a later version.
+        """
+        raw = self._read(self._transforms_path).get("transforms", {})
+        return {str(k): str(v) for k, v in raw.items()}
 
     # --- per-app rules -----------------------------------------------------
     def app_rules(self) -> dict[str, AppRule]:

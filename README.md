@@ -24,6 +24,9 @@ endpoints (OpenAI, Anthropic, Wispr, etc.) by design. Personal data
 - **Styles** — named writing-style rules injected into the polish prompt.
 - **Command mode** — transform provided/selected text or your last transcript
   with an instruction ("make this formal", "turn it into bullets").
+- **Text transforms** — apply a named, reusable AI rewrite ("Polish",
+  "Prompt Engineer", or your own) to `--text` or whatever's highlighted in
+  the frontmost app.
 
 ## Install (uv)
 
@@ -164,6 +167,9 @@ uv run local-flow recover    # reprocess any dictation audio a crash left behind
 uv run local-flow polish "um send the uh draft, scratch that, the final doc"
 uv run local-flow transcribe memo.m4a --polish   # audio file -> polished notes
 uv run local-flow command "make this formal" --text "hey can u fix the bug"
+uv run local-flow transform --list                       # show available named transforms
+uv run local-flow transform Polish --text "hey can u fix the bug pls"
+uv run local-flow transform Polish --selection            # transform the current OS selection
 uv run local-flow demo       # headless end-to-end proof with mocks
 uv run local-flow history                 # list recent dictations, newest first
 uv run local-flow history --search invoice --limit 5
@@ -413,6 +419,38 @@ uv run local-flow transcribe voice-memo.m4a --polish
   default).
 - Nothing is inserted into any app and nothing is written to history --
   this is a pure text-out command.
+
+### Text transforms
+
+`local-flow transform <name>` applies a named, reusable AI rewrite to text --
+either passed directly (headless, scriptable) or captured from whatever is
+currently highlighted in the frontmost app:
+
+```bash
+uv run local-flow transform --list                       # show available names
+uv run local-flow transform Polish --text "hey can u fix the bug pls"
+uv run local-flow transform "Prompt Engineer" --text "make the tests faster"
+uv run local-flow transform Polish --selection            # transform the current selection
+```
+
+Transforms are name -> prompt pairs stored in `<data dir>/transforms.json`,
+hand-editable like `styles.json`/`snippets.json`. Two ship built in:
+**Polish** (clarity/concision rewrite) and **Prompt Engineer** (restructures
+text into a goal/context/constraints/output-format AI prompt). They're
+seeded into `transforms.json` only the first time the store is created --
+add, remove, or edit entries freely afterward and local-flow leaves your file
+alone (unlike `styles.json`, built-ins added in a later version are *not*
+backfilled into an existing `transforms.json`).
+
+`--selection` captures the current OS selection via a clipboard round-trip
+(save the clipboard, clear it, synthesize Cmd+C/Ctrl+C, poll briefly for a
+change) so it works in any app without accessibility-API integration; if
+nothing is highlighted it fails with a hint instead of transforming an empty
+string. On success the selection is replaced in place (write the result to
+the clipboard, synthesize Cmd+V/Ctrl+V, briefly wait for the paste to land,
+then restore your original clipboard content) and a confirmation prints to
+stderr. `--text` skips the clipboard entirely and prints the result to
+stdout -- useful for scripting or when nothing is selected.
 
 ## Cleanup levels
 
@@ -687,6 +725,9 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     keyboard hotkey dictates).
 25. `uv run local-flow transcribe memo.m4a --polish` → polished notes print
     to stdout; with two files, each is preceded by a `== filename ==` header.
+26. Highlight text in any app, run `uv run local-flow transform Polish
+    --selection` → the selection is replaced with the rewritten text and your
+    original clipboard content is restored afterward.
 
 ## Development
 
