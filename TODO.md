@@ -31,10 +31,10 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 
 ## Phase 5 — Wispr-Pro parity: quick wins
 
-- [ ] **E9 — Auto-cleanup levels** — `none | light | medium | high`; spoken lists → real lists; spoken code syntax (camelCase/snake_case/ALL-CAPS); "undo AI edit" from history *(needs E2)*
-- [ ] **E11 — Reliability & mics** — mic priority ranking with mid-session fallback, specific mic error diagnostics, whisper-mode VAD preset, crash-safe audio autosave + `local-flow recover`, failed-polish retry, long-session warning
-- [ ] **E12 — Mouse Flow** — bind middle/x1/x2 mouse button to PTT (hold or toggle) and optionally Enter *(needs E1)*
-- [ ] **E15 — File transcription** — `local-flow transcribe memo.m4a --polish`: transcribe existing audio files (WAV/MP3/M4A/FLAC) through the same local pipeline — a feature Wispr Flow itself doesn't have
+- [x] **E9 — Auto-cleanup levels** — `none | light | medium | high`; spoken lists → real lists; spoken code syntax (camelCase/snake_case/ALL-CAPS); "undo AI edit" from history *(needs E2)*
+- [x] **E11 — Reliability & mics** — mic priority ranking *(selection-time; mid-session/open-failure fallback deferred)*, mic diagnostics in `check`, whisper-mode VAD preset, crash-safe audio autosave + `local-flow recover`, failed-polish retry, long-utterance warning
+- [x] **E12 — Mouse Flow** — bind middle/x1/x2 mouse button to PTT (hold or toggle) and optionally Enter *(needs E1; x1/x2 not exposed by pynput on macOS — documented)*
+- [x] **E15 — File transcription** — `local-flow transcribe memo.m4a --polish`: transcribe existing audio files (WAV/MP3/M4A/FLAC) through the same local pipeline — a feature Wispr Flow itself doesn't have
 
 ## Phase 6 — Wispr-Pro parity: power features
 
