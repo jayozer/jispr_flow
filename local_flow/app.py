@@ -9,6 +9,7 @@ Subcommands:
 - ``history`` list/search/clear the local dictation history
 - ``learn``   mine history for candidate dictionary terms, optionally add them
 - ``tray``    menu-bar app with live states + style/language quick-switch
+- ``setup``   interactive onboarding wizard that writes a validated config
 """
 
 from __future__ import annotations
@@ -554,6 +555,16 @@ def _cmd_tray(_args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_setup(_args: argparse.Namespace, config: Config) -> int:
+    from local_flow.setup_wizard import run_wizard
+
+    try:
+        run_wizard(config)
+    except LocalFlowError as exc:
+        return _fail(exc)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="local-flow",
@@ -595,6 +606,10 @@ def main(argv: list[str] | None = None) -> int:
         "tray",
         help="menu-bar tray app with live states and style/language quick-switch "
         "(requires: uv sync --extra tray)",
+    )
+
+    sub.add_parser(
+        "setup", help="interactive onboarding wizard that writes a validated config"
     )
 
     history_p = sub.add_parser("history", help="list/search/clear the local dictation history")
@@ -653,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         "history": _cmd_history,
         "learn": _cmd_learn,
         "tray": _cmd_tray,
+        "setup": _cmd_setup,
     }
     try:
         return handlers[args.command](args, config)

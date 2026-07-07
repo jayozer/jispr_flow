@@ -29,15 +29,23 @@ endpoints (OpenAI, Anthropic, Wispr, etc.) by design. Personal data
 
 ```bash
 git clone <this repo> && cd jispr_flow
-uv sync                      # core + dev deps; runs headless demo and tests
+uv sync --all-extras         # core + dev deps + every optional extra
+uv run local-flow setup      # interactive wizard: probes your setup, writes config.toml
 uv run local-flow demo       # prove the whole pipeline with mocks, no permissions
+```
 
-# For real use, add the extras you need:
+`local-flow setup` reports which optional dependencies and LM Studio are
+reachable, asks a handful of questions (hotkey, capture mode, ASR model,
+style), and writes a validated `~/.config/local-flow/config.toml` — it never
+overwrites an existing config without asking first. Prefer to configure by
+hand instead? Add just the extras you need and skip the wizard:
+
+```bash
+uv sync                      # core + dev deps; runs headless demo and tests
 uv sync --extra asr          # faster-whisper (local speech-to-text)
 uv sync --extra audio        # sounddevice (mic) + webrtcvad
 uv sync --extra desktop      # pynput (hotkeys/paste) + pyperclip (clipboard)
-# or everything:
-uv sync --all-extras
+uv sync --extra tray         # pystray + pillow (menu-bar app)
 ```
 
 Entry points: `uv run local-flow` or `uv run python -m local_flow`.
@@ -139,6 +147,7 @@ entirely (e.g. if you don't want local-flow querying the active window).
 ## Use
 
 ```bash
+uv run local-flow setup      # interactive onboarding wizard; writes config.toml
 uv run local-flow check      # diagnose LM Studio / ASR / audio / clipboard
 uv run local-flow run        # live dictation (hold Fn/Space, speak, release)
 uv run local-flow run --mode hands-free   # VAD-segmented, no hotkey needed
@@ -338,6 +347,15 @@ Tray app (`uv sync --all-extras && uv run local-flow tray`):
 17. `--mode hands-free`: **Dictation: Start/Stop** actually starts and stops
     capture; in push-to-talk mode the same menu item is a disabled
     "listening for hotkey" label.
+
+Setup wizard (`uv run local-flow setup` on a machine without a config yet):
+
+18. The dependency/LM Studio probe report prints, the questions accept
+    Enter-for-default and reject/re-ask on an invalid answer, and the
+    resulting `~/.config/local-flow/config.toml` (or wherever you pointed it)
+    works with `local-flow check`/`local-flow run` without edits.
+19. Re-running `setup` against an existing config asks to overwrite; answering
+    anything but `y` leaves the existing file untouched.
 
 ## Development
 
