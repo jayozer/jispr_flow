@@ -10,6 +10,7 @@ Subcommands:
 - ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
+- ``pad``     markdown scratchpad notes: list/show/append/switch/create
 - ``learn``   mine history for candidate dictionary terms, optionally add them
 - ``stats``   local-only personal insights: words, streaks, top apps
 - ``tray``    menu-bar app with live states + style/language quick-switch
@@ -210,6 +211,12 @@ def _build_history_store(config: Config):
         max_entries=config.history_max_entries,
         retention=config.history_retention,
     )
+
+
+def _build_note_store(config: Config):
+    from local_flow.scratchpad.store import NoteStore
+
+    return NoteStore(config.data_dir)
 
 
 def _build_router(config: Config, store: PersonalizationStore):
@@ -693,6 +700,63 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
         if args.verbose:
             line += f' (rough: "{_truncate(record.rough)}")'
         print(line)
+    return 0
+
+
+def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
+    """``local-flow pad``: headless CRUD over local markdown scratchpad notes.
+
+    Exactly one of ``--list``/``--show``/``--append``/``--use``/``--new`` is
+    accepted at a time (enforced by an argparse mutually exclusive group);
+    with none given, behaves like a bare ``--show`` (prints the active
+    note) -- the friendliest default for `local-flow pad` on its own.
+    ``--note`` only makes sense alongside ``--append`` (it names a note
+    other than the active one to append to); given without ``--append`` it
+    fails with a hint rather than silently doing nothing.
+    """
+    store = _build_note_store(config)
+
+    if args.note is not None and args.append is None:
+        raise LocalFlowError(
+            "--note only makes sense together with --append.",
+            hint="Use `local-flow pad --append TEXT --note NAME`, or drop --note "
+            "to target the active note.",
+        )
+
+    if args.list:
+        notes = store.list_notes()
+        if not notes:
+            print(f"no notes yet (dir: {store.notes_dir})")
+            return 0
+        active = store.active_note()
+        for name in notes:
+            print(f"{name}{' (active)' if name == active else ''}")
+        return 0
+
+    if args.append is not None:
+        path = store.append(args.append, name=args.note)
+        target = args.note or store.active_note()
+        print(f"appended to '{target}': {path}")
+        return 0
+
+    if args.use is not None:
+        store.set_active(args.use)
+        store.create(args.use)
+        print(f"active note: {args.use}")
+        return 0
+
+    if args.new is not None:
+        path = store.create(args.new)
+        print(f"note ready: {path}")
+        return 0
+
+    # Bare `--show`, `--show NAME`, or no flags at all: show a note (active
+    # by default). `args.show` is `None` when the flag was never given and
+    # `""` when given with no NAME -- both fall back to the active note.
+    name = args.show if args.show else store.active_note()
+    content = store.read(name)
+    print(f"-- {name} --")
+    print(content if content else "(empty)")
     return 0
 
 
@@ -1807,6 +1871,36 @@ def main(argv: list[str] | None = None) -> int:
         "ignores --search/--limit)",
     )
 
+    pad_p = sub.add_parser(
+        "pad", help="markdown scratchpad notes: list/show/append/switch/create"
+    )
+    pad_group = pad_p.add_mutually_exclusive_group()
+    pad_group.add_argument(
+        "--list", action="store_true", help="list note names (active one marked)"
+    )
+    pad_group.add_argument(
+        "--show",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="NAME",
+        help="print a note's content (active note by default)",
+    )
+    pad_group.add_argument(
+        "--append",
+        metavar="TEXT",
+        help="append TEXT to a note (active note by default; see --note)",
+    )
+    pad_group.add_argument(
+        "--use", metavar="NAME", help="set the active note (creating it if missing)"
+    )
+    pad_group.add_argument(
+        "--new", metavar="NAME", help="create an empty note (no-op if it already exists)"
+    )
+    pad_p.add_argument(
+        "--note", metavar="NAME", help="target note for --append (default: active note)"
+    )
+
     learn_p = sub.add_parser(
         "learn", help="mine dictation history for candidate dictionary terms"
     )
@@ -1860,6 +1954,7 @@ def main(argv: list[str] | None = None) -> int:
         "transform": _cmd_transform,
         "check": _cmd_check,
         "history": _cmd_history,
+        "pad": _cmd_pad,
         "learn": _cmd_learn,
         "stats": _cmd_stats,
         "tray": _cmd_tray,

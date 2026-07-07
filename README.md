@@ -183,6 +183,10 @@ uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dic
 uv run local-flow stats                   # local-only insights: words, streaks, top apps
 uv run local-flow stats --since all       # same, over your entire history
 uv run local-flow tray                    # menu-bar app (see "Tray app" below)
+uv run local-flow pad --append "call the plumber"   # jot a note (active note by default)
+uv run local-flow pad --show                        # print the active note
+uv run local-flow pad --list                         # list all notes (active one marked)
+uv run local-flow pad --use work                     # switch (creating if missing) the active note
 ```
 
 ### History & privacy
@@ -226,6 +230,37 @@ configured but never actually contributed to that dictation's polish (down,
 timed out, or otherwise skipped) — except at `LOCAL_FLOW_CLEANUP_LEVEL=none`,
 where the LLM is never called by design and skipping it isn't a failure.
 `--retry` is the fix for a `failed` record once LM Studio is back up.
+
+### Scratchpad
+
+`local-flow pad` gives dictation somewhere to land that isn't any particular
+app: a set of plain markdown files under `<data dir>/notes/` (e.g.
+`~/.local/share/local-flow/notes/`), one file per note (`<name>.md`), that
+you can open, edit, sync, or grep with any tool you like -- there is no
+proprietary format and nothing here ever leaves your machine. One note is
+always "active" (its name is remembered in `notes/.active`, `inbox` by
+default); most `pad` commands operate on the active note unless told
+otherwise.
+
+```bash
+uv run local-flow pad --list                    # list note names (active one marked)
+uv run local-flow pad --show                    # print the active note (default action)
+uv run local-flow pad --show meetings           # print a specific note
+uv run local-flow pad --append "buy milk"       # append to the active note
+uv run local-flow pad --append "agenda item" --note meetings   # append to a different note
+uv run local-flow pad --use meetings            # switch the active note (creates it if missing)
+uv run local-flow pad --new someday             # create an empty note without switching to it
+```
+
+Each `--append` starts a new paragraph: if the target note already has
+content, the new text is separated from it by a blank line, so successive
+jottings read as distinct entries rather than run-on text. Note names may
+only contain letters, digits, spaces, `.`, `_`, `-` (1-64 characters) --
+no `/` or `..` -- so a note name can never escape the notes directory.
+
+This is CLI-only for now (headless, scriptable); a floating always-on-top
+window and a hotkey that routes live dictation straight into the active
+note are coming in a follow-up.
 
 ### Personal insights (`local-flow stats`)
 

@@ -1,0 +1,290 @@
+"""NoteStore, ScratchpadSink, and the `local-flow pad` CLI."""
+
+import pytest
+
+from local_flow.app import main
+from local_flow.errors import LocalFlowError
+from local_flow.scratchpad.sink import ScratchpadSink
+from local_flow.scratchpad.store import NoteStore
+
+
+class TestNoteStoreBasics:
+    def test_notes_dir_property(self, tmp_path):
+        store = NoteStore(tmp_path)
+        assert store.notes_dir == tmp_path / "notes"
+
+    def test_list_notes_empty_when_missing(self, tmp_path):
+        store = NoteStore(tmp_path)
+        assert store.list_notes() == []
+
+    def test_read_missing_note_is_empty_string(self, tmp_path):
+        store = NoteStore(tmp_path)
+        assert store.read("inbox") == ""
+
+    def test_active_note_defaults_to_inbox(self, tmp_path):
+        store = NoteStore(tmp_path)
+        assert store.active_note() == "inbox"
+
+    def test_now_seam_is_injectable_but_optional(self, tmp_path):
+        # `now` is accepted for interface parity with HistoryStore; not
+        # currently consulted by any NoteStore behavior.
+        calls = {"n": 0}
+
+        def fake_now():
+            calls["n"] += 1
+            from datetime import UTC, datetime
+
+            return datetime(2026, 7, 7, tzinfo=UTC)
+
+        store = NoteStore(tmp_path, now=fake_now)
+        store.append("hello")
+        assert calls["n"] == 0
+
+
+class TestAppend:
+    def test_append_creates_dirs_and_file_lazily(self, tmp_path):
+        store = NoteStore(tmp_path)
+        path = store.append("first thought")
+        assert path == tmp_path / "notes" / "inbox.md"
+        assert path.is_file()
+        assert path.read_text() == "first thought"
+
+    def test_append_to_empty_note_has_no_leading_blank_line(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.append("hello", name="work")
+        assert store.read("work") == "hello"
+
+    def test_second_append_gets_blank_line_separator(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.append("first", name="work")
+        store.append("second", name="work")
+        assert store.read("work") == "first\n\nsecond"
+
+    def test_append_defaults_to_active_note(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.set_active("work")
+        store.append("hi")
+        assert store.read("work") == "hi"
+        assert store.read("inbox") == ""
+
+    def test_append_returns_path(self, tmp_path):
+        store = NoteStore(tmp_path)
+        path = store.append("x", name="scratch")
+        assert path == tmp_path / "notes" / "scratch.md"
+
+
+class TestActiveNotePersistence:
+    def test_set_active_persists_across_instances(self, tmp_path):
+        NoteStore(tmp_path).set_active("meetings")
+        assert NoteStore(tmp_path).active_note() == "meetings"
+
+    def test_set_active_validates_name(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.set_active("../evil")
+
+    def test_active_note_survives_process_restart_simulation(self, tmp_path):
+        store1 = NoteStore(tmp_path)
+        store1.set_active("project-x")
+        store1.append("note one")
+        store2 = NoteStore(tmp_path)
+        assert store2.active_note() == "project-x"
+        assert store2.read("project-x") == "note one"
+
+
+class TestCreate:
+    def test_create_makes_empty_file(self, tmp_path):
+        store = NoteStore(tmp_path)
+        path = store.create("todo")
+        assert path.is_file()
+        assert path.read_text() == ""
+
+    def test_create_is_idempotent_no_overwrite(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.append("keep me", name="todo")
+        path = store.create("todo")
+        assert path.read_text() == "keep me"
+
+    def test_create_validates_name(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.create("a/b")
+
+
+class TestListNotes:
+    def test_sorted_names_no_extension(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.create("zebra")
+        store.create("alpha")
+        store.create("mid")
+        assert store.list_notes() == ["alpha", "mid", "zebra"]
+
+    def test_active_marker_file_excluded(self, tmp_path):
+        store = NoteStore(tmp_path)
+        store.set_active("inbox")
+        store.create("inbox")
+        assert store.list_notes() == ["inbox"]
+
+
+class TestNameValidation:
+    @pytest.mark.parametrize(
+        "bad_name",
+        ["../evil", "a/b", "", "x" * 65, "/etc/passwd", "..\\evil"],
+    )
+    def test_rejects_invalid_names(self, tmp_path, bad_name):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError) as exc_info:
+            store.set_active(bad_name)
+        assert exc_info.value.hint
+
+    def test_rejects_invalid_name_on_append(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.append("text", name="../evil")
+
+    def test_rejects_invalid_name_on_create(self, tmp_path):
+        store = NoteStore(tmp_path)
+        with pytest.raises(LocalFlowError):
+            store.create("")
+
+    def test_accepts_boundary_length_name(self, tmp_path):
+        store = NoteStore(tmp_path)
+        name = "x" * 64
+        store.create(name)
+        assert store.list_notes() == [name]
+
+    def test_accepts_spaces_dots_dashes_underscores(self, tmp_path):
+        store = NoteStore(tmp_path)
+        name = "My Notes_v2.draft-1"
+        store.create(name)
+        assert name in store.list_notes()
+
+
+class TestScratchpadSink:
+    def test_insert_appends_to_store(self, tmp_path):
+        store = NoteStore(tmp_path)
+        sink = ScratchpadSink(store)
+        sink.insert("hello world")
+        assert store.read(store.active_note()) == "hello world"
+
+    def test_press_key_enter_then_insert_yields_single_blank_line(self, tmp_path):
+        store = NoteStore(tmp_path)
+        sink = ScratchpadSink(store)
+        sink.insert("a")
+        sink.press_key("enter")
+        sink.insert("b")
+        assert store.read(store.active_note()) == "a\n\nb"
+
+    def test_press_key_other_keys_are_no_ops(self, tmp_path):
+        store = NoteStore(tmp_path)
+        sink = ScratchpadSink(store)
+        sink.insert("a")
+        sink.press_key("tab")
+        assert store.read(store.active_note()) == "a"
+
+    def test_press_key_enter_with_no_prior_content_writes_nothing(self, tmp_path):
+        store = NoteStore(tmp_path)
+        sink = ScratchpadSink(store)
+        sink.press_key("enter")
+        assert store.read(store.active_note()) == ""
+
+    def test_two_plain_inserts_also_paragraph_separate(self, tmp_path):
+        # NoteStore.append's own blank-line-on-non-empty rule applies to
+        # every append regardless of an intervening `press_key`, so two
+        # consecutive dictated utterances land as separate paragraphs even
+        # without an explicit "press enter".
+        store = NoteStore(tmp_path)
+        sink = ScratchpadSink(store)
+        sink.insert("a")
+        sink.insert("b")
+        assert store.read(store.active_note()) == "a\n\nb"
+
+
+class TestPadCli:
+    def test_show_active_when_empty(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad"]) == 0
+        out = capsys.readouterr().out
+        assert "-- inbox --" in out
+        assert "(empty)" in out
+
+    def test_append_then_show(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--append", "first thought"]) == 0
+        capsys.readouterr()
+        assert main(["pad", "--show"]) == 0
+        out = capsys.readouterr().out
+        assert "first thought" in out
+
+    def test_append_with_note_targets_other_note(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--append", "todo item", "--note", "work"]) == 0
+        capsys.readouterr()
+        assert main(["pad", "--show", "work"]) == 0
+        assert "todo item" in capsys.readouterr().out
+        capsys.readouterr()
+        assert main(["pad", "--show", "inbox"]) == 0
+        assert "(empty)" in capsys.readouterr().out
+
+    def test_note_flag_without_append_fails_helpfully(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        code = main(["pad", "--show", "--note", "work"])
+        assert code == 1
+
+    def test_use_sets_active_and_creates(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--use", "meetings"]) == 0
+        out = capsys.readouterr().out
+        assert "meetings" in out
+        assert (tmp_path / "notes" / "meetings.md").is_file()
+        capsys.readouterr()
+        assert main(["pad", "--append", "agenda"]) == 0
+        assert (tmp_path / "notes" / "meetings.md").read_text() == "agenda"
+
+    def test_new_creates_empty_note_without_switching_active(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--new", "someday"]) == 0
+        assert (tmp_path / "notes" / "someday.md").is_file()
+        capsys.readouterr()
+        # active note is still inbox, unaffected by --new
+        assert main(["pad", "--append", "x"]) == 0
+        assert (tmp_path / "notes" / "inbox.md").read_text() == "x"
+
+    def test_list_empty_state(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--list"]) == 0
+        out = capsys.readouterr().out
+        assert "no notes yet" in out
+
+    def test_list_marks_active_note(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        main(["pad", "--new", "alpha"])
+        main(["pad", "--use", "beta"])
+        capsys.readouterr()
+        assert main(["pad", "--list"]) == 0
+        out = capsys.readouterr().out
+        lines = out.strip().splitlines()
+        assert "alpha" in lines
+        assert "beta (active)" in lines
+
+    def test_show_unknown_note_is_friendly_empty(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        assert main(["pad", "--show", "nonexistent"]) == 0
+        out = capsys.readouterr().out
+        assert "-- nonexistent --" in out
+        assert "(empty)" in out
+
+    def test_invalid_note_name_fails_helpfully(self, capsys, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        code = main(["pad", "--use", "../evil"])
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "invalid note name" in err
+        assert "hint" in err
+
+    def test_mutually_exclusive_flags_rejected_by_argparse(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        with pytest.raises(SystemExit):
+            main(["pad", "--list", "--use", "work"])
