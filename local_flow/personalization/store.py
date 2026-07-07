@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,9 +32,25 @@ from local_flow.errors import ConfigError
 _APOSTROPHE_S_SUFFIX = re.compile(r"['’]s$", re.IGNORECASE)
 
 
-def _fold_term(term: str) -> str:
+def fold_term(term: str) -> str:
     """Case-fold a term and drop a trailing possessive for dedup comparisons."""
     return _APOSTROPHE_S_SUFFIX.sub("", term.strip().lower())
+
+
+_fold_term = fold_term  # backward-compat alias for existing importers
+
+
+def _coerce_uses(value: object) -> int:
+    """Tolerantly coerce a dictionary entry's ``uses`` field to ``int``.
+
+    Hand-edited entries can carry ``null`` or other garbage; treat anything
+    that doesn't cleanly convert as ``0`` instead of raising.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
 
 DEFAULT_STYLES: dict[str, str] = {
     "default": (
@@ -100,6 +117,34 @@ class PersonalizationStore:
             self._write(self._snippets_path, {"snippets": {}})
         if not self._styles_path.exists():
             self._write(self._styles_path, {"active": "default", "styles": DEFAULT_STYLES})
+        else:
+            self._merge_default_styles()
+
+    def _merge_default_styles(self) -> None:
+        """Backfill built-in style names missing from an existing ``styles.json``.
+
+        README promises ``email``/``chat`` (and the other built-ins) ship out
+        of the box, but a pre-existing hand-edited file only ever got the
+        defaults at first-creation time. This adds any ``DEFAULT_STYLES`` key
+        that isn't already present, without ever touching an existing entry
+        (including a user-customized ``email``/``chat``) or the ``active``
+        selection, and only writes back when something was actually added.
+        """
+        try:
+            data = self._read(self._styles_path)
+        except ConfigError:
+            return  # corrupt file: leave it for the caller to surface later
+        styles = data.get("styles")
+        if not isinstance(styles, dict):
+            return
+        added = False
+        for name, rules in DEFAULT_STYLES.items():
+            if name not in styles:
+                styles[name] = rules
+                added = True
+        if added:
+            data["styles"] = styles
+            self._write(self._styles_path, data)
 
     @staticmethod
     def _write(path: Path, data: dict) -> None:
@@ -107,12 +152,25 @@ class PersonalizationStore:
 
     @staticmethod
     def _atomic_write(path: Path, data: dict) -> None:
-        """Write ``data`` via a same-directory tmp file + ``os.replace``."""
-        tmp_path = path.with_name(path.name + ".tmp")
-        tmp_path.write_text(
-            json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+        """Write ``data`` via a same-directory tmp file + ``os.replace``.
+
+        The tmp file gets a unique name (via ``tempfile.NamedTemporaryFile``)
+        so concurrent writers never collide on a shared ``<name>.tmp`` path.
+        """
+        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w",
+            dir=path.parent,
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+            encoding="utf-8",
         )
-        os.replace(tmp_path, path)
+        try:
+            tmp.write(payload)
+        finally:
+            tmp.close()
+        os.replace(tmp.name, path)
 
     @staticmethod
     def _read(path: Path) -> dict:
@@ -166,10 +224,7 @@ class PersonalizationStore:
         def sort_key(indexed: tuple[int, dict]) -> tuple[int, int, int]:
             index, entry = indexed
             starred = bool(entry.get("starred", False))
-            try:
-                uses = int(entry.get("uses", 0))
-            except (TypeError, ValueError):
-                uses = 0
+            uses = _coerce_uses(entry.get("uses", 0))
             return (0 if starred else 1, -uses, index)
 
         ordered = sorted(enumerate(entries), key=sort_key)
@@ -181,8 +236,8 @@ class PersonalizationStore:
         if not term:
             return False
         entries = self._read_dictionary_entries()
-        folded = _fold_term(term)
-        if any(_fold_term(entry["term"]) == folded for entry in entries):
+        folded = fold_term(term)
+        if any(fold_term(entry["term"]) == folded for entry in entries):
             return False
         entries.append({"term": term})
         self._write_dictionary_entries(entries)
@@ -200,7 +255,7 @@ class PersonalizationStore:
         for entry in entries:
             n = counts.get(entry["term"])
             if n:
-                entry["uses"] = int(entry.get("uses", 0)) + int(n)
+                entry["uses"] = _coerce_uses(entry.get("uses", 0)) + int(n)
                 changed = True
         if changed:
             self._write_dictionary_entries(entries)

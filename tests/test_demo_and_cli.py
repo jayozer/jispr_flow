@@ -3,9 +3,11 @@
 import json
 import re
 
-from local_flow.app import main
+from local_flow.app import _build_router, main
+from local_flow.config import Config
 from local_flow.demo import run_demo
 from local_flow.history.store import HistoryStore
+from local_flow.personalization.store import PersonalizationStore
 
 
 class TestDemo:
@@ -56,6 +58,49 @@ class TestCli:
         err = capsys.readouterr().err
         assert "LM Studio" in err
         assert "hint" in err
+
+
+class TestCheckCommand:
+    """`check`'s frontmost-app line is gated on `config.context_styles`."""
+
+    def test_frontmost_app_shown_when_context_styles_enabled(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_BASE_URL", "http://127.0.0.1:59999/v1")
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_TIMEOUT", "1")
+        code = main(["check"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "frontmost app :" in out
+        assert "context styles disabled" not in out
+
+    def test_frontmost_app_gated_when_context_styles_disabled(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_CONTEXT_STYLES", "false")
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_BASE_URL", "http://127.0.0.1:59999/v1")
+        monkeypatch.setenv("LOCAL_FLOW_LMSTUDIO_TIMEOUT", "1")
+        code = main(["check"])
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "frontmost app : (context styles disabled)" in out
+
+
+class TestBuildRouter:
+    """`_build_router` should skip building a router in the common cases."""
+
+    def test_none_when_context_styles_disabled(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "app_styles.json").write_text(json.dumps({"claude": "casual"}))
+        config = Config(context_styles=False, data_dir=tmp_path)
+        assert _build_router(config, store) is None
+
+    def test_none_when_app_rules_are_empty(self, tmp_path):
+        store = PersonalizationStore(tmp_path)  # no app_styles.json written
+        config = Config(context_styles=True, data_dir=tmp_path)
+        assert _build_router(config, store) is None
 
 
 class TestHistoryCommand:

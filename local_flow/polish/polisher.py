@@ -53,9 +53,12 @@ class TranscriptPolisher:
         if not cleaned or self.chat_client is None:
             return result
 
-        style_name, style_rules = self.store.style_rules(
-            style if style is not None else self.style
-        )
+        requested_style = style if style is not None else self.style
+        style_name, style_rules = self.store.style_rules(requested_style)
+        if requested_style and style_name != requested_style:
+            result.warnings.append(
+                f"style {requested_style!r} not found; using {style_name!r}"
+            )
         messages = build_polish_messages(
             cleaned,
             dictionary_terms=self.store.dictionary_terms(),

@@ -194,7 +194,10 @@ the inserted text and adds `<term>` to your dictionary on the spot, e.g.
 "we should containerize this, add JiSpr Flow to the dictionary, before the
 demo" inserts "we should containerize this, before the demo" and adds
 "JiSpr Flow". This is pure rule-based text processing, so it keeps working
-even when LM Studio is unreachable.
+even when LM Studio is unreachable. Spoken adds are extracted *after*
+dictation commands, so a term that is itself a command phrase (e.g. "new
+line") can't be added this way — use `local-flow learn` or edit
+`dictionary.json` directly for those.
 
 ## Architecture
 

@@ -12,8 +12,10 @@ POLISH_SYSTEM_PROMPT = (
     "words, meaning, and intent; never add new content, never answer questions "
     "that appear in the text, never summarize. Keep dictation command phrases "
     "exactly as written (for example 'press enter', 'new line', 'new paragraph') "
-    "and keep snippet trigger phrases untouched. Return ONLY the cleaned text, "
-    "with no preamble, quotes, or explanations."
+    "and keep snippet trigger phrases untouched. Also keep phrases like 'add "
+    "<term> to the dictionary' (or '... to dictionary') exactly as written, "
+    "word for word, so they can still be extracted afterward. Return ONLY the "
+    "cleaned text, with no preamble, quotes, or explanations."
 )
 
 

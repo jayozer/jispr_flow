@@ -5,8 +5,23 @@ import json
 import pytest
 
 from local_flow.errors import ConfigError
-from local_flow.personalization.store import AppRule, PersonalizationStore, match_app_rule
+from local_flow.personalization.store import (
+    DEFAULT_STYLES,
+    AppRule,
+    PersonalizationStore,
+    _fold_term,
+    fold_term,
+    match_app_rule,
+)
 from local_flow.polish.rules import enforce_dictionary, expand_snippets
+
+
+class TestFoldTerm:
+    def test_public_name_folds_case_and_possessive(self):
+        assert fold_term("Iva's") == "iva"
+
+    def test_private_alias_matches_public_function(self):
+        assert _fold_term is fold_term
 
 
 class TestSnippetExpansion:
@@ -111,6 +126,31 @@ class TestPersonalizationStore:
             store.dictionary_terms()
         assert "dictionary.json" in str(excinfo.value)
 
+    def test_atomic_write_uses_a_unique_tmp_name_and_leaves_none_behind(self, tmp_path):
+        path = tmp_path / "x.json"
+        PersonalizationStore._atomic_write(path, {"a": 1})
+        assert json.loads(path.read_text()) == {"a": 1}
+        # No leftover ".tmp" file, and the final file is the only thing there.
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_atomic_write_tmp_name_is_unique_across_calls(self, tmp_path, monkeypatch):
+        import tempfile
+
+        seen_names: list[str] = []
+        real_named_tempfile = tempfile.NamedTemporaryFile
+
+        def spy(*args, **kwargs):
+            tmp = real_named_tempfile(*args, **kwargs)
+            seen_names.append(tmp.name)
+            return tmp
+
+        monkeypatch.setattr(tempfile, "NamedTemporaryFile", spy)
+        path = tmp_path / "y.json"
+        PersonalizationStore._atomic_write(path, {"a": 1})
+        PersonalizationStore._atomic_write(path, {"a": 2})
+        assert len(seen_names) == 2
+        assert seen_names[0] != seen_names[1]
+
 
 class TestDictionaryRichEntries:
     """dictionary.json mixes legacy strings with rich {starred, uses} entries."""
@@ -200,6 +240,15 @@ class TestDictionaryRichEntries:
         on_disk = json.loads((tmp_path / "dictionary.json").read_text())
         assert on_disk["terms"] == ["PostgreSQL"]
 
+    def test_record_term_uses_tolerates_hand_edited_null_uses(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "dictionary.json").write_text(
+            json.dumps({"terms": [{"term": "Foo", "uses": None}]})
+        )
+        store.record_term_uses({"Foo": 1})  # must not raise TypeError
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert on_disk["terms"] == [{"term": "Foo", "uses": 1}]
+
 
 class TestBuiltinStyles:
     def test_fresh_store_includes_email_and_chat_styles(self, tmp_path):
@@ -212,14 +261,72 @@ class TestBuiltinStyles:
         # active style is unaffected by seeding the new named styles
         assert store.style_rules()[0] == "default"
 
-    def test_existing_styles_file_is_not_overwritten(self, tmp_path):
+    def test_existing_file_missing_all_defaults_gains_them_without_losing_user_style(
+        self, tmp_path
+    ):
         (tmp_path / "styles.json").write_text(
             json.dumps({"active": "mine", "styles": {"mine": "just mine"}})
         )
         store = PersonalizationStore(tmp_path)
-        assert store.styles() == {"mine": "just mine"}
-        assert "email" not in store.styles()
-        assert "chat" not in store.styles()
+        styles = store.styles()
+        assert styles["mine"] == "just mine"
+        for name, rules in DEFAULT_STYLES.items():
+            assert styles[name] == rules
+        # active selection (a non-built-in style) is left untouched
+        assert store.style_rules()[0] == "mine"
+
+    def test_existing_file_missing_only_email_and_chat_gains_exactly_those_two(
+        self, tmp_path
+    ):
+        (tmp_path / "styles.json").write_text(
+            json.dumps(
+                {
+                    "active": "professional",
+                    "styles": {
+                        "default": "custom default",
+                        "professional": "custom professional",
+                        "casual": "custom casual",
+                    },
+                }
+            )
+        )
+        store = PersonalizationStore(tmp_path)
+        styles = store.styles()
+        assert styles["default"] == "custom default"
+        assert styles["professional"] == "custom professional"
+        assert styles["casual"] == "custom casual"
+        assert styles["email"] == DEFAULT_STYLES["email"]
+        assert styles["chat"] == DEFAULT_STYLES["chat"]
+        # active selection untouched
+        assert store.style_rules()[0] == "professional"
+
+    def test_user_customized_email_style_is_preserved(self, tmp_path):
+        (tmp_path / "styles.json").write_text(
+            json.dumps(
+                {
+                    "active": "default",
+                    "styles": {
+                        "default": DEFAULT_STYLES["default"],
+                        "professional": DEFAULT_STYLES["professional"],
+                        "casual": DEFAULT_STYLES["casual"],
+                        "email": "my custom email style",
+                    },
+                }
+            )
+        )
+        store = PersonalizationStore(tmp_path)
+        styles = store.styles()
+        assert styles["email"] == "my custom email style"  # never overwritten
+        assert styles["chat"] == DEFAULT_STYLES["chat"]  # missing one still added
+
+    def test_file_with_all_defaults_already_present_is_not_rewritten(self, tmp_path):
+        (tmp_path / "styles.json").write_text(
+            json.dumps({"active": "default", "styles": dict(DEFAULT_STYLES)})
+        )
+        before = (tmp_path / "styles.json").read_text()
+        PersonalizationStore(tmp_path)
+        after = (tmp_path / "styles.json").read_text()
+        assert before == after  # nothing missing, so no write-back happened
 
 
 class TestAppRules:

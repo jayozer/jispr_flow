@@ -163,7 +163,10 @@ def _build_pipeline(config: Config, chat_client, sink):
     command_mode = (
         CommandMode(
             chat_client,
-            dictionary_terms=store.dictionary_terms(),
+            # Bound method, not a snapshot: new dictionary terms (e.g. from a
+            # spoken "add X to the dictionary") reach the next command-mode
+            # prompt without restarting the process.
+            dictionary_terms=store.dictionary_terms,
             style_rules=style_rules,
         )
         if chat_client is not None
@@ -234,11 +237,14 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"  data dir      : {config.data_dir}")
     print(f"  ASR model     : {config.asr_model} (language: {config.asr_language})")
 
-    from local_flow.context.frontmost import create_frontmost_provider
+    if config.context_styles:
+        from local_flow.context.frontmost import create_frontmost_provider
 
-    info = create_frontmost_provider().current()
-    frontmost_label = info.app_id or info.title or "(unknown)"
-    print(f"  frontmost app : {frontmost_label}")
+        info = create_frontmost_provider().current()
+        frontmost_label = info.app_id or info.title or "(unknown)"
+        print(f"  frontmost app : {frontmost_label}")
+    else:
+        print("  frontmost app : (context styles disabled)")
 
     from local_flow.errors import LMStudioError
 

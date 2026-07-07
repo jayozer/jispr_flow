@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from local_flow.history.store import HistoryRecord
-from local_flow.personalization.store import _fold_term
+from local_flow.personalization.store import fold_term
 
 # Common English words and sentence-starters that would otherwise flood
 # suggestions once they're capitalized at the start of a sentence (or, for a
@@ -115,7 +115,7 @@ def suggest_terms(
     the most frequent original casing seen. Results are sorted by count
     descending.
     """
-    known_folded = {_fold_term(term) for term in known}
+    known_folded = {fold_term(term) for term in known}
     variant_counts: dict[str, dict[str, int]] = {}
     samples: dict[str, str] = {}
     order: list[str] = []
@@ -129,7 +129,7 @@ def suggest_terms(
             sentence_initial = _is_sentence_initial(text, match.start())
             if not _matches_heuristic(token, sentence_initial):
                 continue
-            folded = _fold_term(token)
+            folded = fold_term(token)
             if not folded or folded in known_folded or folded in STOPWORDS:
                 continue
             if folded not in variant_counts:
