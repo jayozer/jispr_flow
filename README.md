@@ -106,6 +106,8 @@ environment > config file > defaults. Highlights:
 | Cancel hotkey | `LOCAL_FLOW_CANCEL_HOTKEY` | `esc` |
 | Style | `LOCAL_FLOW_STYLE` | `default` |
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
+| Streaming | `LOCAL_FLOW_STREAMING` | `off` (or `sentence`, hands-free only; see "Streaming") |
+| Streaming pause | `LOCAL_FLOW_STREAMING_PAUSE_MS` | `300` |
 
 Personalization lives in the data dir as hand-editable JSON:
 `dictionary.json` (canonical terms), `snippets.json` (trigger → expansion),
@@ -209,6 +211,40 @@ even when LM Studio is unreachable. Spoken adds are extracted *after*
 dictation commands, so a term that is itself a command phrase (e.g. "new
 line") can't be added this way — use `local-flow learn` or edit
 `dictionary.json` directly for those.
+
+## Streaming
+
+`LOCAL_FLOW_STREAMING=sentence` (hands-free mode only) lowers dictation
+latency by shortening the pause that closes an utterance: instead of waiting
+for `LOCAL_FLOW_VAD_SILENCE_MS` (default 600ms) of silence, it closes and
+inserts each chunk after just `LOCAL_FLOW_STREAMING_PAUSE_MS` (default
+300ms). In practice, each sentence is transcribed, polished, and inserted
+while you're still speaking the next one, instead of everything landing at
+once when you finally stop talking.
+
+```bash
+LOCAL_FLOW_STREAMING=sentence LOCAL_FLOW_MODE=hands-free uv run local-flow run
+```
+
+Trade-offs to know before turning this on:
+
+- **Latency vs. accuracy.** A shorter pause threshold means shorter, more
+  frequent chunks — lower time-to-insertion, but the ASR/polish model sees
+  less context per chunk, so mid-sentence pauses (a breath, a filler word)
+  can split a sentence into two insertions more readily than the default
+  threshold would.
+- **"Scratch that" only reaches within the current chunk.** Backtracking
+  commands (e.g. "scratch that") operate on the rough transcript of the
+  chunk being processed; once a chunk has already been inserted, an earlier
+  chunk is not reachable for correction. History also records one entry per
+  chunk rather than one per full utterance.
+- **Push-to-talk is unaffected.** Streaming is a hands-free-only feature;
+  with `LOCAL_FLOW_MODE=push-to-talk`, a non-`off` `LOCAL_FLOW_STREAMING`
+  prints a one-line notice (`streaming requires hands-free mode; ignoring`)
+  and dictation behaves exactly as if streaming were off.
+
+`LOCAL_FLOW_STREAMING=live-preview` is a planned rough-text preview shown
+while speaking (final insert unchanged); not yet implemented.
 
 ## Tray app
 

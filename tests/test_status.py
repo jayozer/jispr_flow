@@ -6,8 +6,10 @@ import threading
 
 from local_flow.app import _handle_utterance, _interruptible, _run_loop
 from local_flow.asr.mock import MockTranscriber
+from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
+from local_flow.demo import synth_pcm
 from local_flow.errors import LMStudioConnectionError
 from local_flow.insertion.base import FakeTextSink
 from local_flow.llm.mock import MockChatClient
@@ -298,3 +300,184 @@ class TestInterruptible:
         frames = [b"frame-1", b"frame-2"]
 
         assert list(_interruptible(iter(frames), stop_event)) == []
+
+
+class TestStreamingSilenceMs:
+    """`config.streaming` selects which silence threshold the hands-free
+    branch passes to `segment_stream`: `vad_silence_ms` when "off" (keeping
+    `off` byte-identical to pre-streaming behavior), `streaming_pause_ms`
+    when "sentence".
+    """
+
+    def _capture_kwargs(self, monkeypatch):
+        captured: dict[str, object] = {}
+
+        def fake_segment_stream(frames, vad, sample_rate, **kwargs):
+            captured.update(kwargs)
+            return iter([])
+
+        monkeypatch.setattr("local_flow.audio.vad.segment_stream", fake_segment_stream)
+        return captured
+
+    def _run(self, config, monkeypatch, tmp_path):
+        captured = self._capture_kwargs(monkeypatch)
+        store = PersonalizationStore(tmp_path / "data")
+        pipeline = _make_pipeline(store, MockChatClient(["x"]), FakeTextSink())
+        reporter = FakeReporter()
+
+        class DummySource:
+            def frames(self, frame_ms):
+                return iter([])
+
+        _run_loop(
+            config,
+            "hands-free",
+            reporter,
+            dependencies=(pipeline, DummySource(), DummyVAD()),
+        )
+        return captured
+
+    def test_off_passes_vad_silence_ms(self, monkeypatch, tmp_path):
+        config = load_config(env={})
+        captured = self._run(config, monkeypatch, tmp_path)
+        assert captured["silence_ms"] == config.vad_silence_ms
+
+    def test_sentence_passes_streaming_pause_ms(self, monkeypatch, tmp_path):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_STREAMING": "sentence",
+                "LOCAL_FLOW_STREAMING_PAUSE_MS": "150",
+            }
+        )
+        captured = self._run(config, monkeypatch, tmp_path)
+        assert captured["silence_ms"] == 150
+        assert captured["silence_ms"] != config.vad_silence_ms
+
+
+class TestSentenceModeOrdering:
+    """Sentence mode reuses hands-free's synchronous segment-then-handle
+    loop, so the first chunk must fully insert before the second chunk is
+    even transcribed -- there is no overlap/concurrency, just a shorter
+    pause threshold. Verified end-to-end (real `segment_stream` + `EnergyVAD`,
+    no monkeypatching) with fakes instrumented to log events in order.
+    """
+
+    def test_first_chunk_inserted_before_second_chunk_transcribed(self, tmp_path):
+        event_log: list[tuple[str, str]] = []
+
+        class LoggingTranscriber(MockTranscriber):
+            def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+                event_log.append(("transcribe", repr(pcm)[:16]))
+                return super().transcribe(pcm, sample_rate)
+
+        class LoggingSink(FakeTextSink):
+            def insert(self, text: str) -> None:
+                event_log.append(("insert", text))
+                super().insert(text)
+
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["First.", "Second."])
+        pipeline = DictationPipeline(
+            transcriber=LoggingTranscriber(["first chunk", "second chunk"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=LoggingSink(),
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(
+            env={
+                "LOCAL_FLOW_STREAMING": "sentence",
+                "LOCAL_FLOW_STREAMING_PAUSE_MS": "300",
+            }
+        )
+
+        # Two speech bursts separated by a pause well over streaming_pause_ms
+        # (300ms), so `segment_stream` closes and yields the first chunk
+        # before the second burst is ever seen.
+        pcm = synth_pcm(
+            [(200, 0), (600, 12000), (400, 0), (600, 12000), (200, 0)],
+            sample_rate=config.sample_rate,
+        )
+        frame_bytes = int(config.sample_rate * config.vad_frame_ms / 1000) * 2
+        frames = [pcm[i : i + frame_bytes] for i in range(0, len(pcm), frame_bytes)]
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter(frames)
+
+        vad = EnergyVAD(config.vad_energy_threshold)
+
+        _run_loop(
+            config,
+            "hands-free",
+            reporter,
+            dependencies=(pipeline, FakeSource(), vad),
+        )
+
+        kinds = [kind for kind, _ in event_log]
+        assert kinds == ["transcribe", "insert", "transcribe", "insert"]
+
+
+class TestPushToTalkStreamingNotice:
+    """Per the epic constraint, streaming applies to hands-free only:
+    push-to-talk with `streaming != "off"` prints a one-line notice once and
+    otherwise behaves exactly like `streaming="off"`.
+    """
+
+    def test_notice_printed_once_and_flow_matches_off(self, tmp_path, monkeypatch, capsys):
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["Send it."])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["send it"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_STREAMING": "sentence"})
+        done = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return b"pcm-bytes"
+
+        class FakeListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                on_release()
+                done.wait(timeout=5)
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config: FakeListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert done.is_set(), "finish() never notified 'idle'"
+        captured = capsys.readouterr()
+        assert captured.out.count("streaming requires hands-free mode; ignoring") == 1
+        assert [event[0] for event in reporter.events] == [
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]

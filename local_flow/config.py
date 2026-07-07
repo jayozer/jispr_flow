@@ -21,6 +21,7 @@ from local_flow.errors import ConfigError
 ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
+VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 
 
 def _default_data_dir() -> Path:
@@ -82,6 +83,13 @@ class Config:
     history_enabled: bool = True
     history_max_entries: int = 5000
     history_retention: str = "forever"  # forever | 24h | off
+
+    # Streaming / low-latency insertion (hands-free mode only; see README
+    # "Streaming"). "sentence" shortens the pause threshold that closes an
+    # utterance so each sentence inserts while the next is still being
+    # spoken; "live-preview" is reserved for a future rough-text preview.
+    streaming: str = "off"  # off | sentence | live-preview
+    streaming_pause_ms: int = 300
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -162,6 +170,7 @@ def load_config(
         "history_enabled": bool,
         "history_max_entries": int,
         "context_styles": bool,
+        "streaming_pause_ms": int,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
@@ -196,6 +205,12 @@ def load_config(
         raise ConfigError(
             f"Invalid history_retention: {config.history_retention!r}",
             hint=f"Valid values: {', '.join(VALID_HISTORY_RETENTIONS)}.",
+        )
+
+    if config.streaming not in VALID_STREAMING_MODES:
+        raise ConfigError(
+            f"Invalid streaming: {config.streaming!r}",
+            hint=f"Valid values: {', '.join(VALID_STREAMING_MODES)}.",
         )
 
     return config

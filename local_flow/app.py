@@ -464,13 +464,22 @@ def _run_loop(
         if mode == "hands-free":
             print("hands-free dictation: speak; pause to insert. Ctrl+C to quit.")
             reporter.notify("recording")
+            # "sentence" streaming shortens the pause threshold that closes an
+            # utterance so each sentence inserts while the next is still being
+            # spoken; anything else (including "off") keeps today's
+            # `vad_silence_ms` behavior byte-identical.
+            silence_ms = (
+                config.streaming_pause_ms
+                if config.streaming == "sentence"
+                else config.vad_silence_ms
+            )
             for i, segment in enumerate(
                 segment_stream(
                     _interruptible(source.frames(config.vad_frame_ms), stop_event),
                     vad,
                     config.sample_rate,
                     frame_ms=config.vad_frame_ms,
-                    silence_ms=config.vad_silence_ms,
+                    silence_ms=silence_ms,
                 )
             ):
                 if stop_event is not None and stop_event.is_set():
@@ -483,6 +492,12 @@ def _run_loop(
                     reporter.notify("recording")
                 _handle_utterance(pipeline, reporter, segment, config.sample_rate)
         else:
+            if config.streaming != "off":
+                # Streaming (sentence-chunked insertion / live preview) only
+                # applies to hands-free mode; push-to-talk behaves exactly
+                # like `streaming=off` otherwise.
+                print("streaming requires hands-free mode; ignoring")
+
             from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
 
             listener = create_hotkey_listener(config)

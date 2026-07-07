@@ -37,3 +37,8 @@ sample_rate = 16000
 history_enabled = true         # false stops recording (existing history stays readable)
 history_max_entries = 5000     # rotate out the oldest entries beyond this count
 history_retention = "forever"  # forever | 24h (prune on each write) | off (never write)
+
+# Streaming / low-latency insertion (hands-free mode only; see README "Streaming").
+# Ignored (with a one-line notice) in push-to-talk mode.
+streaming = "off"              # off | sentence (insert each sentence early) | live-preview
+streaming_pause_ms = 300       # "sentence" mode: pause (ms) that closes/inserts a chunk

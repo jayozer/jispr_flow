@@ -131,3 +131,30 @@ class TestLanguagesField:
         config_file.write_text('languages = "en, de"\n', encoding="utf-8")
         config = load_config(config_file=config_file, env={})
         assert config.languages == "en, de"
+
+
+class TestStreamingField:
+    """`streaming`/`streaming_pause_ms`: see local_flow/app.py `_run_loop`."""
+
+    def test_defaults(self):
+        config = load_config(env={})
+        assert config.streaming == "off"
+        assert config.streaming_pause_ms == 300
+
+    def test_env_override(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_STREAMING": "sentence",
+                "LOCAL_FLOW_STREAMING_PAUSE_MS": "150",
+            }
+        )
+        assert config.streaming == "sentence"
+        assert config.streaming_pause_ms == 150
+
+    def test_invalid_value_raises_config_error_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="streaming") as excinfo:
+            load_config(env={"LOCAL_FLOW_STREAMING": "banana"})
+        message = str(excinfo.value)
+        assert "off" in message
+        assert "sentence" in message
+        assert "live-preview" in message
