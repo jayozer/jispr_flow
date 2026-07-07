@@ -452,6 +452,73 @@ then restore your original clipboard content) and a confirmation prints to
 stderr. `--text` skips the clipboard entirely and prints the result to
 stdout -- useful for scripting or when nothing is selected.
 
+### Transform anywhere
+
+`LOCAL_FLOW_TRANSFORM_HOTKEY` (push-to-talk mode only, like mouse push-to-talk)
+turns the `local-flow transform ... --selection` flow above into a global
+hotkey: highlight text in any app, tap the key, and it's rewritten in place --
+no CLI needed while `local-flow run` is active. Empty (the default) disables
+the feature entirely.
+
+```bash
+LOCAL_FLOW_TRANSFORM_HOTKEY=f6 uv run local-flow run   # tap F6 to transform the selection
+```
+
+`LOCAL_FLOW_TRANSFORM_DEFAULT` (default `Polish`) picks which
+`transforms.json` entry the hotkey applies; it's resolved once at startup --
+an unknown name prints a warning and disables just the transform hotkey (the
+rest of `local-flow run` keeps working) rather than crashing or failing every
+tap. Nothing selected also just warns ("no text selected"); your clipboard is
+always restored to what it held before the tap, on success or failure alike.
+Unlike push-to-talk, this is a single tap (key-down), not hold-and-release --
+same plain-key-only limitation as the main/cancel hotkeys (no chords).
+
+### Voice command mode
+
+`LOCAL_FLOW_COMMAND_HOTKEY` (push-to-talk mode only) adds a second
+push-to-talk key for *spoken* edit instructions -- Wispr Flow calls this
+"command mode": hold the key, say what you want done ("make this more
+formal", "turn it into bullets"), release. Empty (the default) disables it
+entirely; it runs independently of (and alongside) the main dictation
+hotkey, with its own recording state, so holding both at once doesn't
+corrupt either recording.
+
+```bash
+LOCAL_FLOW_COMMAND_HOTKEY=f7 uv run local-flow run
+# hold F7, say "make this more formal", release -> the current
+# selection (or, if nothing is selected, your last dictation) is rewritten
+```
+
+The current OS selection is captured the moment you release the key (before
+transcription starts, so it reflects whatever was highlighted while you were
+speaking) via the same clipboard round-trip as the transform hotkey/
+`local-flow transform --selection`. When something was selected, the result
+*replaces* it in place and your clipboard is restored afterward. When nothing
+is selected, it falls back to the same target `local-flow command` uses --
+your last dictation -- and inserts the result through the configured sink
+instead. Dictionary term casing is enforced either way. Any failure (nothing
+heard, LM Studio down, no target text at all) reports a warning instead of
+crashing the loop. Like the transform hotkey, this has no cancel gesture of
+its own and is a plain key (no chords).
+
+### Auto-transform
+
+`LOCAL_FLOW_AUTO_TRANSFORM` names a `transforms.json` entry to run
+automatically on *every* dictation, right after dictionary/snippet/dictation-
+command handling and just before the text is inserted -- e.g. set it to
+`Polish` to always get an extra clarity pass beyond the normal cleanup level.
+Empty (the default) is a complete no-op. An unknown name fails fast with a
+`ConfigError` (listing known transform names) as soon as `local-flow run`
+starts, rather than failing silently on every dictation. It's skipped
+whenever there's no chat client configured or `LOCAL_FLOW_CLEANUP_LEVEL=none`
+(a full verbatim bypass); an LM Studio failure during the auto-transform call
+degrades gracefully -- the un-transformed text still gets inserted, with a
+warning explaining why.
+
+```bash
+LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run   # every dictation gets an extra polish pass
+```
+
 ## Cleanup levels
 
 `LOCAL_FLOW_CLEANUP_LEVEL` controls how aggressively the polish pass rewrites
@@ -654,6 +721,12 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   buttons) work on Windows and Linux/X11 but not macOS. It has no cancel
   gesture — use the keyboard cancel key. Runs alongside the keyboard hotkey,
   never instead of it.
+- Transform hotkey (`LOCAL_FLOW_TRANSFORM_HOTKEY`, see "Transform anywhere")
+  and voice command hotkey (`LOCAL_FLOW_COMMAND_HOTKEY`, see "Voice command
+  mode"): same plain-single-pynput-key-only limitation as the main hotkey —
+  no chords. Neither has a cancel gesture of its own. `local-flow run`
+  refuses to start if either is set to the same key as the main hotkey, each
+  other, or itself (a config error with a hint, not a runtime surprise).
 
 ## Manual test checklist
 
@@ -728,6 +801,18 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
 26. Highlight text in any app, run `uv run local-flow transform Polish
     --selection` → the selection is replaced with the rewritten text and your
     original clipboard content is restored afterward.
+27. `LOCAL_FLOW_TRANSFORM_HOTKEY=f6 uv run local-flow run` → select text in
+    any app, tap F6 → it's rewritten in place with `transform_default`
+    (`Polish` by default) and your clipboard is restored afterward. Tap it
+    with nothing selected → a "no text selected" warning prints; nothing is
+    changed.
+28. `LOCAL_FLOW_COMMAND_HOTKEY=f7 uv run local-flow run` → select text, hold
+    F7, say "make this more formal", release → the selection is replaced
+    with the spoken edit. Release F7 with nothing selected → your last
+    dictation is transformed and inserted via the normal sink instead.
+29. `LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run` → every
+    dictation lands pre-polished by the named transform, on top of the
+    normal cleanup level.
 
 ## Development
 

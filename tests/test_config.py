@@ -195,6 +195,79 @@ class TestVadPresetField:
         assert "whisper" in message
 
 
+class TestTransformAndCommandHotkeyFields:
+    """`transform_hotkey`/`transform_default`/`command_hotkey`/`auto_transform`
+    (Phase 6 E8): see `local_flow.app._run_loop`/`_build_pipeline`.
+    """
+
+    def test_defaults_are_all_disabled(self):
+        config = load_config(env={})
+        assert config.transform_hotkey == ""
+        assert config.transform_default == "Polish"
+        assert config.command_hotkey == ""
+        assert config.auto_transform == ""
+
+    def test_env_overrides(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                "LOCAL_FLOW_TRANSFORM_DEFAULT": "Prompt Engineer",
+                "LOCAL_FLOW_COMMAND_HOTKEY": "f7",
+                "LOCAL_FLOW_AUTO_TRANSFORM": "Polish",
+            }
+        )
+        assert config.transform_hotkey == "f6"
+        assert config.transform_default == "Prompt Engineer"
+        assert config.command_hotkey == "f7"
+        assert config.auto_transform == "Polish"
+
+    def test_transform_hotkey_same_as_main_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="transform_hotkey") as excinfo:
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "f9", "LOCAL_FLOW_TRANSFORM_HOTKEY": "f9"}
+            )
+        assert "distinct" in excinfo.value.hint
+
+    def test_command_hotkey_same_as_main_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="command_hotkey"):
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "f9", "LOCAL_FLOW_COMMAND_HOTKEY": "f9"}
+            )
+
+    def test_transform_hotkey_same_as_command_hotkey_rejected(self):
+        with pytest.raises(ConfigError, match="command_hotkey"):
+            load_config(
+                env={
+                    "LOCAL_FLOW_HOTKEY": "fn",
+                    "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                    "LOCAL_FLOW_COMMAND_HOTKEY": "f6",
+                }
+            )
+
+    def test_collision_check_is_case_insensitive(self):
+        with pytest.raises(ConfigError, match="transform_hotkey"):
+            load_config(
+                env={"LOCAL_FLOW_HOTKEY": "F9", "LOCAL_FLOW_TRANSFORM_HOTKEY": "f9"}
+            )
+
+    def test_all_empty_by_default_never_collides(self):
+        # transform_hotkey/command_hotkey both default to "": must not be
+        # treated as colliding with each other or with the main hotkey.
+        config = load_config(env={})
+        assert config.transform_hotkey == config.command_hotkey == ""
+
+    def test_distinct_hotkeys_are_accepted(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_HOTKEY": "fn",
+                "LOCAL_FLOW_TRANSFORM_HOTKEY": "f6",
+                "LOCAL_FLOW_COMMAND_HOTKEY": "f7",
+            }
+        )
+        assert config.transform_hotkey == "f6"
+        assert config.command_hotkey == "f7"
+
+
 class TestMaxUtteranceMinField:
     """`max_utterance_min`: see local_flow/app.py `_handle_utterance`."""
 

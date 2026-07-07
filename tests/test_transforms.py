@@ -5,7 +5,7 @@ import json
 import pytest
 
 from local_flow.app import main
-from local_flow.errors import ConfigError, LMStudioConnectionError
+from local_flow.errors import ClipboardError, ConfigError, LMStudioConnectionError
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import DEFAULT_TRANSFORMS, PersonalizationStore
 from local_flow.transforms.registry import apply_transform, build_transform_messages
@@ -306,3 +306,34 @@ class TestTransformCli:
         err = capsys.readouterr().err
         assert "unreachable" in err
         assert backend.clipboard == "precious"
+
+    def test_mid_capture_backend_failure_still_restores_clipboard(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Residual fix: `capture.capture()` must run *inside* the try, not
+        before it -- so an exception raised partway through capture() itself
+        (after it has already cleared the clipboard to "") still hits the
+        except and restores the user's original clipboard, instead of
+        propagating past the try/except entirely and leaving "" behind.
+        """
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        import local_flow.app as app_module
+
+        class BoomOnCopyBackend(MockSelectionBackend):
+            def send_copy(self):
+                super().send_copy()
+                raise ClipboardError("copy chord failed")
+
+        backend = BoomOnCopyBackend(clipboard="precious", selection_text="whatever")
+        monkeypatch.setattr(
+            app_module,
+            "_build_selection_capture",
+            lambda config: SelectionCapture(backend, sleep=lambda s: None),
+        )
+
+        code = main(["transform", "Polish", "--selection"])
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "copy chord failed" in err
+        assert backend.clipboard == "precious"  # restored, not left cleared

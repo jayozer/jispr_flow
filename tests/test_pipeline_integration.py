@@ -366,6 +366,135 @@ class TestSpokenDictionaryAddition:
         assert any("'JiSpr' already in dictionary" in w for w in result.warnings)
 
 
+class TestAutoTransform:
+    """`auto_transform_prompt` (Phase 6 E8): applied to the final text right
+    before insertion, after personalization (dictionary/snippets/dictation
+    commands), skipped at cleanup_level="none" or with no chat client, and a
+    complete no-op when unset (the default) -- see `local_flow.pipeline`.
+    """
+
+    def test_default_is_none_and_byte_identical_to_before_the_feature(self, store):
+        llm = MockChatClient(["polished text"])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink)
+        assert pipeline.auto_transform_prompt is None
+
+        result = pipeline.process_transcript("hello world")
+
+        assert result.final == "polished text"
+        assert len(llm.requests) == 1  # only the polish call, no transform call
+        assert sink.events == [("insert", "polished text")]
+
+    def test_applied_after_personalization_and_before_insertion(self, store):
+        # The polish call returns text that still needs dictionary/snippet
+        # substitution; the auto-transform call must see the *substituted*
+        # text, not the raw polish output.
+        llm = MockChatClient(
+            [
+                "the jispr flow team uses postgresql daily",  # polish output (lowercase)
+                "TRANSFORMED",  # auto-transform output
+            ]
+        )
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("some rough words")
+
+        # The transform call's user message must contain the *personalized*
+        # text (dictionary-cased terms), proving ordering: personalization
+        # ran first, auto-transform second.
+        transform_request = llm.requests[1]
+        assert "JiSpr Flow" in transform_request[1]["content"]
+        assert "PostgreSQL" in transform_request[1]["content"]
+        assert result.final == "TRANSFORMED"
+        assert sink.events == [("insert", "TRANSFORMED")]
+
+    def test_llm_failure_degrades_to_original_text_with_a_warning(self, store):
+        class FailOnSecondCall(MockChatClient):
+            def __init__(self):
+                super().__init__(["polished text"])
+                self.calls = 0
+
+            def chat(self, messages, *, temperature=0.2, max_tokens=None):
+                self.calls += 1
+                if self.calls > 1:
+                    raise LMStudioConnectionError("LM Studio is unreachable")
+                return super().chat(messages)
+
+        llm = FailOnSecondCall()
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("hello world")
+
+        assert result.final == "polished text"  # original text, not lost
+        assert any("auto-transform skipped" in w for w in result.warnings)
+        assert sink.events == [("insert", "polished text")]
+
+    def test_skipped_at_cleanup_level_none(self, store):
+        llm = MockChatClient(["should never be called for transform"])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store, level="none"),
+            store=store,
+            sink=sink,
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("hello world")
+
+        assert len(llm.requests) == 0  # polish itself is also skipped at "none"
+        assert result.final == "hello world"
+
+    def test_skipped_when_no_chat_client_configured(self, store):
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(None, store),
+            store=store,
+            sink=sink,
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("hello world")
+
+        assert result.final  # rule-cleaned text still inserted
+        assert sink.events[0][0] == "insert"
+
+    def test_empty_final_text_never_calls_the_transform(self, store):
+        # Chat client IS configured (unlike the previous test) and level is
+        # the default "medium" -- but the polish response is entirely a
+        # spoken "add X to dictionary" phrase, which `extract_dictionary_additions`
+        # strips down to "". The `and text` guard must still skip the
+        # transform call even though a chat client exists.
+        llm = MockChatClient(["add JiSpr to dictionary"])
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=FakeTextSink(),
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("add JiSpr to dictionary")
+
+        assert result.final == ""
+        assert len(llm.requests) == 1  # only the polish call, no transform call
+
+
 class TestDictionaryUsageTracking:
     """process_transcript records per-term usage back into the dictionary."""
 

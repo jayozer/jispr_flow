@@ -73,3 +73,23 @@ history_retention = "forever"  # forever | 24h (prune on each write) | off (neve
 # Ignored (with a one-line notice) in push-to-talk mode.
 streaming = "off"              # off | sentence (insert each sentence early) | live-preview
 streaming_pause_ms = 300       # "sentence" mode: pause (ms) that closes/inserts a chunk
+
+# Transform-in-place hotkey (see README "Transform anywhere"): tap this key
+# to apply transform_default to the current OS selection, in place. Empty
+# (default) disables the feature entirely. Must be distinct from hotkey and
+# command_hotkey.
+transform_hotkey = ""
+transform_default = "Polish"   # a transforms.json name
+
+# Voice command mode hotkey (see README "Voice command mode"): hold this key
+# and speak an edit instruction instead of typing one; applied to the
+# current selection (if any) or your last dictation. Empty (default)
+# disables it entirely. Must be distinct from hotkey and transform_hotkey.
+command_hotkey = ""
+
+# Auto-transform (see README "Auto-transform"): a transforms.json name to
+# run on every dictation's final text, right before insertion. Empty
+# (default) disables it entirely -- zero behavior change. Skipped at
+# cleanup_level="none" or with no LM Studio client configured; an unknown
+# name fails fast at startup.
+auto_transform = ""

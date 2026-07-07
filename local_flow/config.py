@@ -137,6 +137,28 @@ class Config:
     streaming: str = "off"  # off | sentence | live-preview
     streaming_pause_ms: int = 300
 
+    # Transform-in-place hotkey (see README "Transform anywhere"): tap this
+    # key to apply `transform_default` (a transforms.json name) to whatever
+    # is currently selected in the frontmost app. Empty (default) disables
+    # the feature entirely -- zero behavior change. See
+    # `local_flow.hotkeys.base.TapListener` / `local_flow.app._run_loop`.
+    transform_hotkey: str = ""
+    transform_default: str = "Polish"
+
+    # Voice command mode hotkey (see README "Voice command mode"): hold this
+    # key and speak an edit instruction instead of typing one; applied to the
+    # current selection (if any) or the last dictation. Empty (default)
+    # disables it entirely.
+    command_hotkey: str = ""
+
+    # Auto-transform (see README "Auto-transform"): when set to a
+    # transforms.json name, every dictation's final text is additionally
+    # rewritten by that transform right before insertion. Empty (default, "")
+    # disables it -- zero behavior change. Skipped at cleanup_level="none" or
+    # when no chat client is configured; an unknown name fails fast with a
+    # ConfigError when the pipeline is built (see `local_flow.app._build_pipeline`).
+    auto_transform: str = ""
+
 
 def _read_dotenv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -300,5 +322,29 @@ def load_config(
             f"{config.mouse_button!r}.",
             hint="Use a different button for each, or leave one of them empty.",
         )
+
+    # Every configured keyboard hotkey (the main hotkey, transform_hotkey,
+    # command_hotkey) must be distinct, case-insensitively -- two listeners
+    # bound to the same key would race for the same physical keypress with
+    # no defined winner. Checked pairwise, skipping any that are empty
+    # (disabled), so leaving transform_hotkey/command_hotkey unset (the
+    # default) never trips this.
+    seen_hotkeys: dict[str, str] = {}
+    for field_name, value in (
+        ("hotkey", config.hotkey),
+        ("transform_hotkey", config.transform_hotkey),
+        ("command_hotkey", config.command_hotkey),
+    ):
+        if not value:
+            continue
+        key = value.lower()
+        if key in seen_hotkeys:
+            raise ConfigError(
+                f"{field_name} and {seen_hotkeys[key]} cannot both be {value!r}.",
+                hint="hotkey, transform_hotkey, and command_hotkey must all be "
+                "distinct; leave transform_hotkey/command_hotkey empty to "
+                "disable that feature.",
+            )
+        seen_hotkeys[key] = field_name
 
     return config

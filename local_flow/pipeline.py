@@ -8,6 +8,7 @@ from local_flow.asr.base import Transcriber
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
 from local_flow.context.router import ContextRouter, ResolvedContext
+from local_flow.errors import LMStudioError
 from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import TextSink
 from local_flow.personalization.store import PersonalizationStore
@@ -45,6 +46,7 @@ class DictationPipeline:
         command_mode: CommandMode | None = None,
         history: HistoryStore | None = None,
         router: ContextRouter | None = None,
+        auto_transform_prompt: str | None = None,
     ) -> None:
         self.transcriber = transcriber
         self.polisher = polisher
@@ -53,6 +55,12 @@ class DictationPipeline:
         self.command_mode = command_mode
         self.history = history
         self.router = router
+        # A resolved transform *prompt* (not a name -- the app layer resolves
+        # `config.auto_transform` against `store.transforms()` once at build
+        # time, see `local_flow.app._build_pipeline`), applied to the final
+        # text right before insertion. `None` (the default) is a complete
+        # no-op, byte-identical to before this feature existed.
+        self.auto_transform_prompt = auto_transform_prompt
         self.last_transcript: str = ""
 
     def process_audio(
@@ -109,6 +117,31 @@ class DictationPipeline:
                 result.warnings.append(f"added '{term}' to dictionary")
             else:
                 result.warnings.append(f"'{term}' already in dictionary")
+
+        if (
+            self.auto_transform_prompt
+            and text
+            and self.polisher.chat_client is not None
+            and self.polisher.level != "none"
+        ):
+            # Runs after every personalization step (dictionary/snippets/
+            # dictation commands/spoken code syntax) and right before
+            # insertion -- so it sees exactly what would otherwise have been
+            # typed/pasted. `cleanup_level="none"` is a full verbatim bypass
+            # (see TranscriptPolisher.polish) and is honored here too: no
+            # chat client means there's nothing to run it through, and
+            # "none" means the user asked for hands-off output.
+            try:
+                from local_flow.transforms.registry import apply_transform
+
+                text = apply_transform(
+                    self.polisher.chat_client, self.auto_transform_prompt, text
+                )
+                result.final = text
+            except LMStudioError as exc:
+                # Degrade, don't block: the original (pre-transform) text
+                # still gets inserted, with a warning explaining why.
+                result.warnings.append(f"auto-transform skipped: {exc.message}")
 
         sink = ctx.sink or self.sink
         if text or actions:

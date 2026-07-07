@@ -198,6 +198,63 @@ class PynputPushToTalk(HotkeyListener):
             ) from exc
 
 
+class TapListener:
+    """Fires ``on_tap`` on every press (tap) of one key -- no hold semantics.
+
+    Used by the transform hotkey (see ``local_flow.app._run_loop``): a single
+    tap should immediately trigger "capture selection -> transform ->
+    replace", unlike push-to-talk's press-to-start/release-to-stop. This
+    deliberately does not subclass :class:`HotkeyListener` -- its callback
+    shape (``run(on_tap)``, one zero-arg callback fired on key-down only) is
+    different from ``run(on_press, on_release, on_cancel)`` -- and needs none
+    of :class:`PushToTalkCore`'s held-state bookkeeping.
+    """
+
+    def __init__(self, key_name: str) -> None:
+        try:
+            from pynput import keyboard
+        except ImportError as exc:
+            raise HotkeyBackendMissingError(
+                "The 'pynput' package is not installed.",
+                hint="Install desktop extras: uv sync --extra desktop.",
+            ) from exc
+        self._keyboard = keyboard
+        self.key_name = key_name
+        self._target = resolve_key(keyboard, key_name)
+        self._on_tap: Callable[[], None] | None = None
+
+    def handle_press(self, key, injected: bool = False) -> None:
+        """Process one key-press event.
+
+        A plain instance method (not a closure built inside ``run``) so
+        tests can call it directly with any sentinel key object -- compared
+        only by identity against ``self._target`` -- without a live pynput
+        listener, mirroring ``MousePushToTalk.handle_click``. Synthetic key
+        events (e.g. this process's own ``TypingSink`` typing a transcript)
+        must never trigger a transform, same ``injected`` guard invariant as
+        every other hotkey listener.
+        """
+        if injected:
+            return
+        if key == self._target and self._on_tap is not None:
+            self._on_tap()
+
+    def run(self, on_tap: Callable[[], None]) -> None:
+        self._on_tap = on_tap
+        keyboard = self._keyboard
+        try:
+            with keyboard.Listener(on_press=self.handle_press) as listener:
+                listener.join()
+        except Exception as exc:
+            raise HotkeyBackendMissingError(
+                f"The global hotkey listener failed: {exc}",
+                hint="macOS: grant Accessibility AND Input Monitoring permission "
+                "to your terminal. Linux/Wayland: global key capture is blocked "
+                "by the compositor - use hands-free mode "
+                "(LOCAL_FLOW_MODE=hands-free) instead.",
+            ) from exc
+
+
 def create_hotkey_listener(
     config: Config, cancel_gate: Callable[[], bool] | None = None
 ) -> HotkeyListener:

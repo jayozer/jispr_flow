@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from local_flow.audio.vad import VoiceActivityDetector
     from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
+    from local_flow.transforms.selection import SelectionCapture
 
 # The energy VAD's dataclass default (see `Config.vad_energy_threshold`);
 # `_build_vad` uses this to detect whether the user left the threshold at
@@ -249,6 +250,7 @@ def _build_pipeline(config: Config, chat_client, sink):
         else None
     )
     history = _build_history_store(config) if config.history_enabled else None
+    auto_transform_prompt = _resolve_auto_transform_prompt(config, store)
     return DictationPipeline(
         transcriber=_build_transcriber(config),
         polisher=polisher,
@@ -257,7 +259,34 @@ def _build_pipeline(config: Config, chat_client, sink):
         command_mode=command_mode,
         history=history,
         router=_build_router(config, store),
+        auto_transform_prompt=auto_transform_prompt,
     )
+
+
+def _resolve_auto_transform_prompt(
+    config: Config, store: PersonalizationStore
+) -> str | None:
+    """Resolve ``config.auto_transform`` (a transforms.json name) to its
+    prompt text, once at pipeline-build time.
+
+    ``""`` (the default) means the feature is off and this returns ``None``
+    -- ``DictationPipeline`` treats that as a complete no-op. A non-empty
+    name that isn't in ``store.transforms()`` fails fast here with a
+    ``ConfigError`` (rather than silently disabling the feature or failing
+    on every dictation), since an unresolvable auto-transform is almost
+    certainly a typo the user would want to know about immediately.
+    """
+    if not config.auto_transform:
+        return None
+    transforms = store.transforms()
+    if config.auto_transform not in transforms:
+        raise ConfigError(
+            f"Unknown auto_transform {config.auto_transform!r}.",
+            hint=f"Known transforms: {', '.join(transforms) or '(none)'}. "
+            f"Edit {config.data_dir / 'transforms.json'} to add one, or set "
+            "LOCAL_FLOW_AUTO_TRANSFORM to an existing name.",
+        )
+    return transforms[config.auto_transform]
 
 
 def _cmd_demo(_args: argparse.Namespace, _config: Config) -> int:
@@ -379,8 +408,14 @@ def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
 
     if selection_given:
         capture = _build_selection_capture(config)
-        selected = capture.capture()
         try:
+            # capture() itself is inside this try (not called before it): it
+            # already overwrites the clipboard partway through (save -> clear
+            # -> send_copy -> poll -- see SelectionCapture.capture's
+            # docstring), so an exception raised *during* capture (e.g. the
+            # backend's send_copy chord fails) must still hit the except
+            # below and restore, exactly like a post-capture failure would.
+            selected = capture.capture()
             if not selected:
                 raise LocalFlowError(
                     "No text is selected.",
@@ -391,12 +426,11 @@ def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
             result = apply_transform(chat_client, prompt, selected)
             capture.replace(result)
         except BaseException:
-            # capture() has already overwritten the clipboard by this point
-            # (see SelectionCapture.capture's docstring); on any failure --
-            # "nothing selected", LM Studio unreachable, or anything else --
-            # restore the user's original clipboard before the exception
-            # propagates. A no-op once replace() above has already restored
-            # (SelectionCapture tracks that internally).
+            # On any failure -- capture itself, "nothing selected", LM Studio
+            # unreachable, or anything else -- restore the user's original
+            # clipboard before the exception propagates. A no-op once
+            # replace() above has already restored (SelectionCapture tracks
+            # that internally).
             capture.restore()
             raise
         print(f"replaced selection with the {args.name!r} transform.", file=sys.stderr)
@@ -775,6 +809,79 @@ def _handle_utterance(
         reporter.notify("idle")
 
 
+def _run_voice_command(
+    deps: RunDependencies,
+    capture: SelectionCapture,
+    pcm: bytes,
+    sample_rate: int,
+    reporter: StatusReporter,
+) -> None:
+    """Route one voice-command-hotkey recording: transcribe, then apply it.
+
+    Called from the command hotkey's ``finish()`` (see ``_run_loop``) right
+    after the recording stops -- ``capture`` is a freshly built, not-yet-
+    ``capture()``-ed :class:`~local_flow.transforms.selection.SelectionCapture`.
+    ``capture()`` itself runs *inside* this function (not before it's
+    called), first thing, so the selection reflects whatever was highlighted
+    while the user was speaking, not whatever is highlighted by the time the
+    (slower) transcription finishes -- and so a capture failure is caught by
+    the same guard that restores the clipboard, same precision fix as
+    ``_cmd_transform``'s residual review note.
+
+    Two outcomes once a non-empty instruction is transcribed:
+    - A selection was captured: run :class:`CommandMode` directly against it
+      (bypassing ``DictationPipeline.run_command``, which always inserts via
+      the sink) and ``capture.replace()`` the result in place.
+    - Nothing was selected: restore the clipboard (nothing to replace) and
+      fall back to ``pipeline.run_command``, which resolves its own target
+      (explicit text, or ``last_transcript``) and inserts via the sink --
+      the same path a typed ``local-flow command`` would take.
+
+    Dictionary enforcement applies either way: explicitly here for the
+    selection-replace path, and inside ``run_command`` itself for the
+    fallback path. Every failure (capture, no command mode configured, empty
+    transcription, LLM error) restores the clipboard and reports a
+    ``"warning"`` instead of raising -- this runs on the command hotkey's
+    dispatcher-wrapped worker thread, so nothing here may crash the loop.
+    """
+    pipeline = deps.pipeline
+    try:
+        selection = capture.capture()
+    except Exception as exc:
+        capture.restore()
+        reporter.notify(
+            "warning", f"voice command: selection capture failed: {exc}"
+        )
+        return
+
+    if pipeline.command_mode is None:
+        capture.restore()
+        reporter.notify("warning", "voice command mode needs LM Studio configured")
+        return
+
+    try:
+        instruction = pipeline.transcriber.transcribe(pcm, sample_rate).strip()
+        if not instruction:
+            capture.restore()
+            reporter.notify("warning", "voice command: nothing heard")
+            return
+        if selection:
+            from local_flow.polish.rules import enforce_dictionary
+
+            transformed = pipeline.command_mode.run(instruction, target_text=selection)
+            transformed, _count = enforce_dictionary(
+                transformed, pipeline.store.dictionary_terms()
+            )
+            capture.replace(transformed)
+        else:
+            capture.restore()  # nothing was selected; nothing to replace
+            pipeline.run_command(instruction, target_text=None)
+    except Exception as exc:
+        capture.restore()
+        message = getattr(exc, "message", str(exc))
+        reporter.notify("warning", f"voice command failed: {message}")
+
+
 def _build_pending_store(config: Config):
     """Build the crash-safe audio autosave store, or ``None`` when disabled.
 
@@ -902,6 +1009,41 @@ def _run_mouse_listener(
             print(f"hint : {exc.hint}", file=sys.stderr)
 
 
+def _run_transform_listener(transform_listener, on_tap: Callable[[], None]) -> None:
+    """Target for the transform hotkey's daemon thread (see ``_run_loop``).
+
+    Same visible-failure wrapper as ``_run_mouse_listener``: an uncaught
+    exception on a daemon thread is silently swallowed by Python -- no
+    traceback, no process exit -- so a startup failure (e.g. missing
+    Accessibility/Input Monitoring permission) is caught here and printed in
+    ``_fail``'s format instead of vanishing.
+    """
+    try:
+        transform_listener.run(on_tap)
+    except LocalFlowError as exc:
+        print(f"error: transform hotkey stopped: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+
+
+def _run_command_hotkey_listener(
+    command_listener,
+    on_press: Callable[[], None],
+    on_release: Callable[[], None],
+) -> None:
+    """Target for the voice-command hotkey's daemon thread (see ``_run_loop``).
+
+    Same visible-failure wrapper as ``_run_mouse_listener``/
+    ``_run_transform_listener``.
+    """
+    try:
+        command_listener.run(on_press, on_release)
+    except LocalFlowError as exc:
+        print(f"error: voice command hotkey stopped: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+
+
 def _run_loop(
     config: Config,
     mode: str,
@@ -989,6 +1131,8 @@ def _run_loop(
 
             from local_flow.hotkeys.base import (
                 CallbackDispatcher,
+                PynputPushToTalk,
+                TapListener,
                 create_hotkey_listener,
                 create_mouse_listener,
             )
@@ -1109,6 +1253,101 @@ def _run_loop(
                 threading.Thread(
                     target=_run_mouse_listener,
                     args=(mouse_listener, wrapped_start, wrapped_finish),
+                    daemon=True,
+                ).start()
+
+            if config.transform_hotkey:
+                # Resolved once, at startup, rather than on every tap: an
+                # unknown `transform_default` name disables the whole
+                # feature with one warning instead of warning (or silently
+                # no-op'ing) on every keypress. `store.transforms()` is the
+                # very same PersonalizationStore the rest of the pipeline
+                # uses (`pipeline.store`), so a user edit to transforms.json
+                # is picked up the next time `local-flow run` starts.
+                transform_prompt = pipeline.store.transforms().get(config.transform_default)
+                if transform_prompt is None:
+                    reporter.notify(
+                        "warning",
+                        f"unknown transform_default {config.transform_default!r}; "
+                        "transform hotkey disabled",
+                    )
+                else:
+                    from local_flow.transforms.registry import apply_transform
+
+                    def _transform_tap(prompt: str = transform_prompt) -> None:
+                        capture = _build_selection_capture(config)
+                        try:
+                            # capture() runs inside this try (not before),
+                            # same precision fix as `_cmd_transform`'s
+                            # residual review note: a mid-capture failure
+                            # must still restore the clipboard.
+                            selected = capture.capture()
+                            if not selected:
+                                reporter.notify("warning", "no text selected")
+                                capture.restore()
+                                return
+                            result = apply_transform(
+                                pipeline.polisher.chat_client, prompt, selected
+                            )
+                            capture.replace(result)
+                        except Exception as exc:
+                            capture.restore()
+                            message = getattr(exc, "message", str(exc))
+                            reporter.notify("warning", f"transform failed: {message}")
+
+                    transform_listener = TapListener(config.transform_hotkey)
+                    threading.Thread(
+                        target=_run_transform_listener,
+                        args=(transform_listener, dispatcher.wrap(_transform_tap)),
+                        daemon=True,
+                    ).start()
+
+            if config.command_hotkey:
+                # A second, independent push-to-talk recorder: its own
+                # stop-event/thread/captured-pcm state, deliberately NOT
+                # shared with the main hotkey's `stop`/`recorder`/`captured`
+                # above -- holding both hotkeys at once must not corrupt
+                # either recording.
+                cmd_stop = threading.Event()
+                cmd_recorder: dict[str, threading.Thread | None] = {"thread": None}
+                cmd_captured: dict[str, bytes] = {}
+
+                def cmd_start() -> None:
+                    cmd_stop.clear()
+                    reporter.notify("recording")
+
+                    def record() -> None:
+                        cmd_captured["pcm"] = source.record_until(cmd_stop, config.vad_frame_ms)
+
+                    cmd_recorder["thread"] = threading.Thread(target=record, daemon=True)
+                    cmd_recorder["thread"].start()
+
+                def cmd_finish() -> None:
+                    stop_thread = cmd_recorder["thread"]
+                    cmd_stop.set()
+                    if stop_thread is not None:
+                        stop_thread.join(timeout=5)
+                    pcm = cmd_captured.pop("pcm", b"")
+                    if pcm:
+                        reporter.notify("processing")
+                        # Captured (not just built) at the start of finish(),
+                        # before the -- slower -- transcription step inside
+                        # `_run_voice_command`, so it reflects whatever was
+                        # selected while the user was speaking.
+                        capture = _build_selection_capture(config)
+                        _run_voice_command(deps, capture, pcm, config.sample_rate, reporter)
+                    reporter.notify("idle")
+
+                # No cancel key: this listener has no cancel gesture of its
+                # own (mirrors mouse push-to-talk -- see README).
+                command_listener = PynputPushToTalk(config.command_hotkey, cancel_key="")
+                threading.Thread(
+                    target=_run_command_hotkey_listener,
+                    args=(
+                        command_listener,
+                        dispatcher.wrap(cmd_start),
+                        dispatcher.wrap(cmd_finish),
+                    ),
                     daemon=True,
                 ).start()
 

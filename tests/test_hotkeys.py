@@ -10,6 +10,7 @@ from local_flow.errors import HotkeyBackendMissingError
 from local_flow.hotkeys.base import (
     CallbackDispatcher,
     PushToTalkCore,
+    TapListener,
     create_hotkey_listener,
     resolve_key,
 )
@@ -229,6 +230,78 @@ class TestResolveKey:
     def test_unknown_name_raises_with_hint(self):
         with pytest.raises(HotkeyBackendMissingError, match="Unknown hotkey"):
             resolve_key(FakeKeyboard, "no_such_key")
+
+
+class TestTapListener:
+    """`TapListener` (Phase 6 E8, transform hotkey): fires `on_tap` on every
+    press of one key, no hold/release/cancel semantics. `handle_press` is a
+    plain instance method (not a closure built inside `run`), same pattern
+    as `MousePushToTalk.handle_click` -- testable directly with sentinel key
+    objects, no live pynput listener needed.
+    """
+
+    def test_press_of_target_key_fires_on_tap(self):
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(listener._target)
+
+        assert calls == ["tap"]
+
+    def test_press_of_other_key_is_ignored(self):
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(object())  # some other key, never equal to _target
+
+        assert calls == []
+
+    def test_repeated_taps_each_fire(self):
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(listener._target)
+        listener.handle_press(listener._target)
+        listener.handle_press(listener._target)
+
+        assert calls == ["tap", "tap", "tap"]
+
+    def test_injected_events_are_ignored(self):
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(listener._target, injected=True)
+
+        assert calls == []
+
+    def test_no_on_tap_registered_yet_is_a_noop(self):
+        # Before run() sets `_on_tap` (e.g. a stray event during construction):
+        # must not raise.
+        listener = TapListener("f9")
+        listener.handle_press(listener._target)  # no exception
+
+    def test_unknown_key_name_raises_with_hint(self):
+        with pytest.raises(HotkeyBackendMissingError, match="Unknown hotkey"):
+            TapListener("no_such_key")
+
+    def test_run_wires_on_tap_and_drives_the_real_pynput_listener(self, monkeypatch):
+        listener = TapListener("f9")
+        monkeypatch.setattr(
+            listener._keyboard, "Listener", lambda **kw: _FakeListenerContextManager()
+        )
+        calls = []
+
+        listener.run(lambda: calls.append("tap"))
+
+        # run() blocks on listener.join() via the fake context manager, then
+        # returns; the important assertion is that `_on_tap` got wired so a
+        # subsequent handle_press would actually fire it.
+        listener.handle_press(listener._target)
+        assert calls == ["tap"]
 
 
 class TestCallbackDispatcher:
