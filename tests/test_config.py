@@ -114,3 +114,20 @@ class TestHotkeyDefaults:
         config = load_config(env={})
         assert config.hotkey_space_hold_ms == 250
         assert config.cancel_hotkey == "esc"
+
+
+class TestLanguagesField:
+    """`languages`: comma-separated codes for the tray's Language quick-switch."""
+
+    def test_defaults_to_empty_string(self):
+        assert load_config(env={}).languages == ""
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_LANGUAGES": "en,de,fr"})
+        assert config.languages == "en,de,fr"
+
+    def test_file_override(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text('languages = "en, de"\n', encoding="utf-8")
+        config = load_config(config_file=config_file, env={})
+        assert config.languages == "en, de"

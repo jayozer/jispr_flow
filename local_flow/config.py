@@ -47,6 +47,11 @@ class Config:
     asr_compute_type: str = "int8"
     asr_language: str = "en"  # ISO 639-1 code (e.g. "fr"), or "auto" to detect
 
+    # Comma-separated ISO 639-1 codes for the tray app's Language quick-switch
+    # menu (e.g. "en,de,fr"); empty hides the menu. Parsed by
+    # `local_flow.tray.app.parse_languages`.
+    languages: str = ""
+
     # VAD
     vad_backend: str = "energy"  # energy | webrtc | mock
     vad_aggressiveness: int = 2

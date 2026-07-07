@@ -2,9 +2,12 @@
 extracted per-utterance handler in ``local_flow.app``.
 """
 
-from local_flow.app import _handle_utterance
+import threading
+
+from local_flow.app import _handle_utterance, _run_loop
 from local_flow.asr.mock import MockTranscriber
 from local_flow.commands.command_mode import CommandMode
+from local_flow.config import load_config
 from local_flow.errors import LMStudioConnectionError
 from local_flow.insertion.base import FakeTextSink
 from local_flow.llm.mock import MockChatClient
@@ -141,3 +144,118 @@ class TestHandleUtterance:
         # The hint doesn't fit the single-string `notify(state, detail)`
         # interface, so it stays a literal print (unchanged from `_fail`).
         assert "hint : Test-only failure." in capsys.readouterr().err
+
+
+class DummyVAD:
+    """Placeholder VAD passed through `_run_loop`'s `dependencies` tuple.
+
+    `segment_stream` is monkeypatched in these tests, so the real VAD is
+    never consulted.
+    """
+
+
+class TestHandsFreeReArmsRecording:
+    """Carry-over from the T1 review: a tray reporter must see "recording"
+    again before each subsequent hands-free utterance, not just the first.
+    ConsoleReporter is silent for "recording", so CLI output is unaffected.
+    """
+
+    def test_recording_is_rearmed_before_the_second_utterance(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["First.", "Second."])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["first", "second"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={})
+
+        monkeypatch.setattr(
+            "local_flow.audio.vad.segment_stream",
+            lambda *args, **kwargs: iter([b"segment-one", b"segment-two"]),
+        )
+
+        class DummySource:
+            def frames(self, frame_ms):
+                return iter([])
+
+        _run_loop(
+            config,
+            "hands-free",
+            reporter,
+            dependencies=(pipeline, DummySource(), DummyVAD()),
+        )
+
+        states = [event[0] for event in reporter.events]
+        assert states == [
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]
+
+
+class TestCancelPathNotifiesIdle:
+    """Carry-over from the T1 review: cancelling a push-to-talk dictation
+    must also notify "idle" (silent on the console; makes a tray reporter
+    return to its idle icon), in addition to the existing literal print.
+    """
+
+    def test_cancel_prints_discarded_and_notifies_idle(self, tmp_path, monkeypatch, capsys):
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["ok"])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={})
+        done = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return b""
+
+        class FakeListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                on_cancel()
+                done.wait(timeout=5)
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config: FakeListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert done.is_set(), "cancel() never notified 'idle'"
+        assert reporter.events[-1] == ("idle", "")
+        assert "dictation discarded" in capsys.readouterr().out

@@ -8,6 +8,7 @@ Subcommands:
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
 - ``learn``   mine history for candidate dictionary terms, optionally add them
+- ``tray``    menu-bar app with live states + style/language quick-switch
 """
 
 from __future__ import annotations
@@ -401,16 +402,40 @@ def _handle_utterance(
         reporter.notify("idle")
 
 
-def _run_loop(config: Config, mode: str, reporter: StatusReporter) -> int:
+def _build_run_dependencies(config: Config):
+    """Build the pipeline + audio source + VAD that ``_run_loop`` needs.
+
+    Extracted from ``_run_loop`` so ``TrayApp`` can build these once, keep a
+    reference to ``pipeline.polisher``/``pipeline.transcriber`` for its
+    Style/Language menus, and hand the very same objects to ``_run_loop``
+    running on its worker thread (rather than each rebuilding its own
+    pipeline). ``_cmd_run`` still goes through ``_run_loop`` with
+    ``dependencies=None``, so this call sequence (and its exception
+    behavior) is unchanged for the CLI path.
+    """
     from local_flow.audio.capture import SounddeviceSource
+
+    chat_client = _build_chat_client(config)
+    sink = _build_sink(config)
+    pipeline = _build_pipeline(config, chat_client, sink)
+    source = SounddeviceSource(sample_rate=config.sample_rate)
+    vad = _build_vad(config)
+    return pipeline, source, vad
+
+
+def _run_loop(
+    config: Config,
+    mode: str,
+    reporter: StatusReporter,
+    stop_event: threading.Event | None = None,
+    dependencies: tuple[DictationPipeline, object, object] | None = None,
+) -> int:
     from local_flow.audio.vad import segment_stream
 
     try:
-        chat_client = _build_chat_client(config)
-        sink = _build_sink(config)
-        pipeline = _build_pipeline(config, chat_client, sink)
-        source = SounddeviceSource(sample_rate=config.sample_rate)
-        vad = _build_vad(config)
+        pipeline, source, vad = (
+            dependencies if dependencies is not None else _build_run_dependencies(config)
+        )
     except LocalFlowError as exc:
         return _fail(exc)
 
@@ -418,13 +443,23 @@ def _run_loop(config: Config, mode: str, reporter: StatusReporter) -> int:
         if mode == "hands-free":
             print("hands-free dictation: speak; pause to insert. Ctrl+C to quit.")
             reporter.notify("recording")
-            for segment in segment_stream(
-                source.frames(config.vad_frame_ms),
-                vad,
-                config.sample_rate,
-                frame_ms=config.vad_frame_ms,
-                silence_ms=config.vad_silence_ms,
+            for i, segment in enumerate(
+                segment_stream(
+                    source.frames(config.vad_frame_ms),
+                    vad,
+                    config.sample_rate,
+                    frame_ms=config.vad_frame_ms,
+                    silence_ms=config.vad_silence_ms,
+                )
             ):
+                if stop_event is not None and stop_event.is_set():
+                    break
+                if i > 0:
+                    # Re-arm "recording" for each subsequent utterance so a
+                    # tray icon (or any other reporter) reflects that
+                    # hands-free mode is listening again; ConsoleReporter is
+                    # silent for "recording", so CLI output is unaffected.
+                    reporter.notify("recording")
                 _handle_utterance(pipeline, reporter, segment, config.sample_rate)
         else:
             from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
@@ -467,6 +502,9 @@ def _run_loop(config: Config, mode: str, reporter: StatusReporter) -> int:
                     thread.join(timeout=5)
                 captured.pop("pcm", None)
                 print("dictation discarded")
+                # Silent on the console (ConsoleReporter has no output for
+                # "idle"); makes a tray reporter go back to its idle icon.
+                reporter.notify("idle")
 
             dispatcher = CallbackDispatcher()
             listener.run(
@@ -483,6 +521,17 @@ def _run_loop(config: Config, mode: str, reporter: StatusReporter) -> int:
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     mode = args.mode or config.mode
     return _run_loop(config, mode, ConsoleReporter())
+
+
+def _cmd_tray(_args: argparse.Namespace, config: Config) -> int:
+    from local_flow.tray.app import TrayApp
+
+    try:
+        app = TrayApp(config)
+    except LocalFlowError as exc:
+        return _fail(exc)
+    app.run()
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -521,6 +570,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub.add_parser("check", help="diagnose LM Studio / ASR / audio / clipboard setup")
+
+    sub.add_parser(
+        "tray",
+        help="menu-bar tray app with live states and style/language quick-switch "
+        "(requires: uv sync --extra tray)",
+    )
 
     history_p = sub.add_parser("history", help="list/search/clear the local dictation history")
     history_p.add_argument(
@@ -577,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
         "check": _cmd_check,
         "history": _cmd_history,
         "learn": _cmd_learn,
+        "tray": _cmd_tray,
     }
     try:
         return handlers[args.command](args, config)

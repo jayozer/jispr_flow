@@ -34,3 +34,40 @@ class TestStyleOverrideWarning:
         result = polisher.polish("hello world")
 
         assert result.warnings == []
+
+
+class TestStyleProperty:
+    """`style` is a settable property (the tray app's Style submenu changes
+    it live, without rebuilding the pipeline).
+    """
+
+    def test_getter_returns_constructor_value(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        polisher = TranscriptPolisher(MockChatClient(["ok"]), store, style="casual")
+        assert polisher.style == "casual"
+
+    def test_setting_style_changes_the_next_polish_call(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        llm = MockChatClient(["ok"])
+        polisher = TranscriptPolisher(llm, store, style="default")
+
+        polisher.style = "casual"
+        assert polisher.style == "casual"
+
+        polisher.polish("hello world")  # no explicit style= override
+
+        casual_rules = store.style_rules("casual")[1]
+        system = llm.requests[0][0]["content"]
+        assert casual_rules in system
+
+    def test_explicit_polish_override_still_wins_over_the_property(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        llm = MockChatClient(["ok"])
+        polisher = TranscriptPolisher(llm, store, style="default")
+        polisher.style = "casual"
+
+        polisher.polish("hello world", style="email")
+
+        email_rules = store.style_rules("email")[1]
+        system = llm.requests[0][0]["content"]
+        assert email_rules in system

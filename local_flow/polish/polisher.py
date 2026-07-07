@@ -37,8 +37,23 @@ class TranscriptPolisher:
     ) -> None:
         self.chat_client = chat_client
         self.store = store
-        self.style = style
+        self._style = style
         self.fallback_to_rules = fallback_to_rules
+
+    @property
+    def style(self) -> str:
+        """Default style name used by :meth:`polish` when called without an
+        explicit ``style=`` override.
+
+        Settable so a caller (e.g. the tray app's Style submenu) can change
+        the active style for future utterances without rebuilding the
+        pipeline.
+        """
+        return self._style
+
+    @style.setter
+    def style(self, value: str) -> None:
+        self._style = value
 
     def polish(self, rough: str, style: str | None = None) -> PolishResult:
         """Rules first, then an LLM polish pass using ``style``.

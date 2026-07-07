@@ -90,6 +90,7 @@ environment > config file > defaults. Highlights:
 | LM Studio model | `LOCAL_FLOW_LMSTUDIO_MODEL` | *(auto-pick)* |
 | ASR model | `LOCAL_FLOW_ASR_MODEL` | `small.en` |
 | ASR language | `LOCAL_FLOW_ASR_LANGUAGE` | `en` (or an ISO code, or `auto`) |
+| Tray languages | `LOCAL_FLOW_LANGUAGES` | *(empty; comma-separated codes)* |
 | VAD backend | `LOCAL_FLOW_VAD_BACKEND` | `energy` (or `webrtc`) |
 | Mode | `LOCAL_FLOW_MODE` | `push-to-talk` (or `hands-free`) |
 | Hotkey | `LOCAL_FLOW_HOTKEY` | fn (macOS) / f9 |
@@ -150,6 +151,7 @@ uv run local-flow history --verbose       # also show the rough (pre-polish) tra
 uv run local-flow history --clear         # delete the local history file
 uv run local-flow learn                   # mine history for candidate dictionary terms
 uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dictionary
+uv run local-flow tray                    # menu-bar app (see "Tray app" below)
 ```
 
 ### History & privacy
@@ -198,6 +200,49 @@ even when LM Studio is unreachable. Spoken adds are extracted *after*
 dictation commands, so a term that is itself a command phrase (e.g. "new
 line") can't be added this way — use `local-flow learn` or edit
 `dictionary.json` directly for those.
+
+## Tray app
+
+`local-flow tray` runs the same dictation loop as `local-flow run`, but as a
+menu-bar/tray icon (macOS/Windows/most Linux desktops) with live state and
+quick style/language switching, instead of a terminal window. It needs the
+optional `tray` extra:
+
+```bash
+uv sync --extra tray
+uv run local-flow tray
+```
+
+What the icon looks like at each state (see `local_flow/tray/icons.py` /
+`local_flow/tray/state.py`):
+
+| State | Icon color | Tooltip |
+|---|---|---|
+| idle | gray | `local-flow — idle` |
+| recording | red | `local-flow — recording` |
+| processing | amber | `local-flow — processing` |
+| inserted (flashes back to idle) | gray | `inserted: <first 40 chars>` |
+| error / warning | dark red with "!" | `local-flow — error: <detail>` (also raises a desktop notification) |
+
+Menu:
+
+- **Dictation: Start/Stop** — in `--mode hands-free`, actually starts/stops
+  the capture loop (a `threading.Event` the loop checks between utterances,
+  so it can take a moment to stop mid-utterance); in push-to-talk mode this
+  is a disabled status label ("listening for hotkey") since the hotkey
+  itself already starts/stops each utterance.
+- **Mode** — shows the configured capture mode (informational).
+- **Style** — one item per name in `styles.json` (built-ins: `default`,
+  `professional`, `casual`, `email`, `chat`, plus any you've added);
+  clicking sets the style used for the *next* dictation. Hidden if there
+  are no styles (shouldn't happen — `styles.json` always ships defaults).
+- **Language** — one item per code in `LOCAL_FLOW_LANGUAGES` (e.g.
+  `en,de,fr`); clicking sets the ASR language for the *next* utterance.
+  Hidden entirely when `LOCAL_FLOW_LANGUAGES` is unset/empty. Needs a
+  multilingual ASR model (`LOCAL_FLOW_ASR_MODEL=small`, not `small.en`).
+- **Open data folder** — opens the data dir (`dictionary.json`,
+  `snippets.json`, `styles.json`) in your file manager.
+- **Quit** — stops the dictation loop and the tray icon.
 
 ## Architecture
 
@@ -278,6 +323,20 @@ and a running LM Studio:
     a normal space appears; hold Space → dictation starts.
 13. Press Esc mid-dictation → nothing is inserted and "dictation discarded"
     is printed.
+
+Tray app (`uv sync --all-extras && uv run local-flow tray`):
+
+14. The icon appears in the menu bar; it turns red while holding the hotkey
+    (or during a hands-free utterance), amber while processing, and back to
+    gray afterward; it raises a desktop notification on errors/warnings.
+15. Tray **Style** submenu → switch to `email` → the next dictation is
+    structured as an email (greeting, short paragraphs, sign-off).
+16. Tray **Language** submenu (with `LOCAL_FLOW_LANGUAGES=en,de` and a
+    multilingual model, e.g. `LOCAL_FLOW_ASR_MODEL=small`) → switch to `de`,
+    dictate in German → transcribed/polished in German.
+17. `--mode hands-free`: **Dictation: Start/Stop** actually starts and stops
+    capture; in push-to-talk mode the same menu item is a disabled
+    "listening for hotkey" label.
 
 ## Development
 

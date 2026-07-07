@@ -1,0 +1,328 @@
+"""pystray glue: ``local-flow tray``, a menu-bar app over the same run-loop.
+
+``pystray``/``Pillow`` are imported lazily (only inside :class:`TrayApp`'s
+constructor and the small helpers that need them), so importing this module
+never requires the ``tray`` extra -- only constructing/running a `TrayApp`
+does. Everything else here (``parse_languages``, :class:`MenuEntry`,
+:func:`build_menu`, :class:`TrayReporter`) is pure/GUI-toolkit-free and
+tested headlessly; the pystray `Menu`/`Icon` wiring itself is manual-verify
+only (see the README's "Tray app" section).
+"""
+
+from __future__ import annotations
+
+import sys
+import threading
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from local_flow.config import Config
+from local_flow.errors import LocalFlowError
+from local_flow.status import State, StatusReporter
+from local_flow.tray.icons import draw_icon
+from local_flow.tray.state import TrayStateMachine
+
+
+def parse_languages(raw: str) -> list[str]:
+    """Parse ``config.languages`` (e.g. ``"en, de,tr"``) into ``["en", "de", "tr"]``.
+
+    Whitespace around each code is stripped, blank entries (including an
+    empty or whitespace-only ``raw``) are dropped, and duplicates are removed
+    while preserving first-seen order.
+    """
+    seen: set[str] = set()
+    codes: list[str] = []
+    for piece in raw.split(","):
+        code = piece.strip()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+@dataclass(frozen=True)
+class MenuEntry:
+    """One pystray-agnostic menu node.
+
+    :class:`TrayApp` converts a tree of these into real ``pystray.MenuItem``
+    objects; keeping the structure itself free of pystray imports means menu
+    *contents* (labels, order, which item is checked) are testable without
+    the ``tray`` extra installed.
+    """
+
+    label: str
+    action: Callable[[], None] | None = None
+    submenu: tuple[MenuEntry, ...] | None = None
+    checked: bool | None = None  # None = not a checkable item
+    enabled: bool = True
+
+
+def build_menu(
+    *,
+    mode: str,
+    running: bool,
+    toggle_running: Callable[[], None],
+    style_names: list[str],
+    current_style: str,
+    set_style: Callable[[str], None],
+    languages: list[str],
+    current_language: str | None,
+    set_language: Callable[[str], None],
+    open_data_folder: Callable[[], None],
+    quit_app: Callable[[], None],
+) -> tuple[MenuEntry, ...]:
+    """Pure construction of the tray menu tree (no pystray import here).
+
+    - ``Dictation``: in hands-free mode, a real Start/Stop toggle over the
+      loop thread; in push-to-talk mode, a disabled status label (there is
+      no equivalent "loop" to start/stop -- the hotkey listener owns that).
+    - ``Mode``: a disabled label showing the configured capture mode.
+    - ``Style``/``Language`` submenus are omitted entirely when there is
+      nothing to offer (``style_names``/``languages`` empty).
+    """
+    if mode == "hands-free":
+        dictation_entry = MenuEntry(
+            label="Stop dictation" if running else "Start dictation",
+            action=toggle_running,
+        )
+    else:
+        dictation_entry = MenuEntry(
+            label="Dictation: listening for hotkey", action=None, enabled=False
+        )
+
+    entries: list[MenuEntry] = [
+        dictation_entry,
+        MenuEntry(label=f"Mode: {mode}", action=None, enabled=False),
+    ]
+
+    if style_names:
+        entries.append(
+            MenuEntry(
+                label="Style",
+                submenu=tuple(
+                    MenuEntry(
+                        label=name,
+                        action=lambda name=name: set_style(name),
+                        checked=(name == current_style),
+                    )
+                    for name in style_names
+                ),
+            )
+        )
+
+    if languages:
+        entries.append(
+            MenuEntry(
+                label="Language",
+                submenu=tuple(
+                    MenuEntry(
+                        label=code,
+                        action=lambda code=code: set_language(code),
+                        checked=(code == current_language),
+                    )
+                    for code in languages
+                ),
+            )
+        )
+
+    entries.append(MenuEntry(label="Open data folder", action=open_data_folder))
+    entries.append(MenuEntry(label="Quit", action=quit_app))
+    return tuple(entries)
+
+
+class TrayReporter(StatusReporter):
+    """Applies dictation-loop state transitions to a pystray-like icon.
+
+    Takes the icon instance (real ``pystray.Icon`` or a test double exposing
+    the same ``.icon``/``.title``/``.notify(str)`` surface) plus a
+    :class:`~local_flow.tray.state.TrayStateMachine`, so this is fully
+    testable by injecting a fake icon recorder -- no pystray/Pillow needed
+    except to actually render the icon image inside :func:`notify`.
+    """
+
+    def __init__(self, icon: object, state_machine: TrayStateMachine | None = None) -> None:
+        self._icon = icon
+        self._state_machine = state_machine or TrayStateMachine()
+
+    def notify(self, state: State, detail: str = "") -> None:
+        view = self._state_machine.apply(state, detail)
+        try:
+            self._icon.icon = draw_icon(view.icon)
+            self._icon.title = view.tooltip
+        except Exception:
+            pass  # icon redraws are best-effort; must never crash dictation
+        if state in ("error", "warning"):
+            try:
+                self._icon.notify(detail or view.tooltip)
+            except Exception:
+                pass  # desktop notifications are best-effort (not all backends support them)
+
+
+def _open_folder(path: Path) -> None:
+    """Open ``path`` in the platform file manager (best-effort, lazy import)."""
+    import subprocess
+
+    if sys.platform == "darwin":
+        cmd = ["open", str(path)]
+    elif sys.platform.startswith("win"):
+        cmd = ["explorer", str(path)]
+    else:
+        cmd = ["xdg-open", str(path)]
+    try:
+        subprocess.run(cmd, check=False)
+    except OSError:
+        pass  # best-effort; a missing file manager binary is not a tray error
+
+
+def _to_pystray_item(entry: MenuEntry):
+    import pystray
+
+    if entry.submenu is not None:
+        return pystray.MenuItem(
+            entry.label,
+            pystray.Menu(*(_to_pystray_item(sub) for sub in entry.submenu)),
+            enabled=entry.enabled,
+        )
+    checked = entry.checked
+    return pystray.MenuItem(
+        entry.label,
+        entry.action,
+        checked=(lambda item, v=checked: v) if checked is not None else None,
+        radio=checked is not None,
+        enabled=entry.enabled,
+    )
+
+
+def _to_pystray_menu(entries: tuple[MenuEntry, ...]):
+    import pystray
+
+    return pystray.Menu(*(_to_pystray_item(entry) for entry in entries))
+
+
+class TrayApp:
+    """pystray glue over the same run-loop machinery as ``local-flow run``.
+
+    ``pystray``/``Pillow`` are imported lazily here (not at module import
+    time) so importing :mod:`local_flow.tray.app` never requires the
+    ``tray`` extra; only constructing a `TrayApp` does -- a missing extra
+    raises :class:`~local_flow.errors.LocalFlowError` with a fix-it hint,
+    matching every other optional-backend adapter in this codebase.
+    """
+
+    def __init__(self, config: Config) -> None:
+        try:
+            import pystray  # noqa: F401
+            from PIL import Image  # noqa: F401
+        except ImportError as exc:
+            raise LocalFlowError(
+                "The 'pystray'/'pillow' packages are not installed.",
+                hint="Install tray extras: uv sync --extra tray",
+            ) from exc
+
+        # Deferred: `local_flow.app` imports this module lazily inside
+        # `_cmd_tray`, so importing it back here at call time (not module
+        # import time) avoids a circular import.
+        from local_flow.app import _build_run_dependencies
+
+        self.config = config
+        self.mode = config.mode
+        self.pipeline, self.source, self.vad = _build_run_dependencies(config)
+        self._languages = parse_languages(config.languages)
+
+        self._running = False
+        self._stop_event = threading.Event()
+        self._loop_thread: threading.Thread | None = None
+
+        self.icon = self._build_icon()
+        self.reporter = TrayReporter(self.icon, TrayStateMachine())
+
+    def _build_icon(self):
+        import pystray
+
+        icon = pystray.Icon("local-flow", draw_icon("idle"), "local-flow — idle")
+        icon.menu = self._build_pystray_menu()
+        return icon
+
+    def _build_pystray_menu(self):
+        entries = build_menu(
+            mode=self.mode,
+            running=self._running,
+            toggle_running=self._toggle_dictation,
+            style_names=sorted(self.pipeline.store.styles()),
+            current_style=self.pipeline.polisher.style,
+            set_style=self._set_style,
+            languages=self._languages,
+            current_language=self.pipeline.transcriber.language,
+            set_language=self._set_language,
+            open_data_folder=self._open_data_folder,
+            quit_app=self._quit,
+        )
+        return _to_pystray_menu(entries)
+
+    def _refresh_menu(self) -> None:
+        self.icon.menu = self._build_pystray_menu()
+
+    def _start_loop(self) -> None:
+        if self._running:
+            return
+        from local_flow.app import _run_loop
+
+        self._stop_event = threading.Event()
+        self._loop_thread = threading.Thread(
+            target=_run_loop,
+            args=(
+                self.config,
+                self.mode,
+                self.reporter,
+                self._stop_event,
+                (self.pipeline, self.source, self.vad),
+            ),
+            daemon=True,
+        )
+        self._loop_thread.start()
+        self._running = True
+
+    def _stop_loop(self) -> None:
+        if not self._running:
+            return
+        self._stop_event.set()
+        self._running = False
+
+    def _toggle_dictation(self) -> None:
+        # Push-to-talk has no loop-level Start/Stop concept (the hotkey
+        # listener already owns press/release per utterance); `build_menu`
+        # keeps that menu item disabled, but guard here too in case a stale
+        # menu reference fires this callback.
+        if self.mode != "hands-free":
+            return
+        if self._running:
+            self._stop_loop()
+        else:
+            self._start_loop()
+        self._refresh_menu()
+
+    def _set_style(self, name: str) -> None:
+        self.pipeline.polisher.style = name
+        self._refresh_menu()
+
+    def _set_language(self, code: str) -> None:
+        self.pipeline.transcriber.language = code
+        self._refresh_menu()
+
+    def _open_data_folder(self) -> None:
+        _open_folder(self.pipeline.store.data_dir)
+
+    def _quit(self) -> None:
+        self._stop_loop()
+        self.icon.stop()
+
+    def run(self) -> None:
+        """Start the dictation loop, then block running the pystray icon.
+
+        Manual-verify only -- see the README's "Tray app" section and its
+        manual checklist.
+        """
+        self._start_loop()
+        self.icon.run()
