@@ -24,6 +24,8 @@ VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
 VALID_VAD_PRESETS = ("normal", "whisper")
+VALID_MOUSE_BUTTONS = ("", "middle", "x1", "x2")
+VALID_MOUSE_MODES = ("hold", "toggle")
 
 
 def _default_data_dir() -> Path:
@@ -81,6 +83,17 @@ class Config:
     # contains one of these wins; empty (default) means "system default".
     # Parsed by `local_flow.app.parse_mic_priority`.
     mic_priority: str = ""
+
+    # Mouse-button push-to-talk (see README "Mouse push-to-talk"): an
+    # optional second listener that runs alongside the keyboard hotkey.
+    # Non-primary buttons only -- left/right are reserved for normal
+    # clicking and are rejected at load. Empty (default) disables it.
+    mouse_button: str = ""  # "" (disabled) | middle | x1 | x2
+    mouse_mode: str = "hold"  # hold (press-and-hold) | toggle (click on/off)
+    # A second, always-on click handler independent of mouse_mode: pressing
+    # this button sends "enter" through the configured sink. Same allowed
+    # values as mouse_button; empty (default) disables it.
+    mouse_enter_button: str = ""
 
     # Style / personalization
     style: str = "default"
@@ -258,6 +271,27 @@ def load_config(
         raise ConfigError(
             f"Invalid vad_preset: {config.vad_preset!r}",
             hint=f"Valid values: {', '.join(VALID_VAD_PRESETS)}.",
+        )
+
+    _mouse_hint = (
+        "Only non-primary mouse buttons are supported: "
+        f"{', '.join(b for b in VALID_MOUSE_BUTTONS if b)} "
+        "(left/right are reserved for normal clicking); leave empty to disable."
+    )
+    if config.mouse_button not in VALID_MOUSE_BUTTONS:
+        raise ConfigError(
+            f"Invalid mouse_button: {config.mouse_button!r}", hint=_mouse_hint
+        )
+
+    if config.mouse_mode not in VALID_MOUSE_MODES:
+        raise ConfigError(
+            f"Invalid mouse_mode: {config.mouse_mode!r}",
+            hint=f"Valid values: {', '.join(VALID_MOUSE_MODES)}.",
+        )
+
+    if config.mouse_enter_button not in VALID_MOUSE_BUTTONS:
+        raise ConfigError(
+            f"Invalid mouse_enter_button: {config.mouse_enter_button!r}", hint=_mouse_hint
         )
 
     return config

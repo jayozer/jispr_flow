@@ -30,6 +30,17 @@ cancel_hotkey = "esc"          # discards the in-flight dictation
 # insensitive), e.g. "AirPods, USB"; empty (default) means system default.
 mic_priority = ""
 
+# Mouse-button push-to-talk (see README "Mouse push-to-talk"): an optional
+# second listener that runs alongside the keyboard hotkey. Non-primary
+# buttons only -- left/right are reserved for normal clicking and rejected
+# at load. Empty (default) disables it entirely.
+mouse_button = ""              # "" (disabled) | middle | x1 | x2
+mouse_mode = "hold"            # hold (press-and-hold) | toggle (click on/off)
+# A second, always-on click handler independent of mouse_mode: pressing this
+# button sends "enter" through the configured sink. Same allowed values as
+# mouse_button; empty (default) disables it.
+mouse_enter_button = ""
+
 style = "default"              # a style name from styles.json
 # Auto-cleanup level for the polish pass (see README "Cleanup levels").
 # none (verbatim, no rule cleanup/LM Studio call) | light (fillers/grammar

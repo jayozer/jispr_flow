@@ -107,6 +107,9 @@ environment > config file > defaults. Highlights:
 | Hotkey | `LOCAL_FLOW_HOTKEY` | fn (macOS) / f9 |
 | Hotkey hold threshold | `LOCAL_FLOW_HOTKEY_SPACE_HOLD_MS` | `250` |
 | Cancel hotkey | `LOCAL_FLOW_CANCEL_HOTKEY` | `esc` |
+| Mouse button | `LOCAL_FLOW_MOUSE_BUTTON` | *(empty; or `middle`/`x1`/`x2`; see "Mouse push-to-talk")* |
+| Mouse mode | `LOCAL_FLOW_MOUSE_MODE` | `hold` (or `toggle`) |
+| Mouse Enter button | `LOCAL_FLOW_MOUSE_ENTER_BUTTON` | *(empty; or `middle`/`x1`/`x2`)* |
 | Style | `LOCAL_FLOW_STYLE` | `default` |
 | Cleanup level | `LOCAL_FLOW_CLEANUP_LEVEL` | `medium` (or `none`/`light`/`high`; see "Cleanup levels") |
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
@@ -267,6 +270,41 @@ default, `normal`, leaves both alone.
 Utterances longer than `LOCAL_FLOW_MAX_UTTERANCE_MIN` minutes (default `20`)
 still process and insert normally, but also emit a one-line warning — a
 safety net for an accidentally stuck hands-free session or held hotkey.
+
+### Mouse push-to-talk
+
+Set `LOCAL_FLOW_MOUSE_BUTTON` (push-to-talk mode only) to dictate with a
+mouse click instead of, or alongside, the keyboard hotkey — handy if you keep
+a hand on the mouse (e.g. a side-button gaming mouse) or find a modifier key
+awkward while pointing. Only non-primary buttons are supported —
+`middle`/`x1`/`x2` — `left`/`right` are rejected at config load since they're
+needed for normal clicking:
+
+```bash
+LOCAL_FLOW_MOUSE_BUTTON=x1 uv run local-flow run   # hold the side button to dictate
+```
+
+`LOCAL_FLOW_MOUSE_MODE` picks the gesture: `hold` (default, like the keyboard
+hotkey — press and hold to record, release to insert) or `toggle` (click once
+to start, click again to stop — useful for a button that's awkward to hold).
+
+The mouse listener runs on its own thread **alongside** the keyboard hotkey
+listener, not instead of it — both drive the exact same recording, so using
+both at once (e.g. holding Fn *and* clicking the mouse button) is your own
+foot-gun. The mouse listener has **no cancel gesture of its own**: press
+`LOCAL_FLOW_CANCEL_HOTKEY` (`esc` by default) on the keyboard to discard a
+mouse-started recording, same as any other push-to-talk session.
+
+`LOCAL_FLOW_MOUSE_ENTER_BUTTON` maps a click of a second (also non-primary)
+button to pressing Enter through the configured text sink — independent of
+`LOCAL_FLOW_MOUSE_MODE` and always active once set, useful for e.g. hitting
+"send" in a chat app without leaving the keyboard's home row untouched.
+
+Platform note: `x1`/`x2` (the side/back-forward buttons) are exposed by
+pynput on Windows and Linux/X11, but **not** on macOS — pynput's macOS
+backend only defines `left`/`middle`/`right`. On macOS, `middle` is the only
+usable `LOCAL_FLOW_MOUSE_BUTTON`/`LOCAL_FLOW_MOUSE_ENTER_BUTTON` value;
+setting `x1`/`x2` there raises an actionable error at listener start.
 
 ### Teach it your words
 
@@ -533,6 +571,11 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   start/stop — pick another key if you use Fn combos heavily.
   When paste fails, local-flow falls back to synthetic typing, then to
   clipboard-only with a message — the text is never lost.
+- Mouse push-to-talk (`LOCAL_FLOW_MOUSE_BUTTON`, see "Mouse push-to-talk"):
+  `middle` works everywhere pynput's mouse backend runs; `x1`/`x2` (side
+  buttons) work on Windows and Linux/X11 but not macOS. It has no cancel
+  gesture — use the keyboard cancel key. Runs alongside the keyboard hotkey,
+  never instead of it.
 
 ## Manual test checklist
 
@@ -590,6 +633,11 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
 22. `LOCAL_FLOW_VAD_PRESET=whisper` with `--mode hands-free` → speaking at a
     whisper still transcribes (compare against `vad_preset=normal`, where the
     same whisper often goes undetected).
+23. `LOCAL_FLOW_MOUSE_BUTTON=middle uv run local-flow run` → hold the middle
+    mouse button to dictate, release to insert (also works with a side-button
+    mouse via `x1`/`x2` on Windows/Linux). With `LOCAL_FLOW_MOUSE_MODE=toggle`,
+    one click starts recording and a second click stops/inserts it. `esc`
+    (keyboard) still discards a mouse-started recording.
 
 ## Development
 

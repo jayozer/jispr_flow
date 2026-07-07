@@ -788,9 +788,14 @@ def _run_loop(
                 # like `streaming=off` otherwise.
                 print("streaming requires hands-free mode; ignoring")
 
-            from local_flow.hotkeys.base import CallbackDispatcher, create_hotkey_listener
+            from local_flow.hotkeys.base import (
+                CallbackDispatcher,
+                create_hotkey_listener,
+                create_mouse_listener,
+            )
 
             listener = create_hotkey_listener(config)
+            mouse_listener = create_mouse_listener(config)
             hint = "hold Space (a quick tap still types a space)" if (
                 config.hotkey.lower() == "space"
             ) else f"hold {config.hotkey!r}"
@@ -798,6 +803,17 @@ def _run_loop(
                 f"push-to-talk: {hint} to dictate; "
                 f"press {config.cancel_hotkey!r} to discard. Ctrl+C to quit."
             )
+            if mouse_listener is not None:
+                # Mouse push-to-talk runs alongside (not instead of) the
+                # keyboard listener -- using both at once is the user's own
+                # foot-gun (see README "Mouse push-to-talk"). It has no
+                # cancel gesture of its own: `esc` (or config.cancel_hotkey)
+                # via the keyboard listener above still discards a
+                # mouse-started recording.
+                print(
+                    f"mouse push-to-talk also active: {config.mouse_mode} "
+                    f"{config.mouse_button!r}"
+                )
             stop = threading.Event()
             recorder: dict[str, threading.Thread | None] = {"thread": None}
             captured: dict[str, bytes] = {}
@@ -841,9 +857,32 @@ def _run_loop(
                 reporter.notify("idle")
 
             dispatcher = CallbackDispatcher()
-            listener.run(
-                dispatcher.wrap(start), dispatcher.wrap(finish), dispatcher.wrap(cancel)
-            )
+            wrapped_start = dispatcher.wrap(start)
+            wrapped_finish = dispatcher.wrap(finish)
+            wrapped_cancel = dispatcher.wrap(cancel)
+
+            if mouse_listener is not None:
+                if config.mouse_enter_button:
+
+                    def _press_enter() -> None:
+                        try:
+                            pipeline.sink.press_key("enter")
+                        except LocalFlowError as exc:
+                            print(f"error: {exc.message}", file=sys.stderr)
+                            if exc.hint:
+                                print(f"hint : {exc.hint}", file=sys.stderr)
+
+                    mouse_listener.on_enter = dispatcher.wrap(_press_enter)
+                # Daemon thread: started before the blocking keyboard
+                # `listener.run()` below, sharing the very same
+                # dispatcher-wrapped start/finish callbacks so a click and a
+                # keypress both drive the same recording state machine.
+                threading.Thread(
+                    target=lambda: mouse_listener.run(wrapped_start, wrapped_finish),
+                    daemon=True,
+                ).start()
+
+            listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
     except KeyboardInterrupt:
         print("\nbye")
         return 0

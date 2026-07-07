@@ -210,3 +210,27 @@ def create_hotkey_listener(config: Config) -> HotkeyListener:
             hold_ms=config.hotkey_space_hold_ms, cancel_key=config.cancel_hotkey
         )
     return PynputPushToTalk(name, cancel_key=config.cancel_hotkey)
+
+
+def create_mouse_listener(config: Config) -> HotkeyListener | None:
+    """Build the mouse-button push-to-talk listener, or ``None`` when unset.
+
+    Mouse push-to-talk is opt-in (``config.mouse_button`` defaults to
+    ``""``): the common case pays nothing beyond this check.
+    ``local_flow.hotkeys.mouse`` is imported as a module (not
+    ``from ... import MousePushToTalk``) so tests can monkeypatch
+    ``local_flow.hotkeys.mouse.MousePushToTalk``, the same way
+    ``create_hotkey_listener`` is tested against ``space``/``macos_fn``.
+    ``config.mouse_button``/``mouse_mode``/``mouse_enter_button`` are
+    already validated (left/right rejected, hold/toggle checked) by
+    ``load_config``, so no further validation happens here.
+    """
+    if not config.mouse_button:
+        return None
+    import local_flow.hotkeys.mouse as mouse_mod
+
+    return mouse_mod.MousePushToTalk(
+        button=config.mouse_button,
+        mode=config.mouse_mode,
+        enter_button=config.mouse_enter_button,
+    )
