@@ -5,6 +5,7 @@ Subcommands:
 - ``run``     live dictation (microphone + hotkey/VAD + LM Studio)
 - ``recover`` reprocess dictation audio left behind by a crash mid-utterance
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
+- ``transcribe`` transcribe audio file(s) through the local ASR (+ polish)
 - ``command`` one-shot command mode: transform text per an instruction
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
@@ -19,8 +20,9 @@ import argparse
 import sys
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from local_flow import __version__
@@ -247,7 +249,23 @@ def _cmd_demo(_args: argparse.Namespace, _config: Config) -> int:
     return run_demo()
 
 
-def _cmd_polish(args: argparse.Namespace, config: Config) -> int:
+def _polish_text(
+    config: Config, text: str, no_llm: bool = False
+) -> tuple[str, list[str], list[str]]:
+    """Run the polish pipeline's *text* half only -- no insertion, no history.
+
+    Rules cleanup + optional LLM polish, then dictionary/snippet/dictation-
+    command handling: the exact composition ``_cmd_polish`` has always used
+    (as opposed to ``DictationPipeline.process_transcript``, which
+    additionally runs ``apply_spoken_code_syntax`` and
+    ``extract_dictionary_additions`` -- a known, documented drift between the
+    one-shot CLI text path and live dictation; see the Phase 5 plan). Both
+    ``_cmd_polish`` and ``_cmd_transcribe`` call this so the two one-shot
+    text paths cannot drift *from each other*, even though both still drift
+    from the live pipeline.
+
+    Returns ``(final_text, key_actions, warnings)``.
+    """
     from local_flow.polish.polisher import TranscriptPolisher
     from local_flow.polish.rules import (
         apply_dictation_commands,
@@ -256,15 +274,20 @@ def _cmd_polish(args: argparse.Namespace, config: Config) -> int:
     )
 
     store = PersonalizationStore(config.data_dir)
-    chat_client = None if args.no_llm else _build_chat_client(config)
+    chat_client = None if no_llm else _build_chat_client(config)
     polisher = TranscriptPolisher(
         chat_client, store, style=config.style, level=config.cleanup_level
     )
-    result = polisher.polish(args.text)
-    text, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
-    text, _snippet_count = expand_snippets(text, store.snippets())
-    text, actions = apply_dictation_commands(text)
-    for warning in result.warnings:
+    result = polisher.polish(text)
+    final, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
+    final, _snippet_count = expand_snippets(final, store.snippets())
+    final, actions = apply_dictation_commands(final)
+    return final, actions, list(result.warnings)
+
+
+def _cmd_polish(args: argparse.Namespace, config: Config) -> int:
+    text, actions, warnings = _polish_text(config, args.text, no_llm=args.no_llm)
+    for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
     print(text)
     if actions:
@@ -288,6 +311,67 @@ def _cmd_command(args: argparse.Namespace, config: Config) -> int:
         style_rules=style_rules,
     )
     print(command_mode.run(args.instruction, target_text=args.text))
+    return 0
+
+
+def _validate_audio_paths(raw_paths: list[str]) -> list[Path]:
+    """Resolve every ``transcribe`` file argument and fail fast on the first
+    one that doesn't exist, *before* the (expensive) ASR model loads.
+
+    Validating one file at a time, interleaved with transcription, would let
+    a slow model load succeed only to fail moments later on file #2 -- so
+    every path is checked upfront instead.
+    """
+    paths = []
+    for raw in raw_paths:
+        path = Path(raw)
+        if not path.is_file():
+            raise LocalFlowError(
+                f"Audio file not found: {path}",
+                hint="Check the path. The real ASR backend accepts any container "
+                "faster-whisper's bundled PyAV can decode (wav/mp3/m4a/flac/...); "
+                "the mock backend (LOCAL_FLOW_ASR_BACKEND=mock) only reads plain WAV.",
+            )
+        paths.append(path)
+    return paths
+
+
+def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
+    """Transcribe one or more audio files through the local ASR, optionally
+    polishing each transcript -- no insertion or history side effects.
+
+    A feature Wispr Flow itself doesn't offer (it only transcribes live
+    microphone input): point this at an existing voice memo, meeting
+    recording, or any other audio file and get text back, straight to
+    stdout, entirely on-device.
+    """
+    paths = _validate_audio_paths(args.files)
+
+    transcriber_config = (
+        replace(config, asr_language=args.language) if args.language else config
+    )
+    transcriber = _build_transcriber(transcriber_config)
+
+    final_text = ""
+    for path in paths:
+        print(f"transcribing {path.name}...", file=sys.stderr)
+        text = transcriber.transcribe_path(path)
+        if args.polish:
+            text, actions, warnings = _polish_text(config, text)
+            for warning in warnings:
+                print(f"warning: {warning}", file=sys.stderr)
+            if actions:
+                print(f"(key actions: {', '.join(actions)})", file=sys.stderr)
+        if len(paths) > 1:
+            print(f"== {path.name} ==")
+        print(text)
+        final_text = text
+
+    if args.copy:
+        from local_flow.insertion.desktop import ClipboardOnlySink
+
+        ClipboardOnlySink().insert(final_text)
+
     return 0
 
 
@@ -1048,6 +1132,28 @@ def main(argv: list[str] | None = None) -> int:
         help="rule-based cleanup only; do not contact LM Studio",
     )
 
+    transcribe_p = sub.add_parser(
+        "transcribe", help="transcribe audio file(s) through the local ASR (+ optional polish)"
+    )
+    transcribe_p.add_argument(
+        "files", nargs="+", metavar="FILE", help="one or more audio files to transcribe"
+    )
+    transcribe_p.add_argument(
+        "--polish",
+        action="store_true",
+        help="run each transcript through the same polish pass as `local-flow polish`",
+    )
+    transcribe_p.add_argument(
+        "--copy",
+        action="store_true",
+        help="copy the last file's final text to the clipboard",
+    )
+    transcribe_p.add_argument(
+        "--language",
+        metavar="XX",
+        help="override the configured ASR language for this run (e.g. 'fr', 'auto')",
+    )
+
     command_p = sub.add_parser("command", help="transform text with an instruction (command mode)")
     command_p.add_argument("instruction", help="what to do, e.g. 'make this more formal'")
     command_p.add_argument("--text", required=True, help="the target text to transform")
@@ -1145,6 +1251,7 @@ def main(argv: list[str] | None = None) -> int:
         "run": _cmd_run,
         "recover": _cmd_recover,
         "polish": _cmd_polish,
+        "transcribe": _cmd_transcribe,
         "command": _cmd_command,
         "check": _cmd_check,
         "history": _cmd_history,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from local_flow.asr.base import Transcriber
 from local_flow.errors import ASRBackendMissingError, ASRModelMissingError
 
@@ -74,5 +76,19 @@ class FasterWhisperTranscriber(Transcriber):
                 audio = np.interp(positions, np.arange(len(audio)), audio).astype(np.float32)
         segments, _info = self._model.transcribe(
             audio, beam_size=1, language=resolve_language(self._language)
+        )
+        return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def transcribe_path(self, path: Path) -> str:
+        """Transcribe an audio file directly (``local-flow transcribe``).
+
+        Passes the path straight to faster-whisper: its bundled PyAV decodes
+        the container (WAV/MP3/M4A/FLAC/...) and resamples to whatever the
+        model expects internally, so -- unlike :meth:`transcribe` above,
+        which only ever sees raw 16-bit PCM off the microphone -- there is no
+        hand-rolled resampling here to duplicate or drift out of sync with.
+        """
+        segments, _info = self._model.transcribe(
+            str(path), beam_size=1, language=resolve_language(self._language)
         )
         return " ".join(segment.text.strip() for segment in segments).strip()

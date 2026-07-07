@@ -162,6 +162,7 @@ uv run local-flow run        # live dictation (hold Fn/Space, speak, release)
 uv run local-flow run --mode hands-free   # VAD-segmented, no hotkey needed
 uv run local-flow recover    # reprocess any dictation audio a crash left behind
 uv run local-flow polish "um send the uh draft, scratch that, the final doc"
+uv run local-flow transcribe memo.m4a --polish   # audio file -> polished notes
 uv run local-flow command "make this formal" --text "hey can u fix the bug"
 uv run local-flow demo       # headless end-to-end proof with mocks
 uv run local-flow history                 # list recent dictations, newest first
@@ -382,6 +383,36 @@ nothing else following, to avoid this. And because the window stops at
 connector words, an identifier you actually want that starts with one of
 them (e.g. the literal token `to_do`) can't be produced by this feature at
 all — add it to the dictionary or a snippet instead.
+
+### Transcribe audio files
+
+`local-flow transcribe` runs an existing audio file through the same local
+ASR (and, optionally, polish) pipeline as live dictation -- a feature Wispr
+Flow itself doesn't offer, since it only ever transcribes live microphone
+input:
+
+```bash
+uv run local-flow transcribe voice-memo.m4a --polish
+# == meeting-notes.wav ==
+# discussed Q3 roadmap and agreed to ship the export feature first
+```
+
+- Accepts any container the real ASR backend's bundled PyAV can decode --
+  wav, mp3, m4a, flac, and more -- at any sample rate; no manual conversion
+  needed. (The `mock` ASR backend used in tests/CI only reads plain WAV.)
+- Multiple files may be given at once; each one's output is preceded by a
+  `== filename ==` header once there's more than one file. Text goes to
+  stdout; a `transcribing <name>...` progress line goes to stderr per file.
+- `--polish` runs each file's raw transcript through the exact same
+  rules-plus-LLM cleanup as `local-flow polish` (dictionary, snippets, and
+  dictation commands included); it degrades to rules-only if LM Studio is
+  unreachable, same as everywhere else.
+- `--copy` puts the *last* file's final text on the clipboard.
+- `--language XX` overrides `LOCAL_FLOW_ASR_LANGUAGE` for this one run only
+  (still validated against `.en`-suffixed models, same as the configured
+  default).
+- Nothing is inserted into any app and nothing is written to history --
+  this is a pure text-out command.
 
 ## Cleanup levels
 
@@ -654,6 +685,8 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     `LOCAL_FLOW_MOUSE_BUTTON` unset) → clicking the middle button presses
     Enter through the sink; no mouse push-to-talk is offered (only the
     keyboard hotkey dictates).
+25. `uv run local-flow transcribe memo.m4a --polish` → polished notes print
+    to stdout; with two files, each is preceded by a `== filename ==` header.
 
 ## Development
 

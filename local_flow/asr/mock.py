@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import wave
 from collections.abc import Sequence
+from pathlib import Path
 
 from local_flow.asr.base import Transcriber
+from local_flow.errors import LocalFlowError
 
 
 class MockTranscriber(Transcriber):
@@ -32,6 +35,29 @@ class MockTranscriber(Transcriber):
         index = min(len(self.calls), len(self._texts) - 1) if self._texts else 0
         self.calls.append((len(pcm), sample_rate))
         return self._texts[index] if self._texts else ""
+
+    def transcribe_path(self, path: Path) -> str:
+        """Transcribe an audio file for tests/headless use (``local-flow
+        transcribe`` with ``LOCAL_FLOW_ASR_BACKEND=mock``).
+
+        Unlike :class:`~local_flow.asr.faster_whisper_asr.FasterWhisperTranscriber`
+        (whose bundled PyAV decodes any container), this mock reads the file
+        directly via the stdlib ``wave`` module, so it only supports plain
+        WAV -- any other/corrupt file raises a :class:`LocalFlowError`
+        explaining the limitation instead of a raw ``wave`` exception.
+        """
+        try:
+            with wave.open(str(path), "rb") as wav_file:
+                sample_rate = wav_file.getframerate()
+                pcm = wav_file.readframes(wav_file.getnframes())
+        except Exception as exc:  # any bad/non-WAV file becomes a friendly error
+            raise LocalFlowError(
+                f"Could not read {path.name} as WAV: {exc}",
+                hint="The mock ASR backend (LOCAL_FLOW_ASR_BACKEND=mock) only reads "
+                "plain WAV files; use the real faster-whisper backend for "
+                "mp3/m4a/flac, or pass a .wav file when testing.",
+            ) from exc
+        return self.transcribe(pcm, sample_rate)
 
 
 class MockStream:
