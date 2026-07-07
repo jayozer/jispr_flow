@@ -473,9 +473,15 @@ def _with_preview(
     ``_handle_utterance`` / ``DictationPipeline``, never from this stream.
     """
     for frame in frames:
-        partial = stream.feed(frame)
-        if partial is not None:
-            reporter.notify("preview", partial)
+        try:
+            # Preview is display-only; a failing preview transcription must never
+            # interrupt dictation. Catch all exceptions and continue yielding frames.
+            partial = stream.feed(frame)
+            if partial is not None:
+                reporter.notify("preview", partial)
+        except Exception:
+            # Silently skip the partial on any error; the frame still flows through.
+            pass
         yield frame
 
 
@@ -510,11 +516,11 @@ def _run_loop(
             )
             # `_interruptible` wraps the raw mic frames first (closest to the
             # source), and `_with_preview` -- when live-preview is on -- wraps
-            # *that*, not the other way around. This makes `_interruptible`
-            # effectively the outermost gate: once `stop_event` fires, it
-            # stops yielding frames, which ends `_with_preview`'s `for frame
-            # in frames` loop too, so Stop cuts the live preview within one
-            # frame exactly like it does the segmenter.
+            # *that*, not the other way around. This positions `_interruptible`
+            # closest to the source: once `stop_event` fires, it stops yielding
+            # frames, which ends `_with_preview`'s `for frame in frames` loop too,
+            # so Stop cuts the live preview within one frame exactly like it does
+            # the segmenter.
             frame_source: Iterable[bytes] = _interruptible(
                 source.frames(config.vad_frame_ms), stop_event
             )

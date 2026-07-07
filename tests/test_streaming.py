@@ -154,3 +154,31 @@ class TestWithPreview:
         list(_with_preview(iter([b"f1", b"f2"]), stream, reporter))
 
         assert reporter.events == []
+
+    def test_stream_feed_exception_does_not_interrupt_frame_flow(self):
+        """Regression: preview transcription failures must never interrupt dictation.
+
+        Even if stream.feed() raises an exception mid-utterance, all frames must
+        still flow through and be processed by downstream (segment_stream, etc.).
+        Preview is display-only; its failures are silent.
+        """
+        class FailingStream:
+            """A mock stream that raises on the second feed."""
+            def __init__(self):
+                self.call_count = 0
+
+            def feed(self, frame):
+                self.call_count += 1
+                if self.call_count == 2:
+                    raise RuntimeError("preview transcription boom")
+                return None
+
+        stream = FailingStream()
+        reporter = RecordingReporter()
+        frames = [b"f1", b"f2", b"f3", b"f4"]
+
+        # Should return all frames even though the second feed() raises.
+        result = list(_with_preview(iter(frames), stream, reporter))
+
+        assert result == frames, "all frames should pass through despite stream.feed() exception"
+        assert reporter.events == [], "no notifications (preview is silent on failure)"
