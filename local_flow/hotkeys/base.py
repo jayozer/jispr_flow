@@ -36,6 +36,15 @@ class PushToTalkCore:
     Translates raw key events into at-most-once press/release/cancel
     callbacks. A cancel while held discards the recording: ``on_cancel``
     fires and the eventual physical key release is swallowed.
+
+    ``cancel_gate``: an app-level escape hatch so this listener's cancel key
+    can discard a recording that a *different* listener started (e.g. Esc on
+    the keyboard discarding a mouse-started recording). Without it, cancel is
+    gated on this instance's own ``held`` -- which is False when the mouse,
+    not this keyboard listener, started the recording, so Esc would silently
+    no-op. When the gate fires cancel while NOT held, no key of this
+    listener's own is actually down, so ``held``/``_suppressed`` are left
+    untouched -- there is nothing of this listener's to swallow.
     """
 
     def __init__(
@@ -43,10 +52,12 @@ class PushToTalkCore:
         on_press: Callable[[], None],
         on_release: Callable[[], None],
         on_cancel: Callable[[], None] | None = None,
+        cancel_gate: Callable[[], bool] | None = None,
     ) -> None:
         self._on_press = on_press
         self._on_release = on_release
         self._on_cancel = on_cancel
+        self._cancel_gate = cancel_gate
         self.held = False
         self._suppressed = False  # key still physically down after a cancel
 
@@ -62,9 +73,13 @@ class PushToTalkCore:
             self._on_release()
 
     def cancel_down(self) -> None:
-        if self.held and self._on_cancel is not None:
+        if self._on_cancel is None:
+            return
+        if self.held:
             self.held = False
             self._suppressed = True  # swallow auto-repeats until physical release
+            self._on_cancel()
+        elif self._cancel_gate is not None and self._cancel_gate():
             self._on_cancel()
 
 
@@ -120,7 +135,12 @@ def resolve_key(keyboard, key_name: str):
 
 
 class PynputPushToTalk(HotkeyListener):
-    def __init__(self, key_name: str = "f9", cancel_key: str = "esc") -> None:
+    def __init__(
+        self,
+        key_name: str = "f9",
+        cancel_key: str = "esc",
+        cancel_gate: Callable[[], bool] | None = None,
+    ) -> None:
         try:
             from pynput import keyboard
         except ImportError as exc:
@@ -132,6 +152,7 @@ class PynputPushToTalk(HotkeyListener):
         self.key_name = key_name
         self._target = self._resolve_key(key_name)
         self._cancel = self._resolve_key(cancel_key) if cancel_key else None
+        self._cancel_gate = cancel_gate
 
     def _resolve_key(self, key_name: str):
         return resolve_key(self._keyboard, key_name)
@@ -143,7 +164,7 @@ class PynputPushToTalk(HotkeyListener):
         on_cancel: Callable[[], None] | None = None,
     ) -> None:
         keyboard = self._keyboard
-        core = PushToTalkCore(on_press, on_release, on_cancel)
+        core = PushToTalkCore(on_press, on_release, on_cancel, self._cancel_gate)
 
         def handle_press(key, injected=False) -> None:
             # Synthetic keystrokes (our own TypingSink typing a transcript, or
@@ -177,12 +198,18 @@ class PynputPushToTalk(HotkeyListener):
             ) from exc
 
 
-def create_hotkey_listener(config: Config) -> HotkeyListener:
+def create_hotkey_listener(
+    config: Config, cancel_gate: Callable[[], bool] | None = None
+) -> HotkeyListener:
     """Build the push-to-talk listener for ``config.hotkey``.
 
     ``fn`` needs a macOS-only Quartz event tap (the Fn key never reaches
     other OSes); ``space`` needs per-event suppression, which pynput cannot
     do on Linux; anything else is a plain pynput key name.
+
+    ``cancel_gate``, when given, lets the cancel key discard a recording
+    started by a *different* listener (e.g. mouse push-to-talk) even though
+    this listener's own key was never held -- see ``PushToTalkCore``.
     """
     name = config.hotkey.lower()
     if name == "fn":
@@ -195,7 +222,9 @@ def create_hotkey_listener(config: Config) -> HotkeyListener:
             )
         import local_flow.hotkeys.macos_fn as macos_fn
 
-        return macos_fn.QuartzFnListener(cancel_key=config.cancel_hotkey)
+        return macos_fn.QuartzFnListener(
+            cancel_key=config.cancel_hotkey, cancel_gate=cancel_gate
+        )
     if name == "space":
         if sys.platform.startswith("linux"):
             raise HotkeyBackendMissingError(
@@ -207,30 +236,37 @@ def create_hotkey_listener(config: Config) -> HotkeyListener:
         import local_flow.hotkeys.space as space_mod
 
         return space_mod.SpacePushToTalk(
-            hold_ms=config.hotkey_space_hold_ms, cancel_key=config.cancel_hotkey
+            hold_ms=config.hotkey_space_hold_ms,
+            cancel_key=config.cancel_hotkey,
+            cancel_gate=cancel_gate,
         )
-    return PynputPushToTalk(name, cancel_key=config.cancel_hotkey)
+    return PynputPushToTalk(name, cancel_key=config.cancel_hotkey, cancel_gate=cancel_gate)
 
 
 def create_mouse_listener(config: Config) -> HotkeyListener | None:
     """Build the mouse-button push-to-talk listener, or ``None`` when unset.
 
     Mouse push-to-talk is opt-in (``config.mouse_button`` defaults to
-    ``""``): the common case pays nothing beyond this check.
+    ``""``): the common case pays nothing beyond this check. A listener is
+    built when *either* ``mouse_button`` or ``mouse_enter_button`` is set --
+    an "enter-only" config (``mouse_button`` empty, only
+    ``mouse_enter_button`` set) still needs one, just with push-to-talk
+    inactive (see ``MousePushToTalk``'s ``button=None``).
     ``local_flow.hotkeys.mouse`` is imported as a module (not
     ``from ... import MousePushToTalk``) so tests can monkeypatch
     ``local_flow.hotkeys.mouse.MousePushToTalk``, the same way
     ``create_hotkey_listener`` is tested against ``space``/``macos_fn``.
     ``config.mouse_button``/``mouse_mode``/``mouse_enter_button`` are
-    already validated (left/right rejected, hold/toggle checked) by
-    ``load_config``, so no further validation happens here.
+    already validated (left/right rejected, hold/toggle checked, the two
+    buttons distinct) by ``load_config``, so no further validation happens
+    here.
     """
-    if not config.mouse_button:
+    if not config.mouse_button and not config.mouse_enter_button:
         return None
     import local_flow.hotkeys.mouse as mouse_mod
 
     return mouse_mod.MousePushToTalk(
-        button=config.mouse_button,
+        button=config.mouse_button or None,
         mode=config.mouse_mode,
         enter_button=config.mouse_enter_button,
     )

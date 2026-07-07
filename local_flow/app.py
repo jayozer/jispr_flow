@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
@@ -703,6 +703,27 @@ def _with_preview(
         yield frame
 
 
+def _run_mouse_listener(
+    mouse_listener,
+    on_press: Callable[[], None],
+    on_release: Callable[[], None],
+) -> None:
+    """Target for the mouse push-to-talk daemon thread (see ``_run_loop``).
+
+    An uncaught exception on a daemon thread is silently swallowed by
+    Python -- no traceback, no process exit -- so a startup failure (e.g.
+    missing Accessibility/Input Monitoring permission) would otherwise
+    vanish with no diagnostic at all. Catches ``LocalFlowError`` and prints
+    it in the same format as ``_fail``, to stderr, instead.
+    """
+    try:
+        mouse_listener.run(on_press, on_release)
+    except LocalFlowError as exc:
+        print(f"error: mouse push-to-talk stopped: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+
+
 def _run_loop(
     config: Config,
     mode: str,
@@ -794,8 +815,16 @@ def _run_loop(
                 create_mouse_listener,
             )
 
-            listener = create_hotkey_listener(config)
             mouse_listener = create_mouse_listener(config)
+            # Set while a recording (started by either the keyboard listener
+            # below or the mouse listener, if any) is in flight. Threaded
+            # into `create_hotkey_listener` as `cancel_gate` so the keyboard
+            # cancel key can discard a mouse-started recording even though
+            # no key of the keyboard listener's own is held; also used by
+            # `cancel()` below to no-op on an idle cancel-key press instead
+            # of printing a spurious "dictation discarded".
+            recording_active = threading.Event()
+            listener = create_hotkey_listener(config, cancel_gate=recording_active.is_set)
             hint = "hold Space (a quick tap still types a space)" if (
                 config.hotkey.lower() == "space"
             ) else f"hold {config.hotkey!r}"
@@ -804,21 +833,30 @@ def _run_loop(
                 f"press {config.cancel_hotkey!r} to discard. Ctrl+C to quit."
             )
             if mouse_listener is not None:
-                # Mouse push-to-talk runs alongside (not instead of) the
-                # keyboard listener -- using both at once is the user's own
-                # foot-gun (see README "Mouse push-to-talk"). It has no
-                # cancel gesture of its own: `esc` (or config.cancel_hotkey)
-                # via the keyboard listener above still discards a
-                # mouse-started recording.
-                print(
-                    f"mouse push-to-talk also active: {config.mouse_mode} "
-                    f"{config.mouse_button!r}"
-                )
+                if config.mouse_button:
+                    # Mouse push-to-talk runs alongside (not instead of) the
+                    # keyboard listener -- using both at once is the user's
+                    # own foot-gun (see README "Mouse push-to-talk"). It has
+                    # no cancel gesture of its own: `esc` (or
+                    # config.cancel_hotkey) via the keyboard listener above
+                    # still discards a mouse-started recording.
+                    print(
+                        f"mouse push-to-talk also active: {config.mouse_mode} "
+                        f"{config.mouse_button!r}"
+                    )
+                else:
+                    # Enter-only config (`mouse_button` unset, only
+                    # `mouse_enter_button` set): no mouse push-to-talk at all.
+                    print(
+                        f"mouse enter-key button active: "
+                        f"{config.mouse_enter_button!r} (no mouse push-to-talk)"
+                    )
             stop = threading.Event()
             recorder: dict[str, threading.Thread | None] = {"thread": None}
             captured: dict[str, bytes] = {}
 
             def start() -> None:
+                recording_active.set()
                 stop.clear()
                 reporter.notify("recording")
 
@@ -829,6 +867,7 @@ def _run_loop(
                 recorder["thread"].start()
 
             def finish() -> None:
+                recording_active.clear()
                 stop.set()
                 thread = recorder["thread"]
                 if thread is not None:
@@ -846,6 +885,15 @@ def _run_loop(
                     )
 
             def cancel() -> None:
+                if not recording_active.is_set():
+                    # Nothing is actually recording: either an idle cancel-
+                    # key press (now that the gate lets cancel reach here
+                    # even without a held key of the keyboard listener's
+                    # own), or a race where `finish()` already completed the
+                    # recording between the gate check and this callback
+                    # running. Either way, there is nothing to discard.
+                    return
+                recording_active.clear()
                 stop.set()
                 thread = recorder["thread"]
                 if thread is not None:
@@ -876,9 +924,13 @@ def _run_loop(
                 # Daemon thread: started before the blocking keyboard
                 # `listener.run()` below, sharing the very same
                 # dispatcher-wrapped start/finish callbacks so a click and a
-                # keypress both drive the same recording state machine.
+                # keypress both drive the same recording state machine. A
+                # startup failure (e.g. missing permission) is caught and
+                # printed by `_run_mouse_listener` instead of vanishing
+                # silently, as an uncaught daemon-thread exception would.
                 threading.Thread(
-                    target=lambda: mouse_listener.run(wrapped_start, wrapped_finish),
+                    target=_run_mouse_listener,
+                    args=(mouse_listener, wrapped_start, wrapped_finish),
                     daemon=True,
                 ).start()
 

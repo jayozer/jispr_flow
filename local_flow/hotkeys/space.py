@@ -75,7 +75,12 @@ _LLKHF_INJECTED = 0x10  # low-level keyboard hook flag: event was synthesized
 class SpacePushToTalk(HotkeyListener):
     """Hold Space to dictate; a quick tap still types a normal space."""
 
-    def __init__(self, hold_ms: int = 250, cancel_key: str = "esc") -> None:
+    def __init__(
+        self,
+        hold_ms: int = 250,
+        cancel_key: str = "esc",
+        cancel_gate: Callable[[], bool] | None = None,
+    ) -> None:
         if sys.platform.startswith("linux"):
             # Same guard as create_hotkey_listener's space-on-Linux check, but
             # enforced here too so constructing this class directly (e.g. in
@@ -96,6 +101,7 @@ class SpacePushToTalk(HotkeyListener):
         self._keyboard = keyboard
         self.hold_ms = hold_ms
         self._cancel = resolve_key(keyboard, cancel_key) if cancel_key else None
+        self._cancel_gate = cancel_gate
         self._machine = SpaceStateMachine()
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
@@ -158,6 +164,15 @@ class SpacePushToTalk(HotkeyListener):
             with self._lock:
                 actions = self._machine.cancel_down()
                 self._apply(actions, self._machine.generation)
+            # App-level gate: lets Esc discard a recording started by a
+            # *different* listener (e.g. mouse push-to-talk) even though the
+            # space machine itself produced no cancel action here. Only
+            # checked when the machine did nothing, to avoid firing
+            # `on_cancel` twice for a space-held cancel. The space machine's
+            # own state is left untouched -- the space key isn't involved.
+            if not actions.cancel and self._cancel_gate is not None and self._cancel_gate():
+                if self._on_cancel is not None:
+                    self._on_cancel()
 
     def _handle_release(self, key, injected=False) -> None:
         if key == self._keyboard.Key.space:

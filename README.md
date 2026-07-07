@@ -293,12 +293,21 @@ listener, not instead of it — both drive the exact same recording, so using
 both at once (e.g. holding Fn *and* clicking the mouse button) is your own
 foot-gun. The mouse listener has **no cancel gesture of its own**: press
 `LOCAL_FLOW_CANCEL_HOTKEY` (`esc` by default) on the keyboard to discard a
-mouse-started recording, same as any other push-to-talk session.
+mouse-started recording, same as any other push-to-talk session — this works
+even though the keyboard listener's own key was never held. Pressing the
+cancel key while nothing is recording does nothing (silently, no output).
+If the mouse listener itself fails to start (e.g. missing Accessibility/Input
+Monitoring permission), an `error:`/`hint:` pair prints to stderr instead of
+silently doing nothing.
 
 `LOCAL_FLOW_MOUSE_ENTER_BUTTON` maps a click of a second (also non-primary)
 button to pressing Enter through the configured text sink — independent of
 `LOCAL_FLOW_MOUSE_MODE` and always active once set, useful for e.g. hitting
 "send" in a chat app without leaving the keyboard's home row untouched.
+`LOCAL_FLOW_MOUSE_BUTTON` may be left empty while only
+`LOCAL_FLOW_MOUSE_ENTER_BUTTON` is set — an "enter-only" configuration with no
+mouse push-to-talk at all, just the Enter click. The two must be different
+buttons if both are set; config load rejects them being equal.
 
 Platform note: `x1`/`x2` (the side/back-forward buttons) are exposed by
 pynput on Windows and Linux/X11, but **not** on macOS — pynput's macOS
@@ -637,7 +646,14 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
     mouse button to dictate, release to insert (also works with a side-button
     mouse via `x1`/`x2` on Windows/Linux). With `LOCAL_FLOW_MOUSE_MODE=toggle`,
     one click starts recording and a second click stops/inserts it. `esc`
-    (keyboard) still discards a mouse-started recording.
+    (keyboard) still discards a mouse-started recording, even though you
+    never held any keyboard key — nothing is inserted and "dictation
+    discarded" prints. Pressing `esc` again while idle (nothing recording)
+    does nothing.
+24. `LOCAL_FLOW_MOUSE_ENTER_BUTTON=middle uv run local-flow run` (leave
+    `LOCAL_FLOW_MOUSE_BUTTON` unset) → clicking the middle button presses
+    Enter through the sink; no mouse push-to-talk is offered (only the
+    keyboard hotkey dictates).
 
 ## Development
 

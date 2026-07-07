@@ -68,11 +68,16 @@ class MousePushToTalk(HotkeyListener):
     that fires ``on_enter`` on every press of a second configured button,
     regardless of ``mode`` -- wired by ``local_flow.app._run_loop`` to press
     Enter through the configured sink.
+
+    ``button=None`` (an "enter-only" configuration: ``mouse_button`` unset,
+    only ``mouse_enter_button`` set) leaves push-to-talk inactive -- no real
+    button ever compares equal to ``None`` in ``handle_click`` -- while
+    ``enter_button`` still works normally. See ``create_mouse_listener``.
     """
 
     def __init__(
         self,
-        button: str = "middle",
+        button: str | None = None,
         mode: str = "hold",
         enter_button: str = "",
         on_enter: Callable[[], None] | None = None,
@@ -88,7 +93,7 @@ class MousePushToTalk(HotkeyListener):
         self.button = button
         self.mode = mode
         self.enter_button = enter_button
-        self._target = resolve_mouse_button(mouse, button)
+        self._target = resolve_mouse_button(mouse, button) if button else None
         self._enter_target = (
             resolve_mouse_button(mouse, enter_button) if enter_button else None
         )
@@ -120,6 +125,14 @@ class MousePushToTalk(HotkeyListener):
         if self.mode == "toggle":
             if not pressed:
                 return
+            # Resync note: a keyboard-driven cancel (the app-level
+            # `cancel_gate` in `PushToTalkCore`/`SpacePushToTalk`) discards
+            # the recording without going through `_toggle`, so this machine
+            # still thinks recording is "on" afterward. The next click then
+            # sends "stop" instead of "start" -- one extra click needed to
+            # fully resync. Self-correcting, not a bug: `_run_loop.finish()`
+            # already handles an empty capture gracefully
+            # (`captured.pop("pcm", b"")`), so that stray "stop" just no-ops.
             action = self._toggle.click()
             if action == "start" and self._on_press is not None:
                 self._on_press()

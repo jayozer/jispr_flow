@@ -41,7 +41,11 @@ class FnLogic:
 
 
 class QuartzFnListener(HotkeyListener):
-    def __init__(self, cancel_key: str = "esc") -> None:
+    def __init__(
+        self,
+        cancel_key: str = "esc",
+        cancel_gate: Callable[[], bool] | None = None,
+    ) -> None:
         if sys.platform != "darwin":
             raise HotkeyBackendMissingError(
                 "The Fn key can only be observed on macOS.",
@@ -64,6 +68,7 @@ class QuartzFnListener(HotkeyListener):
             ) from exc
         self._quartz = Quartz
         self._cancel_keycode = _CANCEL_KEYCODES[cancel_key.lower()] if cancel_key else None
+        self._cancel_gate = cancel_gate
 
     def run(
         self,
@@ -72,7 +77,8 @@ class QuartzFnListener(HotkeyListener):
         on_cancel: Callable[[], None] | None = None,
     ) -> None:
         q = self._quartz
-        logic = FnLogic(PushToTalkCore(on_press, on_release, on_cancel), self._cancel_keycode)
+        core = PushToTalkCore(on_press, on_release, on_cancel, self._cancel_gate)
+        logic = FnLogic(core, self._cancel_keycode)
         tap_holder: list = []
 
         def callback(_proxy, event_type, event, _refcon):

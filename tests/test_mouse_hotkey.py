@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from local_flow.app import RunDependencies, _run_loop
+from local_flow.app import RunDependencies, _run_loop, _run_mouse_listener
 from local_flow.asr.mock import MockTranscriber
 from local_flow.config import load_config
 from local_flow.errors import ConfigError, HotkeyBackendMissingError
@@ -209,6 +209,43 @@ class TestMousePushToTalkEnterButton:
         assert calls == ["enter"]
 
 
+class TestMousePushToTalkEnterOnly:
+    """`button=None` (an "enter-only" config: `mouse_button` unset, only
+    `mouse_enter_button` set, as built by `create_mouse_listener`): push-to-
+    talk is inactive, but `enter_button` still works normally.
+    """
+
+    def test_main_button_actions_ignored_when_button_is_none(self):
+        rec = Recorder()
+        mpt = _bare("hold", target=None, enter_target=ENTER_TARGET)
+        mpt._core = PushToTalkCore(rec.press, rec.release, None)
+
+        mpt.handle_click(0, 0, TARGET, True)
+        mpt.handle_click(0, 0, TARGET, False)
+        assert rec.events == []
+
+    def test_toggle_mode_main_button_also_ignored_when_button_is_none(self):
+        rec = Recorder()
+        mpt = _bare("toggle", target=None, enter_target=ENTER_TARGET)
+        mpt._on_press, mpt._on_release = rec.press, rec.release
+
+        mpt.handle_click(0, 0, TARGET, True)
+        assert rec.events == []
+
+    def test_enter_click_still_fires_when_button_is_none(self):
+        calls = []
+        mpt = _bare("hold", target=None, enter_target=ENTER_TARGET)
+        mpt.on_enter = lambda: calls.append("enter")
+
+        mpt.handle_click(0, 0, ENTER_TARGET, True)
+        assert calls == ["enter"]
+
+    def test_construction_with_button_none_leaves_target_unset(self):
+        mpt = MousePushToTalk(button=None, enter_button="middle")
+        assert mpt._target is None
+        assert mpt._enter_target is not None
+
+
 class TestMousePushToTalkConstruction:
     def test_unsupported_button_raises_before_touching_pynput_backend(self):
         # "left"/"right" fail the name check in `resolve_mouse_button` before
@@ -246,6 +283,28 @@ class TestCreateMouseListener:
         )
         assert isinstance(listener, FakeMouseListener)
         assert created == {"button": "middle", "mode": "toggle", "enter_button": "x1"}
+
+    def test_enter_only_config_builds_a_listener_with_button_none(self, monkeypatch):
+        """`mouse_button` empty but `mouse_enter_button` set: a listener is
+        still built (previously `create_mouse_listener` returned `None` here,
+        silently dropping the enter button), with `button=None` so
+        push-to-talk stays inactive.
+        """
+        import local_flow.hotkeys.mouse as mouse_mod
+
+        created = {}
+
+        class FakeMouseListener:
+            def __init__(self, button, mode, enter_button):
+                created.update(button=button, mode=mode, enter_button=enter_button)
+
+        monkeypatch.setattr(mouse_mod, "MousePushToTalk", FakeMouseListener)
+        listener = create_mouse_listener(_config(mouse_enter_button="x1"))
+        assert isinstance(listener, FakeMouseListener)
+        assert created == {"button": None, "mode": "hold", "enter_button": "x1"}
+
+    def test_none_when_both_button_and_enter_button_unset(self):
+        assert create_mouse_listener(_config()) is None
 
 
 class TestMouseConfigValidation:
@@ -288,6 +347,30 @@ class TestMouseConfigValidation:
     def test_mouse_enter_button_accepts_x2(self):
         config = load_config(env={"LOCAL_FLOW_MOUSE_ENTER_BUTTON": "x2"})
         assert config.mouse_enter_button == "x2"
+
+    def test_same_button_for_ptt_and_enter_rejected(self):
+        with pytest.raises(ConfigError, match="mouse_button") as excinfo:
+            load_config(
+                env={
+                    "LOCAL_FLOW_MOUSE_BUTTON": "middle",
+                    "LOCAL_FLOW_MOUSE_ENTER_BUTTON": "middle",
+                }
+            )
+        assert "mouse_enter_button" in str(excinfo.value)
+
+    def test_different_buttons_for_ptt_and_enter_accepted(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_MOUSE_BUTTON": "middle",
+                "LOCAL_FLOW_MOUSE_ENTER_BUTTON": "x1",
+            }
+        )
+        assert config.mouse_button == "middle"
+        assert config.mouse_enter_button == "x1"
+
+    def test_both_empty_is_fine(self):
+        config = load_config(env={})
+        assert config.mouse_button == config.mouse_enter_button == ""
 
 
 class FakeReporter(StatusReporter):
@@ -366,7 +449,7 @@ class TestRunLoopMousePushToTalk:
 
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config: FakeKeyboardListener(),
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
         )
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_mouse_listener",
@@ -416,7 +499,7 @@ class TestRunLoopMousePushToTalk:
         fake_mouse = FakeMouseListener()
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config: FakeKeyboardListener(),
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
         )
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_mouse_listener",
@@ -450,7 +533,7 @@ class TestRunLoopMousePushToTalk:
 
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config: FakeKeyboardListener(),
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
         )
 
         _run_loop(
@@ -461,3 +544,92 @@ class TestRunLoopMousePushToTalk:
         )
 
         assert "mouse push-to-talk" not in capsys.readouterr().out
+
+    def test_enter_only_config_has_no_ptt_but_enter_still_works(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """`mouse_button` unset, only `mouse_enter_button` set: `_run_loop`
+        still starts the mouse thread (real `create_mouse_listener` now
+        returns a listener for this config -- see item 3), enter clicks still
+        reach the sink, and the console notice mentions no push-to-talk.
+        """
+        sink = SignalingSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = load_config(env={"LOCAL_FLOW_MOUSE_ENTER_BUTTON": "x1"})
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                return  # returns immediately; the mouse fake does the work
+
+        class FakeMouseListener:
+            def __init__(self) -> None:
+                self.on_enter = None
+
+            def run(self, on_press, on_release):
+                assert self.on_enter is not None
+                self.on_enter()
+
+        fake_mouse = FakeMouseListener()
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_mouse_listener",
+            lambda config: fake_mouse,
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            FakeReporter(),
+            dependencies=RunDependencies(pipeline, _FakeSource(), None),
+        )
+
+        assert sink.done.wait(timeout=2), "on_enter never reached sink.press_key"
+        assert sink.events == [("key", "enter")]
+        captured = capsys.readouterr()
+        assert "push-to-talk also active" not in captured.out
+        assert "no mouse push-to-talk" in captured.out
+
+
+class TestRunMouseListenerErrorVisible:
+    """The mouse listener runs on a daemon thread (see `_run_loop`); an
+    uncaught exception there is silently swallowed by Python with no
+    traceback and no process exit. `_run_mouse_listener` (the thread target)
+    must catch `LocalFlowError` and print it in `_fail`'s format instead.
+    """
+
+    def test_local_flow_error_prints_formatted_message_with_hint(self, capsys):
+        class FailingMouseListener:
+            def run(self, on_press, on_release):
+                raise HotkeyBackendMissingError("boom", hint="fix it")
+
+        _run_mouse_listener(FailingMouseListener(), lambda: None, lambda: None)
+
+        captured = capsys.readouterr()
+        assert "error: mouse push-to-talk stopped: boom" in captured.err
+        assert "hint : fix it" in captured.err
+
+    def test_error_without_hint_omits_hint_line(self, capsys):
+        from local_flow.errors import LocalFlowError
+
+        class FailingMouseListener:
+            def run(self, on_press, on_release):
+                raise LocalFlowError("boom")
+
+        _run_mouse_listener(FailingMouseListener(), lambda: None, lambda: None)
+
+        captured = capsys.readouterr()
+        assert "error: mouse push-to-talk stopped: boom" in captured.err
+        assert "hint :" not in captured.err
+
+    def test_clean_run_prints_nothing(self, capsys):
+        class QuietMouseListener:
+            def run(self, on_press, on_release):
+                return
+
+        _run_mouse_listener(QuietMouseListener(), lambda: None, lambda: None)
+
+        captured = capsys.readouterr()
+        assert captured.err == ""

@@ -96,6 +96,61 @@ class TestPushToTalkCore:
         assert rec.events == ["press", "release"]
 
 
+class TestPushToTalkCoreCancelGate:
+    """The app-level `cancel_gate` lets a listener's cancel key discard a
+    recording that a *different* listener started (e.g. Esc on the keyboard
+    discarding a mouse-started recording) even though this instance's own
+    `held` is False.
+    """
+
+    def test_gate_true_while_not_held_fires_cancel_without_touching_state(self):
+        rec = Recorder()
+        core = PushToTalkCore(rec.press, rec.release, rec.cancel, cancel_gate=lambda: True)
+
+        core.cancel_down()
+
+        assert rec.events == ["cancel"]
+        assert core.held is False
+        assert core._suppressed is False
+
+    def test_gate_false_while_not_held_is_a_noop(self):
+        rec = Recorder()
+        core = PushToTalkCore(rec.press, rec.release, rec.cancel, cancel_gate=lambda: False)
+
+        core.cancel_down()
+
+        assert rec.events == []
+
+    def test_no_gate_while_not_held_is_a_noop_same_as_before(self):
+        rec = Recorder()
+        core = PushToTalkCore(rec.press, rec.release, rec.cancel)
+
+        core.cancel_down()
+
+        assert rec.events == []
+
+    def test_held_cancel_semantics_unchanged_regardless_of_gate(self):
+        rec = Recorder()
+        # Gate returns False: proves the held branch does not even consult
+        # it -- held cancel takes priority, exactly like before this existed.
+        core = PushToTalkCore(rec.press, rec.release, rec.cancel, cancel_gate=lambda: False)
+
+        core.key_down()
+        core.cancel_down()
+
+        assert rec.events == ["press", "cancel"]
+        assert core.held is False
+        assert core._suppressed is True  # armed: swallows the pending physical release
+
+        core.key_up()  # physical release afterwards: swallowed, no stop
+        assert rec.events == ["press", "cancel"]
+
+    def test_no_handler_with_gate_true_is_still_a_noop(self):
+        core = PushToTalkCore(lambda: None, lambda: None, None, cancel_gate=lambda: True)
+
+        core.cancel_down()  # must not raise; on_cancel is None
+
+
 class TestSpaceStateMachine:
     def test_quick_tap_replays_a_space(self):
         m = SpaceStateMachine()
@@ -281,6 +336,65 @@ class TestSpacePushToTalkConstruction:
             SpacePushToTalk()
 
 
+class TestSpacePushToTalkCancelGate:
+    """Space has no shared `PushToTalkCore` (its own state machine drives
+    cancel), so the app-level gate is glued in directly by
+    `_handle_press`'s cancel branch: it fires `on_cancel` when the space
+    machine itself produced no cancel action AND the gate returns True,
+    leaving the machine's own state untouched (the space key isn't
+    involved). Exercises `_handle_press` directly -- no real OS listener is
+    started.
+    """
+
+    def _listener(self, monkeypatch, **kwargs):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        from local_flow.hotkeys.space import SpacePushToTalk
+
+        return SpacePushToTalk(**kwargs)
+
+    def test_gate_true_fires_cancel_and_leaves_machine_idle(self, monkeypatch):
+        calls = []
+        sp = self._listener(monkeypatch, cancel_gate=lambda: True)
+        sp._on_cancel = lambda: calls.append("cancel")
+
+        sp._handle_press(sp._keyboard.Key.esc)
+
+        assert calls == ["cancel"]
+        assert sp._machine.state == "idle"
+
+    def test_gate_false_is_silent(self, monkeypatch):
+        calls = []
+        sp = self._listener(monkeypatch, cancel_gate=lambda: False)
+        sp._on_cancel = lambda: calls.append("cancel")
+
+        sp._handle_press(sp._keyboard.Key.esc)
+
+        assert calls == []
+
+    def test_no_gate_is_silent_same_as_before(self, monkeypatch):
+        calls = []
+        sp = self._listener(monkeypatch)
+        sp._on_cancel = lambda: calls.append("cancel")
+
+        sp._handle_press(sp._keyboard.Key.esc)
+
+        assert calls == []
+
+    def test_machine_cancel_fires_once_even_when_gate_is_also_true(self, monkeypatch):
+        """No double-firing: when the space machine itself is mid-recording
+        and produces a cancel action, the gate branch must not fire
+        `on_cancel` a second time.
+        """
+        calls = []
+        sp = self._listener(monkeypatch, cancel_gate=lambda: True)
+        sp._on_cancel = lambda: calls.append("cancel")
+        sp._machine.state = "recording"  # as if space were held and recording
+
+        sp._handle_press(sp._keyboard.Key.esc)
+
+        assert calls == ["cancel"]
+
+
 def _config(**env):
     return load_config(env={f"LOCAL_FLOW_{k.upper()}": v for k, v in env.items()})
 
@@ -303,13 +417,18 @@ class TestFactory:
         created = {}
 
         class FakeFn:
-            def __init__(self, cancel_key):
+            def __init__(self, cancel_key, cancel_gate=None):
                 created["cancel_key"] = cancel_key
+                created["cancel_gate"] = cancel_gate
 
         monkeypatch.setattr(macos_fn, "QuartzFnListener", FakeFn)
-        listener = create_hotkey_listener(_config(hotkey="FN", cancel_hotkey="f12"))
+        gate = lambda: False  # noqa: E731
+        listener = create_hotkey_listener(
+            _config(hotkey="FN", cancel_hotkey="f12"), cancel_gate=gate
+        )
         assert isinstance(listener, FakeFn)
         assert created["cancel_key"] == "f12"
+        assert created["cancel_gate"] is gate
 
     def test_space_dispatches_to_space_listener_on_macos(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "darwin")
@@ -318,15 +437,16 @@ class TestFactory:
         created = {}
 
         class FakeSpace:
-            def __init__(self, hold_ms, cancel_key):
-                created.update(hold_ms=hold_ms, cancel_key=cancel_key)
+            def __init__(self, hold_ms, cancel_key, cancel_gate=None):
+                created.update(hold_ms=hold_ms, cancel_key=cancel_key, cancel_gate=cancel_gate)
 
         monkeypatch.setattr(space_mod, "SpacePushToTalk", FakeSpace)
+        gate = lambda: True  # noqa: E731
         listener = create_hotkey_listener(
-            _config(hotkey="space", hotkey_space_hold_ms="400")
+            _config(hotkey="space", hotkey_space_hold_ms="400"), cancel_gate=gate
         )
         assert isinstance(listener, FakeSpace)
-        assert created == {"hold_ms": 400, "cancel_key": "esc"}
+        assert created == {"hold_ms": 400, "cancel_key": "esc", "cancel_gate": gate}
 
     def test_other_names_dispatch_to_pynput(self, monkeypatch):
         import local_flow.hotkeys.base as base_mod
@@ -334,10 +454,136 @@ class TestFactory:
         created = {}
 
         class FakePynput:
-            def __init__(self, key_name, cancel_key="esc"):
-                created.update(key_name=key_name, cancel_key=cancel_key)
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                created.update(key_name=key_name, cancel_key=cancel_key, cancel_gate=cancel_gate)
 
         monkeypatch.setattr(base_mod, "PynputPushToTalk", FakePynput)
         listener = create_hotkey_listener(_config(hotkey="f9"))
         assert isinstance(listener, FakePynput)
         assert created["key_name"] == "f9"
+        assert created["cancel_gate"] is None  # default call site: no gate passed
+
+    def test_pynput_dispatch_threads_cancel_gate_through(self, monkeypatch):
+        import local_flow.hotkeys.base as base_mod
+
+        created = {}
+
+        class FakePynput:
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                created["cancel_gate"] = cancel_gate
+
+        monkeypatch.setattr(base_mod, "PynputPushToTalk", FakePynput)
+        gate = lambda: True  # noqa: E731
+        create_hotkey_listener(_config(hotkey="f9"), cancel_gate=gate)
+        assert created["cancel_gate"] is gate
+
+
+class _FakeListenerContextManager:
+    """Stands in for `pynput.keyboard.Listener`'s context-manager protocol so
+    `PynputPushToTalk.run` can be exercised without installing a real global
+    hook (which needs OS permission and would block forever).
+    """
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def join(self):
+        return None
+
+
+class TestPynputPushToTalkRunWiresCancelGate:
+    """`run()` builds the shared `PushToTalkCore` itself (not `__init__`),
+    so the stored `cancel_gate` must be threaded through there too.
+    """
+
+    def test_run_constructs_core_with_the_stored_cancel_gate(self, monkeypatch):
+        import local_flow.hotkeys.base as base_mod
+
+        captured = {}
+
+        class FakeCore:
+            def __init__(self, on_press, on_release, on_cancel, cancel_gate=None):
+                captured["cancel_gate"] = cancel_gate
+
+            def key_down(self):
+                pass
+
+            def key_up(self):
+                pass
+
+            def cancel_down(self):
+                pass
+
+        monkeypatch.setattr(base_mod, "PushToTalkCore", FakeCore)
+        gate = lambda: True  # noqa: E731
+        listener = base_mod.PynputPushToTalk("f9", cancel_gate=gate)
+        monkeypatch.setattr(
+            listener._keyboard, "Listener", lambda **kw: _FakeListenerContextManager()
+        )
+
+        listener.run(lambda: None, lambda: None, lambda: None)
+
+        assert captured["cancel_gate"] is gate
+
+
+class TestQuartzFnListenerRunWiresCancelGate:
+    def test_run_constructs_core_with_the_stored_cancel_gate(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        import local_flow.hotkeys.macos_fn as macos_fn
+
+        captured = {}
+
+        class FakeCore:
+            def __init__(self, on_press, on_release, on_cancel, cancel_gate=None):
+                captured["cancel_gate"] = cancel_gate
+
+        monkeypatch.setattr(macos_fn, "PushToTalkCore", FakeCore)
+        gate = lambda: True  # noqa: E731
+        listener = macos_fn.QuartzFnListener(cancel_gate=gate)
+
+        class FakeQuartz:
+            kCGEventTapDisabledByTimeout = 1
+            kCGEventTapDisabledByUserInput = 2
+            kCGEventFlagsChanged = 3
+            kCGEventKeyDown = 4
+            kCGEventTapOptionListenOnly = 5
+            kCGSessionEventTap = 6
+            kCGHeadInsertEventTap = 7
+            kCFRunLoopCommonModes = 8
+
+            @staticmethod
+            def CGEventMaskBit(_bit):
+                return 0
+
+            @staticmethod
+            def CGEventTapCreate(*_a, **_k):
+                return object()
+
+            @staticmethod
+            def CFMachPortCreateRunLoopSource(*_a, **_k):
+                return object()
+
+            @staticmethod
+            def CFRunLoopGetCurrent():
+                return object()
+
+            @staticmethod
+            def CFRunLoopAddSource(*_a, **_k):
+                return None
+
+            @staticmethod
+            def CGEventTapEnable(*_a, **_k):
+                return None
+
+            @staticmethod
+            def CFRunLoopRun():
+                return None  # fake: returns immediately instead of blocking forever
+
+        listener._quartz = FakeQuartz
+
+        listener.run(lambda: None, lambda: None, lambda: None)
+
+        assert captured["cancel_gate"] is gate

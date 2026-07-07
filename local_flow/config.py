@@ -294,4 +294,11 @@ def load_config(
             f"Invalid mouse_enter_button: {config.mouse_enter_button!r}", hint=_mouse_hint
         )
 
+    if config.mouse_button and config.mouse_button == config.mouse_enter_button:
+        raise ConfigError(
+            f"mouse_button and mouse_enter_button cannot both be "
+            f"{config.mouse_button!r}.",
+            hint="Use a different button for each, or leave one of them empty.",
+        )
+
     return config

@@ -324,7 +324,7 @@ class TestCancelPathNotifiesIdle:
 
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config: FakeListener(),
+            lambda config, cancel_gate=None: FakeListener(),
         )
 
         _run_loop(
@@ -337,6 +337,159 @@ class TestCancelPathNotifiesIdle:
         assert done.is_set(), "cancel() never notified 'idle'"
         assert reporter.events[-1] == ("idle", "")
         assert "dictation discarded" in capsys.readouterr().out
+
+
+class TestAppLevelCancelGate:
+    """`_run_loop`'s `recording_active` Event is threaded into
+    `create_hotkey_listener` as `cancel_gate`, so the keyboard listener's
+    cancel key can discard a recording that a *different* listener (mouse
+    push-to-talk) started, and `cancel()` itself no-ops (no print, no join)
+    when nothing is actually recording -- e.g. an idle Esc press.
+    """
+
+    def test_mouse_started_recording_is_cancelled_via_the_keyboard_gate(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["ok"])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_MOUSE_BUTTON": "middle"})
+        recording_started = threading.Event()
+        done = threading.Event()
+        captured_gate: dict[str, object] = {}
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "recording":
+                    recording_started.set()
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return b""
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                # Stands in for a real listener whose own key was never
+                # held: the mouse started the recording, not this listener,
+                # so in production `PushToTalkCore.cancel_down` only calls
+                # `on_cancel` because `cancel_gate()` (recording_active) is
+                # True -- simulated here by calling it directly once that
+                # gate would actually be True.
+                assert recording_started.wait(timeout=5), "mouse never started the recording"
+                on_cancel()
+                done.wait(timeout=5)
+
+        class FakeMouseListener:
+            def run(self, on_press, on_release):
+                on_press()
+
+        def fake_create_hotkey_listener(config, cancel_gate=None):
+            captured_gate["gate"] = cancel_gate
+            return FakeKeyboardListener()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            fake_create_hotkey_listener,
+        )
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_mouse_listener",
+            lambda config: FakeMouseListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert done.is_set(), "cancel() never notified 'idle'"
+        assert captured_gate["gate"] is not None
+        assert captured_gate["gate"]() is False  # cancel() cleared recording_active
+        assert [event[0] for event in reporter.events] == ["recording", "idle"]
+        assert "dictation discarded" in capsys.readouterr().out
+
+    def test_idle_cancel_key_press_is_silent(self, tmp_path, monkeypatch, capsys):
+        """No recording has started yet: invoking `on_cancel` must be a pure
+        no-op -- no print, no `reporter.notify("idle")`. Calls `on_press()`/
+        `on_release()` afterward as both an ordering fence (the dispatcher's
+        single worker thread runs callbacks FIFO, so once "recording" is
+        observed the earlier `on_cancel()` has already finished running) and
+        normal cleanup of the recorder thread it starts.
+        """
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["ok"])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={})
+        done = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return b"pcm-bytes"  # non-empty: finish() must actually process it
+
+        class FakeListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_cancel()  # Esc while nothing is recording: must no-op
+                on_press()
+                on_release()
+                done.wait(timeout=5)
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert done.is_set(), "the post-cancel press/release never notified 'idle'"
+        # Exactly one recording cycle's worth of events: had the idle Esc
+        # actually fired `cancel()`, an extra ("idle", "") would appear
+        # before "recording", and "dictation discarded" would be printed.
+        assert [event[0] for event in reporter.events] == [
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]
+        assert "dictation discarded" not in capsys.readouterr().out
 
 
 class TestInterruptible:
@@ -538,7 +691,7 @@ class TestPushToTalkStreamingNotice:
 
         monkeypatch.setattr(
             "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config: FakeListener(),
+            lambda config, cancel_gate=None: FakeListener(),
         )
 
         _run_loop(
