@@ -4,7 +4,7 @@ extracted per-utterance handler in ``local_flow.app``.
 
 import threading
 
-from local_flow.app import _handle_utterance, _run_loop
+from local_flow.app import _handle_utterance, _interruptible, _run_loop
 from local_flow.asr.mock import MockTranscriber
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
@@ -259,3 +259,42 @@ class TestCancelPathNotifiesIdle:
         assert done.is_set(), "cancel() never notified 'idle'"
         assert reporter.events[-1] == ("idle", "")
         assert "dictation discarded" in capsys.readouterr().out
+
+
+class TestInterruptible:
+    """`_interruptible` wraps the raw mic-frame iterator so hands-free Stop
+    takes effect within one frame, even while `segment_stream` is buffering
+    silence and would otherwise never hand control back to `_run_loop`'s
+    loop (carry-over review fix: clicking Stop during silence used to block
+    indefinitely).
+    """
+
+    def test_stops_mid_iteration_once_the_event_is_set(self):
+        stop_event = threading.Event()
+
+        def frames():
+            yield b"frame-1"
+            yield b"frame-2"
+            stop_event.set()
+            yield b"frame-3"
+            yield b"frame-4"
+
+        assert list(_interruptible(frames(), stop_event)) == [b"frame-1", b"frame-2"]
+
+    def test_passes_all_frames_when_the_event_is_never_set(self):
+        stop_event = threading.Event()
+        frames = [b"frame-1", b"frame-2", b"frame-3"]
+
+        assert list(_interruptible(iter(frames), stop_event)) == frames
+
+    def test_none_event_is_a_passthrough(self):
+        frames = [b"frame-1", b"frame-2", b"frame-3"]
+
+        assert list(_interruptible(iter(frames), None)) == frames
+
+    def test_already_set_event_yields_nothing(self):
+        stop_event = threading.Event()
+        stop_event.set()
+        frames = [b"frame-1", b"frame-2"]
+
+        assert list(_interruptible(iter(frames), stop_event)) == []

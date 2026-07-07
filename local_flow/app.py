@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 import threading
+from collections.abc import Iterable, Iterator
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -423,6 +424,25 @@ def _build_run_dependencies(config: Config):
     return pipeline, source, vad
 
 
+def _interruptible(
+    frames: Iterable[bytes], stop_event: threading.Event | None
+) -> Iterator[bytes]:
+    """Yield frames until the stop event is set (checked per ~30ms frame).
+
+    Wraps the raw microphone-frame iterator so a hands-free Stop takes
+    effect within one frame. Without this, ``segment_stream`` only hands
+    control back to its caller when it yields a *completed* utterance --
+    during continuous silence (no speech ever detected) it never yields, so
+    the `stop_event` check between segments in ``_run_loop`` would never
+    run and Stop would block indefinitely. ``stop_event=None`` (the
+    ``_cmd_run`` console path) means passthrough: every frame is yielded.
+    """
+    for frame in frames:
+        if stop_event is not None and stop_event.is_set():
+            return
+        yield frame
+
+
 def _run_loop(
     config: Config,
     mode: str,
@@ -445,7 +465,7 @@ def _run_loop(
             reporter.notify("recording")
             for i, segment in enumerate(
                 segment_stream(
-                    source.frames(config.vad_frame_ms),
+                    _interruptible(source.frames(config.vad_frame_ms), stop_event),
                     vad,
                     config.sample_rate,
                     frame_ms=config.vad_frame_ms,

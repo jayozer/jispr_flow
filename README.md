@@ -227,10 +227,11 @@ What the icon looks like at each state (see `local_flow/tray/icons.py` /
 Menu:
 
 - **Dictation: Start/Stop** — in `--mode hands-free`, actually starts/stops
-  the capture loop (a `threading.Event` the loop checks between utterances,
-  so it can take a moment to stop mid-utterance); in push-to-talk mode this
-  is a disabled status label ("listening for hotkey") since the hotkey
-  itself already starts/stops each utterance.
+  the capture loop (a `threading.Event` the loop checks per audio frame, so
+  Stop takes effect within a frame -- effectively instant, not mid-utterance
+  or between utterances); in push-to-talk mode this is a disabled status
+  label ("listening for hotkey") since the hotkey itself already
+  starts/stops each utterance.
 - **Mode** — shows the configured capture mode (informational).
 - **Style** — one item per name in `styles.json` (built-ins: `default`,
   `professional`, `casual`, `email`, `chat`, plus any you've added);

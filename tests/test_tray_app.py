@@ -10,10 +10,13 @@ the platform dispatch in `_open_folder`.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 from local_flow.tray.app import (
     MenuEntry,
+    TrayApp,
     TrayReporter,
     _open_folder,
     _to_pystray_menu,
@@ -383,6 +386,101 @@ class TestOpenFolder:
 
         monkeypatch.setattr("subprocess.run", boom)
         _open_folder(tmp_path)  # must not raise
+
+
+class TestStartLoopGuardsAgainstDoubleStart:
+    """`_start_loop` must never let two `_run_loop` threads run concurrently
+    (a carry-over review fix: Stop-then-Start, clicked before the old thread
+    notices its stop event and winds down, used to spawn a second thread
+    capturing the same mic -- double capture / PortAudio device-busy).
+
+    `TrayApp.__init__` requires the `pystray`/`Pillow` extras and builds a
+    real pipeline (audio source, ASR, LM Studio client), so it can't be
+    constructed headlessly here. Instead we bypass `__init__` via
+    `object.__new__` and set only the handful of attributes `_start_loop`/
+    `_stop_loop` touch, then monkeypatch `local_flow.app._run_loop` (which
+    `_start_loop` imports fresh on every call, so patching it before the
+    call takes effect) with a fake so no real audio/ASR/LLM is exercised.
+    `local_flow.tray.app._JOIN_TIMEOUT` is monkeypatched down so the
+    "still-alive" case doesn't slow the suite down.
+    """
+
+    def _bare_app(self, mode: str = "hands-free") -> TrayApp:
+        app = object.__new__(TrayApp)
+        app.config = None
+        app.mode = mode
+        app.reporter = None
+        app.pipeline = app.source = app.vad = None
+        app._running = False
+        app._stop_event = threading.Event()
+        app._loop_thread = None
+        return app
+
+    def test_second_start_is_a_noop_while_previous_thread_is_still_alive(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("local_flow.tray.app._JOIN_TIMEOUT", 0.05)
+        app = self._bare_app()
+        still_running = threading.Event()
+
+        def fake_run_loop(config, mode, reporter, stop_event, dependencies):
+            # Ignores `stop_event`, simulating a thread that hasn't noticed
+            # a stop request yet (the exact window this guard protects).
+            still_running.wait(timeout=5)
+
+        monkeypatch.setattr("local_flow.app._run_loop", fake_run_loop)
+
+        app._start_loop()
+        first_thread = app._loop_thread
+        assert first_thread.is_alive()
+
+        app._running = False  # as `_stop_loop` would have set, mid-stop
+        app._start_loop()
+
+        assert app._loop_thread is first_thread, "must not spawn a second loop thread"
+
+        still_running.set()
+        first_thread.join(timeout=2)
+
+    def test_start_spawns_a_fresh_thread_once_the_previous_one_has_exited(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("local_flow.tray.app._JOIN_TIMEOUT", 2.0)
+        app = self._bare_app()
+        run_count = []
+
+        def fake_run_loop(config, mode, reporter, stop_event, dependencies):
+            run_count.append(1)
+            stop_event.wait(timeout=2)  # exits promptly once told to stop
+
+        monkeypatch.setattr("local_flow.app._run_loop", fake_run_loop)
+
+        app._start_loop()
+        first_thread = app._loop_thread
+        app._running = False
+        app._stop_event.set()
+        first_thread.join(timeout=2)
+        assert not first_thread.is_alive()
+
+        app._start_loop()
+
+        assert app._loop_thread is not first_thread
+        assert len(run_count) == 2
+        app._loop_thread.is_alive()
+        app._stop_event.set()
+        app._loop_thread.join(timeout=2)
+
+    def test_start_is_a_noop_when_already_marked_running(self, monkeypatch):
+        app = self._bare_app()
+        app._running = True
+        app._loop_thread = None  # no thread object needed for this branch
+
+        def fake_run_loop(*args, **kwargs):
+            raise AssertionError("_run_loop must not be started again")
+
+        monkeypatch.setattr("local_flow.app._run_loop", fake_run_loop)
+
+        app._start_loop()  # must return immediately without starting anything
 
 
 class TestPystrayMenuConversion:

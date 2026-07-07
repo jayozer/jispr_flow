@@ -23,6 +23,12 @@ from local_flow.status import State, StatusReporter
 from local_flow.tray.icons import draw_icon
 from local_flow.tray.state import TrayStateMachine
 
+# Best-effort wait for the loop thread to notice a stop request and exit,
+# used by both `_start_loop` (double-start guard) and `_stop_loop`. A module
+# constant (rather than a literal) so tests can monkeypatch it down to keep
+# the double-start guard test fast.
+_JOIN_TIMEOUT = 2.0
+
 
 def parse_languages(raw: str) -> list[str]:
     """Parse ``config.languages`` (e.g. ``"en, de,tr"``) into ``["en", "de", "tr"]``.
@@ -267,6 +273,18 @@ class TrayApp:
     def _start_loop(self) -> None:
         if self._running:
             return
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            # A previous loop thread hasn't exited yet -- e.g. Stop was
+            # clicked (which set `_running = False`) and Start was clicked
+            # again before that thread noticed its stop event and wound
+            # down. Wait briefly; if it's still alive after that, refuse to
+            # start a second thread -- two concurrent `_run_loop`s would
+            # both grab the microphone (double capture / PortAudio
+            # device-busy).
+            self._loop_thread.join(timeout=_JOIN_TIMEOUT)
+            if self._loop_thread.is_alive():
+                return
+
         from local_flow.app import _run_loop
 
         self._stop_event = threading.Event()
@@ -289,6 +307,11 @@ class TrayApp:
             return
         self._stop_event.set()
         self._running = False
+        # Best-effort: the loop thread is a daemon, so never block forever
+        # waiting for it -- but do give it a moment to actually let go of
+        # the microphone before we might be asked to start a new one.
+        if self._loop_thread is not None:
+            self._loop_thread.join(timeout=_JOIN_TIMEOUT)
 
     def _toggle_dictation(self) -> None:
         # Push-to-talk has no loop-level Start/Stop concept (the hotkey
