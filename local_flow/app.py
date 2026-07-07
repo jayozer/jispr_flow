@@ -3,6 +3,7 @@
 Subcommands:
 - ``demo``    headless pipeline demo with mocks (no permissions needed)
 - ``run``     live dictation (microphone + hotkey/VAD + LM Studio)
+- ``recover`` reprocess dictation audio left behind by a crash mid-utterance
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``command`` one-shot command mode: transform text per an instruction
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
@@ -30,6 +31,7 @@ from local_flow.status import ConsoleReporter, StatusReporter
 
 if TYPE_CHECKING:
     from local_flow.asr.base import Transcriber
+    from local_flow.audio.recovery import PendingAudioStore
     from local_flow.history.store import HistoryStore
     from local_flow.pipeline import DictationPipeline
 
@@ -358,6 +360,15 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
         print(f"reinserted rough text from record #{args.reinsert_raw}: {record.rough!r}")
         return 0
 
+    if args.retry is not None:
+        record = _resolve_history_record(store, args.retry)
+        chat_client = _build_chat_client(config)
+        sink = _build_sink(config)
+        pipeline = _build_pipeline(config, chat_client, sink)
+        result = pipeline.process_transcript(record.rough)
+        print(f"retried record #{args.retry}: {result.final!r}")
+        return 0
+
     records = (
         store.search(args.search, limit=args.limit)
         if args.search
@@ -425,6 +436,7 @@ def _handle_utterance(
     reporter: StatusReporter,
     pcm: bytes,
     sample_rate: int,
+    pending_store: PendingAudioStore | None = None,
 ) -> None:
     """Run one captured utterance's PCM through the pipeline.
 
@@ -433,14 +445,24 @@ def _handle_utterance(
     ``error`` if the pipeline raises, and ``idle`` once the utterance is
     fully handled either way. Extracted from ``_run_loop`` so it can be
     exercised directly in tests without mocking audio capture or hotkeys.
+
+    When ``pending_store`` is given (see ``local_flow.audio.recovery`` and
+    config ``audio_recovery``), the PCM is saved to disk *before*
+    ``pipeline.process_audio`` runs and deleted only once that call returns
+    normally -- if it raises (caught below as ``error``) or the process
+    dies first, the saved WAV is left behind for ``local-flow recover``.
+    ``pending_store=None`` is byte-identical to before this existed.
     """
     reporter.notify("processing")
+    pending_path = pending_store.save(pcm, sample_rate) if pending_store is not None else None
     try:
         result = pipeline.process_audio(pcm, sample_rate)
         for warning in result.warnings:
             reporter.notify("warning", warning)
         if result.final:
             reporter.notify("inserted", repr(result.final))
+        if pending_path is not None:
+            pending_store.delete(pending_path)
     except LocalFlowError as exc:
         reporter.notify("error", exc.message)
         if exc.hint:
@@ -449,8 +471,24 @@ def _handle_utterance(
         reporter.notify("idle")
 
 
+def _build_pending_store(config: Config):
+    """Build the crash-safe audio autosave store, or ``None`` when disabled.
+
+    Gated on ``config.audio_recovery`` (default on): with it off, callers get
+    ``None`` and every ``pending_store is not None`` check downstream (in
+    ``_handle_utterance``) skips the save/delete entirely -- byte-identical
+    to before this feature existed.
+    """
+    if not config.audio_recovery:
+        return None
+    from local_flow.audio.recovery import PendingAudioStore
+
+    return PendingAudioStore(config.data_dir)
+
+
 def _build_run_dependencies(config: Config):
-    """Build the pipeline + audio source + VAD that ``_run_loop`` needs.
+    """Build the pipeline + audio source + VAD + pending-audio store that
+    ``_run_loop`` needs.
 
     Extracted from ``_run_loop`` so ``TrayApp`` can build these once, keep a
     reference to ``pipeline.polisher``/``pipeline.transcriber`` for its
@@ -458,7 +496,9 @@ def _build_run_dependencies(config: Config):
     running on its worker thread (rather than each rebuilding its own
     pipeline). ``_cmd_run`` still goes through ``_run_loop`` with
     ``dependencies=None``, so this call sequence (and its exception
-    behavior) is unchanged for the CLI path.
+    behavior) is unchanged for the CLI path. Returns a 4-tuple
+    ``(pipeline, source, vad, pending_store)``; ``_run_loop`` also accepts a
+    caller-supplied 3-tuple (no pending store) for backward compatibility.
     """
     from local_flow.audio.capture import SounddeviceSource
 
@@ -467,7 +507,8 @@ def _build_run_dependencies(config: Config):
     pipeline = _build_pipeline(config, chat_client, sink)
     source = SounddeviceSource(sample_rate=config.sample_rate)
     vad = _build_vad(config)
-    return pipeline, source, vad
+    pending_store = _build_pending_store(config)
+    return pipeline, source, vad, pending_store
 
 
 def _interruptible(
@@ -533,14 +574,20 @@ def _run_loop(
     mode: str,
     reporter: StatusReporter,
     stop_event: threading.Event | None = None,
-    dependencies: tuple[DictationPipeline, object, object] | None = None,
+    dependencies: tuple | None = None,
 ) -> int:
     from local_flow.audio.vad import segment_stream
 
     try:
-        pipeline, source, vad = (
-            dependencies if dependencies is not None else _build_run_dependencies(config)
-        )
+        if dependencies is not None:
+            # Accept both the 3-tuple `(pipeline, source, vad)` predating
+            # crash-safe audio recovery and the 4-tuple `_build_run_dependencies`
+            # now returns; a caller-supplied 3-tuple simply gets no pending
+            # store (same as `audio_recovery=false`).
+            pipeline, source, vad, *rest = dependencies
+            pending_store = rest[0] if rest else None
+        else:
+            pipeline, source, vad, pending_store = _build_run_dependencies(config)
     except LocalFlowError as exc:
         return _fail(exc)
 
@@ -588,7 +635,9 @@ def _run_loop(
                     # hands-free mode is listening again; ConsoleReporter is
                     # silent for "recording", so CLI output is unaffected.
                     reporter.notify("recording")
-                _handle_utterance(pipeline, reporter, segment, config.sample_rate)
+                _handle_utterance(
+                    pipeline, reporter, segment, config.sample_rate, pending_store
+                )
                 if preview_stream is not None:
                     # `segment_stream` only reveals an utterance boundary by
                     # yielding it, and by then trailing silence frames (used
@@ -637,7 +686,7 @@ def _run_loop(
                     thread.join(timeout=5)
                 pcm = captured.pop("pcm", b"")
                 if pcm:
-                    _handle_utterance(pipeline, reporter, pcm, config.sample_rate)
+                    _handle_utterance(pipeline, reporter, pcm, config.sample_rate, pending_store)
 
             def cancel() -> None:
                 stop.set()
@@ -665,6 +714,53 @@ def _run_loop(
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     mode = args.mode or config.mode
     return _run_loop(config, mode, ConsoleReporter())
+
+
+def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
+    """Reprocess every WAV left behind under ``<data dir>/pending/``.
+
+    Covers a crash/force-quit mid-dictation (see ``PendingAudioStore`` and
+    config ``audio_recovery``): each file is run through the same pipeline
+    ``local-flow run`` uses, deleted on success, and left in place on
+    failure so a later ``recover`` can try again.
+    """
+    from local_flow.audio.recovery import PendingAudioStore
+
+    store = PendingAudioStore(config.data_dir)
+    pending = store.pending()
+    if not pending:
+        print(f"no pending dictation audio to recover (checked: {store.pending_dir})")
+        return 0
+
+    try:
+        pipeline, _source, _vad, _pending_store = _build_run_dependencies(config)
+    except LocalFlowError as exc:
+        return _fail(exc)
+
+    recovered = 0
+    kept = 0
+    for path in pending:
+        try:
+            pcm, sample_rate = store.load(path)
+        except ValueError as exc:
+            print(f"skip {path.name}: {exc}")
+            kept += 1
+            continue
+        try:
+            result = pipeline.process_audio(pcm, sample_rate)
+        except LocalFlowError as exc:
+            print(f"failed {path.name}: {exc.message}")
+            kept += 1
+            continue
+        store.delete(path)
+        recovered += 1
+        print(f"recovered {path.name}: {result.final!r}")
+
+    print(
+        f"recover: {recovered} recovered, {kept} left in {store.pending_dir} "
+        f"(of {len(pending)} total)"
+    )
+    return 0
 
 
 def _cmd_tray(_args: argparse.Namespace, config: Config) -> int:
@@ -704,6 +800,12 @@ def main(argv: list[str] | None = None) -> int:
         "--mode",
         choices=["push-to-talk", "hands-free"],
         help="override the configured capture mode",
+    )
+
+    sub.add_parser(
+        "recover",
+        help="reprocess dictation audio left behind by a crash "
+        "(<data dir>/pending/*.wav)",
     )
 
     polish_p = sub.add_parser("polish", help="clean/polish a rough transcript from the CLI")
@@ -763,6 +865,15 @@ def main(argv: list[str] | None = None) -> int:
         "verbatim through the configured text sink (1-based, newest-first as in "
         "the plain listing; ignores --search/--limit)",
     )
+    history_p.add_argument(
+        "--retry",
+        type=int,
+        metavar="N",
+        help="re-run record N's rough transcript through a freshly built pipeline "
+        "(fresh polish + insert); appends a NEW history record rather than "
+        "replacing the old one (1-based, newest-first as in the plain listing; "
+        "ignores --search/--limit)",
+    )
 
     learn_p = sub.add_parser(
         "learn", help="mine dictation history for candidate dictionary terms"
@@ -800,6 +911,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "demo": _cmd_demo,
         "run": _cmd_run,
+        "recover": _cmd_recover,
         "polish": _cmd_polish,
         "command": _cmd_command,
         "check": _cmd_check,

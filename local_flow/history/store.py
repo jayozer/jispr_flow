@@ -47,6 +47,11 @@ class HistoryRecord:
     app: str = ""  # filled by E4 later
     duration_s: float = 0.0
     replacements: int = 0
+    # LM Studio was configured for this utterance but never actually used
+    # (raised/unreachable, cleanup_level != "none"); see
+    # `local_flow.pipeline.DictationPipeline.process_transcript` and
+    # `local-flow history --retry`.
+    failed: bool = False
 
 
 class HistoryStore:
@@ -133,6 +138,7 @@ class HistoryStore:
                     app=str(data.get("app", "")),
                     duration_s=float(data.get("duration_s", 0.0)),
                     replacements=int(data.get("replacements", 0)),
+                    failed=bool(data.get("failed", False)),
                 )
             except (KeyError, TypeError, ValueError):
                 continue

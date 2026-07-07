@@ -193,6 +193,64 @@ class TestHistoryRecording:
         assert expected_duration > 0
 
 
+class TestFailedFlagRecording:
+    """`HistoryRecord.failed` (E11 carry-over binding): set only when a chat
+    client is configured but never actually used, excluding
+    cleanup_level="none" where the client is skipped by design (not a
+    failure -- see `TranscriptPolisher.polish`).
+    """
+
+    def test_medium_level_raising_client_marks_failed_true(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        pipeline = make_pipeline(store, FailingChatClient(), FakeTextSink(), history=history)
+
+        pipeline.process_transcript("email the postgresql team")
+
+        assert history.recent()[0].used_llm is False
+        assert history.recent()[0].failed is True
+
+    def test_none_level_with_configured_client_leaves_failed_false(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(FailingChatClient(), store, level="none"),
+            store=store,
+            sink=FakeTextSink(),
+            history=history,
+        )
+
+        pipeline.process_transcript("hello world")
+
+        assert history.recent()[0].used_llm is False
+        assert history.recent()[0].failed is False
+
+    def test_chat_client_none_leaves_failed_false(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(None, store),  # not configured at all
+            store=store,
+            sink=FakeTextSink(),
+            history=history,
+        )
+
+        pipeline.process_transcript("hello world")
+
+        assert history.recent()[0].used_llm is False
+        assert history.recent()[0].failed is False
+
+    def test_successful_llm_use_leaves_failed_false(self, store, tmp_path):
+        history = HistoryStore(tmp_path / "history")
+        pipeline = make_pipeline(
+            store, MockChatClient(["polished text"]), FakeTextSink(), history=history
+        )
+
+        pipeline.process_transcript("hello world")
+
+        assert history.recent()[0].used_llm is True
+        assert history.recent()[0].failed is False
+
+
 class TestContextRoutingThroughPipeline:
     """The router is consulted once per utterance and affects style/sink/history."""
 

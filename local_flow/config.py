@@ -85,6 +85,12 @@ class Config:
     # Audio
     sample_rate: int = 16000
 
+    # Crash-safe audio autosave: save each utterance's PCM under
+    # <data dir>/pending/ before processing, delete it once handled. `local-flow
+    # recover` replays anything left behind by a crash/force-quit. Set false to
+    # skip the extra disk write entirely (byte-identical to before this existed).
+    audio_recovery: bool = True
+
     # Dictation history (local JSONL log)
     history_enabled: bool = True
     history_max_entries: int = 5000
@@ -177,6 +183,7 @@ def load_config(
         "history_max_entries": int,
         "context_styles": bool,
         "streaming_pause_ms": int,
+        "audio_recovery": bool,
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}

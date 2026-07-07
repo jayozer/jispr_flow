@@ -137,6 +137,30 @@ class TestClear:
         assert store.recent() == []
 
 
+class TestFailedField:
+    """`HistoryRecord.failed` (E11): tolerant like the other optional fields."""
+
+    def test_failed_field_round_trips(self, tmp_path):
+        store = HistoryStore(tmp_path)
+        store.append(_record("bad polish", "Bad polish.", timestamp="2026-07-06T12:00:00Z"))
+        store.append(HistoryRecord(
+            timestamp="2026-07-06T12:01:00Z", rough="x", final="y", failed=True,
+        ))
+        records = list(store.all())
+        assert records[0].failed is False
+        assert records[1].failed is True
+
+    def test_old_records_without_failed_key_default_to_false(self, tmp_path):
+        store = HistoryStore(tmp_path)
+        with store.path.open("a", encoding="utf-8") as f:
+            f.write(
+                '{"timestamp": "2026-07-06T12:00:00Z", "rough": "x", "final": "y"}\n'
+            )
+        records = list(store.all())
+        assert len(records) == 1
+        assert records[0].failed is False
+
+
 class TestConfigFields:
     def test_history_defaults(self):
         config = load_config(env={})

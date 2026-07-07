@@ -122,6 +122,17 @@ class DictationPipeline:
             self.store.record_term_uses(dict_counts)
 
         if rough and self.history is not None:
+            # A chat client was configured (so the user expects LLM polish)
+            # but it was never actually used -- either it raised/was
+            # unreachable, or something else skipped it. At
+            # cleanup_level="none" the client is never invoked by design
+            # (see TranscriptPolisher.polish), so that case is excluded:
+            # skipping the LLM there isn't a failure, it's the whole point.
+            failed = (
+                self.polisher.chat_client is not None
+                and not result.used_llm
+                and self.polisher.level != "none"
+            )
             self.history.append_new(
                 rough=rough,
                 final=result.final,
@@ -129,6 +140,7 @@ class DictationPipeline:
                 app=ctx.app_id,
                 duration_s=duration_s,
                 replacements=dict_count + snippet_count + code_count,
+                failed=failed,
             )
 
         return result

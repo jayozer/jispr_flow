@@ -234,7 +234,9 @@ class TrayApp:
 
         self.config = config
         self.mode = config.mode
-        self.pipeline, self.source, self.vad = _build_run_dependencies(config)
+        self.pipeline, self.source, self.vad, self.pending_store = _build_run_dependencies(
+            config
+        )
         self._languages = parse_languages(config.languages)
 
         self._running = False
@@ -295,7 +297,7 @@ class TrayApp:
                 self.mode,
                 self.reporter,
                 self._stop_event,
-                (self.pipeline, self.source, self.vad),
+                (self.pipeline, self.source, self.vad, self.pending_store),
             ),
             daemon=True,
         )

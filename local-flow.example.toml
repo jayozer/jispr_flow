@@ -39,6 +39,10 @@ context_styles = true          # false disables app_styles.json / frontmost-app 
 
 insert_method = "auto"         # auto | paste | type | clipboard
 sample_rate = 16000
+# Crash-safe audio autosave (see README "Crash-safe audio recovery"): saves
+# each utterance's PCM under <data dir>/pending/ before processing, deletes
+# it once handled. `local-flow recover` replays anything a crash left behind.
+audio_recovery = true
 
 history_enabled = true         # false stops recording (existing history stays readable)
 history_max_entries = 5000     # rotate out the oldest entries beyond this count

@@ -154,6 +154,7 @@ uv run local-flow setup      # interactive onboarding wizard; writes config.toml
 uv run local-flow check      # diagnose LM Studio / ASR / audio / clipboard
 uv run local-flow run        # live dictation (hold Fn/Space, speak, release)
 uv run local-flow run --mode hands-free   # VAD-segmented, no hotkey needed
+uv run local-flow recover    # reprocess any dictation audio a crash left behind
 uv run local-flow polish "um send the uh draft, scratch that, the final doc"
 uv run local-flow command "make this formal" --text "hey can u fix the bug"
 uv run local-flow demo       # headless end-to-end proof with mocks
@@ -163,6 +164,7 @@ uv run local-flow history --verbose       # also show the rough (pre-polish) tra
 uv run local-flow history --clear         # delete the local history file
 uv run local-flow history --show 1        # print record #1's full rough + final text
 uv run local-flow history --reinsert-raw 1   # undo a bad AI edit: re-insert record #1's rough text
+uv run local-flow history --retry 1       # redo polish+insert for record #1 (fresh LLM call)
 uv run local-flow learn                   # mine history for candidate dictionary terms
 uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dictionary
 uv run local-flow tray                    # menu-bar app (see "Tray app" below)
@@ -195,8 +197,43 @@ you see in a plain listing always means the same record.
   transcript, verbatim, through your configured insertion method — an undo
   for when the AI polish mangled something: dictate again over the bad
   result, or paste the raw words back in yourself and fix them by hand.
+- `local-flow history --retry N` re-runs record `N`'s rough transcript
+  through a *freshly built* pipeline — a fresh LM Studio polish pass and a
+  fresh insert — for when the first attempt's polish failed (LM Studio was
+  down, or a record's `failed` flag is set; see below). This appends a
+  **new** history record rather than replacing the old one, so both attempts
+  stay in your history.
 - Out-of-range `N` fails with a friendly error naming how many records
   exist, instead of a traceback.
+
+Every record also carries a `failed` flag: true when LM Studio was
+configured but never actually contributed to that dictation's polish (down,
+timed out, or otherwise skipped) — except at `LOCAL_FLOW_CLEANUP_LEVEL=none`,
+where the LLM is never called by design and skipping it isn't a failure.
+`--retry` is the fix for a `failed` record once LM Studio is back up.
+
+### Crash-safe audio recovery
+
+Before an utterance's audio is handed to the pipeline, its raw PCM is saved
+as a WAV file under `<data dir>/pending/` (a uuid-named file, no clock
+dependency); the file is deleted the moment that utterance finishes
+processing successfully. If local-flow crashes, is force-quit, or the
+insertion step fails partway through, the WAV is left behind instead of the
+dictation being silently lost.
+
+```bash
+uv run local-flow recover   # reprocesses every WAV under <data dir>/pending/
+```
+
+Each pending file is run back through the same ASR/polish/insert pipeline
+`local-flow run` uses: on success it is transcribed, polished, inserted, and
+deleted; on failure (e.g. LM Studio still down, insertion still failing) it
+is left in place so a later `recover` can try again. A `recover` with
+nothing pending prints a friendly one-line message and exits `0`.
+
+Set `LOCAL_FLOW_AUDIO_RECOVERY=false` (or `audio_recovery = false` in
+`local-flow.toml`) to skip the autosave entirely — no extra disk write per
+utterance, at the cost of losing audio if something crashes mid-dictation.
 
 ### Teach it your words
 
@@ -488,28 +525,32 @@ and a running LM Studio:
     a normal space appears; hold Space → dictation starts.
 13. Press Esc mid-dictation → nothing is inserted and "dictation discarded"
     is printed.
+14. Start `uv run local-flow run`, dictate, then kill the process (`kill -9`)
+    before it finishes inserting → a WAV appears under
+    `<data dir>/pending/`; `uv run local-flow recover` transcribes/polishes/
+    inserts it and the file is gone afterward.
 
 Tray app (`uv sync --all-extras && uv run local-flow tray`):
 
-14. The icon appears in the menu bar; it turns red while holding the hotkey
+15. The icon appears in the menu bar; it turns red while holding the hotkey
     (or during a hands-free utterance), amber while processing, and back to
     gray afterward; it raises a desktop notification on errors/warnings.
-15. Tray **Style** submenu → switch to `email` → the next dictation is
+16. Tray **Style** submenu → switch to `email` → the next dictation is
     structured as an email (greeting, short paragraphs, sign-off).
-16. Tray **Language** submenu (with `LOCAL_FLOW_LANGUAGES=en,de` and a
+17. Tray **Language** submenu (with `LOCAL_FLOW_LANGUAGES=en,de` and a
     multilingual model, e.g. `LOCAL_FLOW_ASR_MODEL=small`) → switch to `de`,
     dictate in German → transcribed/polished in German.
-17. `--mode hands-free`: **Dictation: Start/Stop** actually starts and stops
+18. `--mode hands-free`: **Dictation: Start/Stop** actually starts and stops
     capture; in push-to-talk mode the same menu item is a disabled
     "listening for hotkey" label.
 
 Setup wizard (`uv run local-flow setup` on a machine without a config yet):
 
-18. The dependency/LM Studio probe report prints, the questions accept
+19. The dependency/LM Studio probe report prints, the questions accept
     Enter-for-default and reject/re-ask on an invalid answer, and the
     resulting `~/.config/local-flow/config.toml` (or wherever you pointed it)
     works with `local-flow check`/`local-flow run` without edits.
-19. Re-running `setup` against an existing config asks to overwrite; answering
+20. Re-running `setup` against an existing config asks to overwrite; answering
     anything but `y` leaves the existing file untouched.
 
 ## Development
