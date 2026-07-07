@@ -38,6 +38,10 @@ class TrayStateMachine:
             return TrayView(icon="recording", tooltip="local-flow — recording")
         if state == "processing":
             return TrayView(icon="processing", tooltip="local-flow — processing")
+        if state == "preview":
+            # Same icon as "processing" (no dedicated preview icon); no
+            # flash -- previews keep updating in place while speaking.
+            return TrayView(icon="processing", tooltip=f"… {detail[:_TOOLTIP_TRUNCATE]}")
         if state == "inserted":
             return TrayView(
                 icon="idle",

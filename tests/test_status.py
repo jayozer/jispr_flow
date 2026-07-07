@@ -5,7 +5,7 @@ extracted per-utterance handler in ``local_flow.app``.
 import threading
 
 from local_flow.app import _handle_utterance, _interruptible, _run_loop
-from local_flow.asr.mock import MockTranscriber
+from local_flow.asr.mock import MockStream, MockTranscriber
 from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
@@ -85,6 +85,72 @@ class TestConsoleReporter:
         ConsoleReporter().notify("idle")
         captured = capsys.readouterr()
         assert captured.out == ""
+        assert captured.err == ""
+
+    def test_preview_prints_carriage_return_prefixed_line_to_stderr(self, capsys):
+        ConsoleReporter().notify("preview", "rough partial")
+        captured = capsys.readouterr()
+        assert captured.err == "\r… rough partial"
+        assert captured.out == ""
+
+    def test_preview_truncates_detail_to_70_chars(self, capsys):
+        long_text = "a" * 100
+        ConsoleReporter().notify("preview", long_text)
+        captured = capsys.readouterr()
+        assert captured.err == "\r… " + "a" * 70
+
+    def test_warning_after_preview_emits_leading_newline(self, capsys):
+        reporter = ConsoleReporter()
+        reporter.notify("preview", "rough")
+        reporter.notify("warning", "LM Studio polish skipped")
+        captured = capsys.readouterr()
+        assert captured.err == "\r… rough\nwarning: LM Studio polish skipped\n"
+
+    def test_inserted_after_preview_emits_leading_newline_on_stderr_only(self, capsys):
+        reporter = ConsoleReporter()
+        reporter.notify("preview", "rough")
+        reporter.notify("inserted", repr("send the invoice"))
+        captured = capsys.readouterr()
+        assert captured.err == "\r… rough\n"
+        assert captured.out == "inserted: 'send the invoice'\n"
+
+    def test_error_after_preview_emits_leading_newline(self, capsys):
+        reporter = ConsoleReporter()
+        reporter.notify("preview", "rough")
+        reporter.notify("error", "boom")
+        captured = capsys.readouterr()
+        assert captured.err == "\r… rough\nerror: boom\n"
+
+    def test_second_printed_state_after_preview_only_gets_one_newline(self, capsys):
+        reporter = ConsoleReporter()
+        reporter.notify("preview", "rough")
+        reporter.notify("inserted", repr("first"))
+        reporter.notify("inserted", repr("second"))
+        captured = capsys.readouterr()
+        # Only one leading "\n" for the *first* printed state after the
+        # preview; nothing pending by the second "inserted".
+        assert captured.err == "\r… rough\n"
+        assert captured.out == "inserted: 'first'\ninserted: 'second'\n"
+
+    def test_recording_processing_idle_do_not_clear_pending_preview(self, capsys):
+        reporter = ConsoleReporter()
+        reporter.notify("preview", "rough")
+        reporter.notify("recording")
+        reporter.notify("processing")
+        reporter.notify("idle")
+        reporter.notify("inserted", repr("done"))
+        captured = capsys.readouterr()
+        assert captured.err == "\r… rough\n"
+        assert captured.out == "inserted: 'done'\n"
+
+    def test_no_leading_newline_when_preview_never_fired(self, capsys):
+        # Non-streaming byte-identical guarantee: with `_preview_pending`
+        # never set to True, the printed states are unchanged from before
+        # this feature existed.
+        reporter = ConsoleReporter()
+        reporter.notify("inserted", repr("send the invoice"))
+        captured = capsys.readouterr()
+        assert captured.out == "inserted: 'send the invoice'\n"
         assert captured.err == ""
 
 
@@ -481,3 +547,82 @@ class TestPushToTalkStreamingNotice:
             "inserted",
             "idle",
         ]
+
+
+class TestLivePreviewRunLoop:
+    """End-to-end: hands-free `_run_loop` with `streaming="live-preview"`,
+    injecting a `MockStream` by monkeypatching `local_flow.app.
+    _build_preview_stream` (the module-level factory `_run_loop` calls,
+    rather than constructing a real `WindowedStream`). Uses the real
+    `segment_stream` + `EnergyVAD` (no monkeypatching of those), same idiom
+    as `TestSentenceModeOrdering`, so segment boundaries are genuine.
+    """
+
+    def _frames(self, config):
+        # One utterance: leading silence, a long-enough speech burst for
+        # several preview cadences, then silence past `vad_silence_ms`
+        # (default 600ms) to close the segment.
+        pcm = synth_pcm(
+            [(200, 0), (900, 12000), (700, 0)],
+            sample_rate=config.sample_rate,
+        )
+        frame_bytes = int(config.sample_rate * config.vad_frame_ms / 1000) * 2
+        return [pcm[i : i + frame_bytes] for i in range(0, len(pcm), frame_bytes)]
+
+    def _run(self, streaming, tmp_path, monkeypatch, preview_stream=None):
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["Final polished text."])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["final rough transcript"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_STREAMING": streaming})
+
+        if preview_stream is not None:
+            monkeypatch.setattr(
+                "local_flow.app._build_preview_stream",
+                lambda transcriber, sample_rate: preview_stream,
+            )
+
+        frames = self._frames(config)
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter(frames)
+
+        vad = EnergyVAD(config.vad_energy_threshold)
+
+        _run_loop(
+            config,
+            "hands-free",
+            reporter,
+            dependencies=(pipeline, FakeSource(), vad),
+        )
+        return reporter
+
+    def test_preview_events_precede_processing_and_inserted(self, tmp_path, monkeypatch):
+        preview_stream = MockStream(["rough", "rough one"], frames_per_partial=5)
+
+        reporter = self._run("live-preview", tmp_path, monkeypatch, preview_stream)
+
+        states = [event[0] for event in reporter.events]
+        assert "preview" in states
+        assert states.index("preview") < states.index("processing")
+        assert states.index("preview") < states.index("inserted")
+        preview_texts = [detail for state, detail in reporter.events if state == "preview"]
+        assert preview_texts == ["rough", "rough one"]
+
+    def test_final_inserted_text_matches_a_run_without_preview(self, tmp_path, monkeypatch):
+        preview_stream = MockStream(["rough", "rough one"], frames_per_partial=5)
+
+        with_preview = self._run("live-preview", tmp_path / "with", monkeypatch, preview_stream)
+        without_preview = self._run("off", tmp_path / "without", monkeypatch, None)
+
+        inserted_with = [d for s, d in with_preview.events if s == "inserted"]
+        inserted_without = [d for s, d in without_preview.events if s == "inserted"]
+        assert inserted_with == inserted_without == [repr("Final polished text.")]

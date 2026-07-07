@@ -21,6 +21,7 @@ class TestTrayStateMachine:
             ("inserted", "hello world", "idle", True),
             ("error", "boom", "error", False),
             ("warning", "LM Studio polish skipped", "error", False),
+            ("preview", "rough partial text", "processing", False),
         ],
     )
     def test_state_maps_to_icon_and_flash(self, state, detail, expected_icon, expected_flash):
@@ -60,6 +61,17 @@ class TestTrayStateMachine:
         view = TrayStateMachine().apply("warning", "LM Studio polish skipped")
         assert view.icon == "error"
         assert "LM Studio polish skipped" in view.tooltip
+
+    def test_preview_tooltip_shows_detail_prefix(self):
+        view = TrayStateMachine().apply("preview", "rough partial text")
+        assert view.icon == "processing"
+        assert view.tooltip == "… rough partial text"
+        assert view.flash is False
+
+    def test_preview_tooltip_truncates_to_40_chars(self):
+        long_text = "a" * 100
+        view = TrayStateMachine().apply("preview", long_text)
+        assert view.tooltip == "… " + "a" * 40
 
     def test_warning_then_next_state_does_not_stick_on_error(self):
         machine = TrayStateMachine()

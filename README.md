@@ -106,7 +106,7 @@ environment > config file > defaults. Highlights:
 | Cancel hotkey | `LOCAL_FLOW_CANCEL_HOTKEY` | `esc` |
 | Style | `LOCAL_FLOW_STYLE` | `default` |
 | Data dir | `LOCAL_FLOW_DATA_DIR` | `~/.local/share/local-flow` |
-| Streaming | `LOCAL_FLOW_STREAMING` | `off` (or `sentence`, hands-free only; see "Streaming") |
+| Streaming | `LOCAL_FLOW_STREAMING` | `off` (or `sentence`/`live-preview`, hands-free only; see "Streaming") |
 | Streaming pause | `LOCAL_FLOW_STREAMING_PAUSE_MS` | `300` |
 
 Personalization lives in the data dir as hand-editable JSON:
@@ -243,8 +243,42 @@ Trade-offs to know before turning this on:
   prints a one-line notice (`streaming requires hands-free mode; ignoring`)
   and dictation behaves exactly as if streaming were off.
 
-`LOCAL_FLOW_STREAMING=live-preview` is a planned rough-text preview shown
-while speaking (final insert unchanged); not yet implemented.
+`LOCAL_FLOW_STREAMING=live-preview` (hands-free mode only) shows a rough,
+continuously-updating partial transcript on the console (or the tray
+tooltip) *while you're still speaking*, so you get feedback that dictation
+is working before you pause. Under the hood, mic frames are teed into a
+second, windowed re-transcription pass (re-transcribing the accumulated
+utterance roughly once a second) purely for display; nothing about the
+actual insertion path changes:
+
+```bash
+LOCAL_FLOW_STREAMING=live-preview LOCAL_FLOW_MODE=hands-free uv run local-flow run
+```
+
+- **The final inserted text is unaffected.** The preview is display-only —
+  it never feeds into the dictionary/snippet/command-mode/history pipeline.
+  The utterance's real transcription, polish, and insertion happen exactly
+  as they do with streaming off, from the same buffered audio, once you
+  pause. If the rough preview and the final insert ever disagree (e.g. the
+  preview caught a word the final pass corrected), the final insert wins.
+- **It does not lower time-to-insertion.** Unlike `sentence` mode,
+  `live-preview` doesn't change when text lands in your editor — only
+  `sentence` mode does that. `live-preview` only changes what you *see*
+  while speaking.
+- **Eyeballing the difference.** To compare against `off`, dictate the same
+  sentence once with `LOCAL_FLOW_STREAMING=off` and once with
+  `LOCAL_FLOW_STREAMING=live-preview`: with `off` the terminal/tray stays
+  silent until you pause and the final text appears all at once; with
+  `live-preview` a rough line (prefixed with `…`) updates on the console (or
+  the tray tooltip) within about a second of starting to speak, well before
+  the pause-triggered final insert — that gap is the perceived-latency
+  win, even though wall-clock time to the *final* insert is the same either
+  way. `sentence` mode is what to reach for if you want the final text
+  itself to land earlier.
+- **Push-to-talk is unaffected**, same as `sentence` mode above: a
+  non-`off` `LOCAL_FLOW_STREAMING` with `LOCAL_FLOW_MODE=push-to-talk`
+  prints the same one-line notice and behaves exactly as if streaming were
+  off.
 
 ## Tray app
 

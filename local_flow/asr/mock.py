@@ -32,3 +32,42 @@ class MockTranscriber(Transcriber):
         index = min(len(self.calls), len(self._texts) - 1) if self._texts else 0
         self.calls.append((len(pcm), sample_rate))
         return self._texts[index] if self._texts else ""
+
+
+class MockStream:
+    """Scripted :class:`~local_flow.asr.streaming.TranscriberStream` for tests.
+
+    Returns the queued ``partials`` one at a time, one per ``frames_per_partial``
+    fed frames (default: every frame) -- a stand-in for "one per `interval_ms`
+    worth of new audio" that doesn't need real audio content or timing to
+    drive from a test. ``finish()`` returns the last scripted partial (the
+    "full-buffer" final text); ``reset()`` drops all state.
+    """
+
+    def __init__(self, partials: Sequence[str], frames_per_partial: int = 1) -> None:
+        self._partials = list(partials)
+        self._frames_per_partial = max(1, frames_per_partial)
+        self.fed: list[bytes] = []
+        self._frame_count = 0
+        self._index = 0
+
+    def feed(self, frame: bytes) -> str | None:
+        self.fed.append(frame)
+        self._frame_count += 1
+        if self._frame_count % self._frames_per_partial != 0:
+            return None
+        if self._index >= len(self._partials):
+            return None
+        partial = self._partials[self._index]
+        self._index += 1
+        return partial
+
+    def finish(self) -> str:
+        text = self._partials[-1] if self._partials else ""
+        self.reset()
+        return text
+
+    def reset(self) -> None:
+        self.fed = []
+        self._frame_count = 0
+        self._index = 0

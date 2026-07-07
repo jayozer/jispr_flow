@@ -22,12 +22,14 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 
 from local_flow import __version__
+from local_flow.asr.streaming import TranscriberStream
 from local_flow.config import Config, load_config
 from local_flow.errors import ConfigError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
 
 if TYPE_CHECKING:
+    from local_flow.asr.base import Transcriber
     from local_flow.pipeline import DictationPipeline
 
 
@@ -444,6 +446,39 @@ def _interruptible(
         yield frame
 
 
+def _build_preview_stream(transcriber: Transcriber, sample_rate: int) -> TranscriberStream:
+    """Build the :class:`TranscriberStream` used for ``streaming="live-preview"``.
+
+    A standalone module-level function (rather than inlining ``WindowedStream``
+    construction in ``_run_loop``) so tests can monkeypatch
+    ``local_flow.app._build_preview_stream`` to inject a
+    :class:`~local_flow.asr.mock.MockStream` without a real ASR model.
+    """
+    from local_flow.asr.streaming import WindowedStream
+
+    return WindowedStream(transcriber, sample_rate)
+
+
+def _with_preview(
+    frames: Iterable[bytes], stream: TranscriberStream, reporter: StatusReporter
+) -> Iterator[bytes]:
+    """Tee mic frames through ``stream`` for a live rough-text preview.
+
+    Every frame is fed to ``stream`` and then yielded through unchanged, so
+    ``segment_stream`` downstream sees exactly the same audio as without
+    preview. Whenever ``stream.feed()`` returns a re-transcribed partial,
+    ``reporter.notify("preview", partial)`` fires. Preview text is
+    display-only: the utterance's final, inserted text always comes from the
+    normal per-segment ``transcriber.transcribe()`` call in
+    ``_handle_utterance`` / ``DictationPipeline``, never from this stream.
+    """
+    for frame in frames:
+        partial = stream.feed(frame)
+        if partial is not None:
+            reporter.notify("preview", partial)
+        yield frame
+
+
 def _run_loop(
     config: Config,
     mode: str,
@@ -473,9 +508,23 @@ def _run_loop(
                 if config.streaming == "sentence"
                 else config.vad_silence_ms
             )
+            # `_interruptible` wraps the raw mic frames first (closest to the
+            # source), and `_with_preview` -- when live-preview is on -- wraps
+            # *that*, not the other way around. This makes `_interruptible`
+            # effectively the outermost gate: once `stop_event` fires, it
+            # stops yielding frames, which ends `_with_preview`'s `for frame
+            # in frames` loop too, so Stop cuts the live preview within one
+            # frame exactly like it does the segmenter.
+            frame_source: Iterable[bytes] = _interruptible(
+                source.frames(config.vad_frame_ms), stop_event
+            )
+            preview_stream: TranscriberStream | None = None
+            if config.streaming == "live-preview":
+                preview_stream = _build_preview_stream(pipeline.transcriber, config.sample_rate)
+                frame_source = _with_preview(frame_source, preview_stream, reporter)
             for i, segment in enumerate(
                 segment_stream(
-                    _interruptible(source.frames(config.vad_frame_ms), stop_event),
+                    frame_source,
                     vad,
                     config.sample_rate,
                     frame_ms=config.vad_frame_ms,
@@ -491,6 +540,16 @@ def _run_loop(
                     # silent for "recording", so CLI output is unaffected.
                     reporter.notify("recording")
                 _handle_utterance(pipeline, reporter, segment, config.sample_rate)
+                if preview_stream is not None:
+                    # `segment_stream` only reveals an utterance boundary by
+                    # yielding it, and by then trailing silence frames (used
+                    # to *detect* that boundary) -- and possibly a few frames
+                    # of the next utterance -- have already been fed into
+                    # `preview_stream`. Resetting here is a best-effort
+                    # boundary, not an exact one; acceptable because preview
+                    # is display-only and never affects the transcribed or
+                    # inserted text.
+                    preview_stream.reset()
         else:
             if config.streaming != "off":
                 # Streaming (sentence-chunked insertion / live preview) only
