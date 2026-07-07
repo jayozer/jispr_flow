@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 from local_flow import __version__
+from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
 from local_flow.config import Config, load_config
 from local_flow.errors import ConfigError, LocalFlowError
@@ -37,7 +38,6 @@ from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
 
 if TYPE_CHECKING:
-    from local_flow.asr.base import Transcriber
     from local_flow.audio.capture import AudioSource
     from local_flow.audio.recovery import PendingAudioStore
     from local_flow.audio.vad import VoiceActivityDetector
@@ -130,6 +130,24 @@ def _build_transcriber(config: Config):
         compute_type=config.asr_compute_type,
         language=config.asr_language,
     )
+
+
+class _NullTranscriber(Transcriber):
+    """A transcriber for text-only pipelines that must never transcribe.
+
+    ``history --retry`` reprocesses an already-saved transcript through
+    :meth:`DictationPipeline.process_transcript`, which never touches the
+    transcriber -- so building a real (model-loading) one just to satisfy the
+    constructor would make retry fail on an unrelated ASR setup error
+    (missing model or ``asr`` extra). This null object stands in for it and
+    raises loudly if anything ever routes audio through such a pipeline.
+    """
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+        raise RuntimeError(
+            "text-only pipeline has no transcriber (this pipeline was built for "
+            "`history --retry`, which only reprocesses saved text)"
+        )
 
 
 def _build_vad(config: Config):
@@ -259,7 +277,14 @@ def _build_field_text(config: Config):
     return create_field_text_provider()
 
 
-def _build_pipeline(config: Config, chat_client, sink):
+def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber | None = None):
+    """Wire a :class:`DictationPipeline` from ``config``.
+
+    ``transcriber`` defaults to :func:`_build_transcriber` (the real,
+    model-loading backend) so live/file paths are unchanged; text-only
+    callers (see :func:`_build_text_pipeline`) pass a :class:`_NullTranscriber`
+    to avoid loading ASR they never use.
+    """
     from local_flow.commands.command_mode import CommandMode
     from local_flow.pipeline import DictationPipeline
     from local_flow.polish.polisher import TranscriptPolisher
@@ -284,7 +309,7 @@ def _build_pipeline(config: Config, chat_client, sink):
     history = _build_history_store(config) if config.history_enabled else None
     auto_transform_prompt = _resolve_auto_transform_prompt(config, store)
     return DictationPipeline(
-        transcriber=_build_transcriber(config),
+        transcriber=transcriber if transcriber is not None else _build_transcriber(config),
         polisher=polisher,
         store=store,
         sink=sink,
@@ -294,6 +319,21 @@ def _build_pipeline(config: Config, chat_client, sink):
         auto_transform_prompt=auto_transform_prompt,
         field_text=_build_field_text(config),
     )
+
+
+def _build_text_pipeline(config: Config, *, transcriber: Transcriber | None = None):
+    """Build a pipeline for the text-only / file-only commands.
+
+    Everything ``run`` builds *except* the live audio source and VAD -- so
+    ``history --retry`` and ``recover`` don't enumerate a microphone they
+    don't need (a missing/denied mic, or recovering on another machine, would
+    otherwise abort before any saved data is touched). ``recover`` genuinely
+    transcribes saved WAVs, so it takes the default (real) transcriber;
+    ``history --retry`` passes a :class:`_NullTranscriber`.
+    """
+    chat_client = _build_chat_client(config)
+    sink = _build_sink(config)
+    return _build_pipeline(config, chat_client, sink, transcriber=transcriber)
 
 
 def _resolve_auto_transform_prompt(
@@ -697,9 +737,10 @@ def _cmd_history(args: argparse.Namespace, config: Config) -> int:
 
     if args.retry is not None:
         record = _resolve_history_record(store, args.retry)
-        chat_client = _build_chat_client(config)
-        sink = _build_sink(config)
-        pipeline = _build_pipeline(config, chat_client, sink)
+        # Text-only: `process_transcript` never transcribes, so build with a
+        # null transcriber -- retrying saved text must not depend on a working
+        # ASR model/extra.
+        pipeline = _build_text_pipeline(config, transcriber=_NullTranscriber())
         result = pipeline.process_transcript(record.rough)
         print(f"retried record #{args.retry}: {result.final!r}")
         return 0
@@ -1861,7 +1902,10 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
         return 0
 
     try:
-        pipeline = _build_run_dependencies(config).pipeline
+        # File-only: recover reads saved WAVs, so it needs ASR + insertion but
+        # NOT a live audio source -- don't enumerate a mic that may be absent,
+        # unplugged, or permission-denied (e.g. recovering on another machine).
+        pipeline = _build_text_pipeline(config)
     except LocalFlowError as exc:
         return _fail(exc)
 
