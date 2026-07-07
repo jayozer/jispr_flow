@@ -46,6 +46,21 @@ plan gating, and banking-app auto-pause are explicit non-goals.
 - [x] **E13 — Scratchpad** — floating always-on-top notepad (markdown files in your data dir), hotkey toggle, dictate straight into it *(window = `pad --window`, separate process from `run`; live window checks manual)*
 - [x] **E10 — Context-aware dictation** — reads the text already in the focused field (macOS AX; Windows UIA ships as a documented stub) so polish continues sentences, matches tone, and spells nearby names correctly *(hardest platform work — last)*
 
+## Backlog (post-1.0, from the final whole-branch review)
+
+- [ ] Honor `stop_event` in `_run_loop`'s push-to-talk branch (closing `pad --window --with-dictation` burns the 5s join timeout)
+- [ ] Voice-command recordings: apply `normalize_audio` + `pending_store`; honor `pad_active` on the no-selection fallback
+- [ ] Re-enforce dictionary on `auto_transform` output (asymmetry with the voice-command path)
+- [ ] Validate `mode` / `vad_backend` / `asr_backend` values at config load (typos currently fall back silently)
+- [ ] Allow an empty env var to override a TOML value back to `""`; skip `.env` comment-stripping for quoted values
+- [ ] Dispatcher head-of-line blocking: "busy" feedback when a press queues behind utterance processing
+- [ ] Format mic open-failure inside the record thread as `error:/hint:` instead of a raw traceback
+- [ ] `learn`: contraction stopwords ("I'm"); disabled-history notice; duplicate-branch test
+- [ ] Docs staleness cluster: personalization-file inventories, "LM Studio only for polish and command mode", starred-terms/usage-ranking docs, stale code comments, `LOCAL_FLOW_CONFIG` mention
+- [ ] Manual-checklist gaps: streaming modes, cleanup levels, `history --reinsert-raw/--retry`, `learn`
+- [ ] Test gaps: `transcribe --copy` failure path; asr hint assertion ("multilingual")
+- [ ] Hardening nice-to-haves: `NoteStore.write` tmp+rename; Fn-tap self-PID guard on cancel keyDown; `classify_win32_event` extraction; `HistoryStore` rotation without full re-read; `app_styles.json` hot-reload; `run_command` term-usage stats; mic open-failure fallback; chord hotkeys (stretch)
+
 ## Already shipped (MVP)
 
 - [x] Push-to-talk (F9) and hands-free VAD dictation
