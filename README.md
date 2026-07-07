@@ -180,6 +180,8 @@ uv run local-flow history --reinsert-raw 1   # undo a bad AI edit: re-insert rec
 uv run local-flow history --retry 1       # redo polish+insert for record #1 (fresh LLM call)
 uv run local-flow learn                   # mine history for candidate dictionary terms
 uv run local-flow learn --add 1 2         # add suggestions #1 and #2 to the dictionary
+uv run local-flow stats                   # local-only insights: words, streaks, top apps
+uv run local-flow stats --since all       # same, over your entire history
 uv run local-flow tray                    # menu-bar app (see "Tray app" below)
 ```
 
@@ -224,6 +226,67 @@ configured but never actually contributed to that dictation's polish (down,
 timed out, or otherwise skipped) — except at `LOCAL_FLOW_CLEANUP_LEVEL=none`,
 where the LLM is never called by design and skipping it isn't a failure.
 `--retry` is the fix for a `failed` record once LM Studio is back up.
+
+### Personal insights (`local-flow stats`)
+
+`local-flow stats` turns your local `history.jsonl` into a purely local
+report -- nothing here ever leaves your machine, and no history means an
+empty (friendly) report, not an error.
+
+```bash
+uv run local-flow stats               # last 30 days (the default)
+uv run local-flow stats --since 7d    # last 7 days
+uv run local-flow stats --since all   # every record ever stored
+```
+
+```
+local-flow stats -- since 30d
+  total dictations           : 42
+  total words                : 3108
+  words per minute           : 118.4
+  cleaned words              : 96
+  smart replacements applied : 12
+  failed (LM Studio skipped) : 0
+  top apps                   : Slack (18), VS Code (11), (unknown) (5)
+  current streak             : 4 day(s)
+  longest streak             : 9 day(s)
+
+last 8 weeks:
+Mon ......##
+Tue ......##
+Wed ......#.
+...
+```
+
+Notes on the numbers:
+
+- **words per minute** is `total words / (total recorded duration / 60)`;
+  `0.0` when no record in the window has a nonzero duration.
+- **cleaned words** is how many words shorter your final text is than the
+  rough transcript, summed per record and never negative per record (a
+  record where the final text got *longer* contributes `0`, not a penalty).
+- **smart replacements applied** is honestly labeled: it's a count of
+  substitutions your dictionary/rules performed, including ones where the
+  replacement text was already correct -- it is **not** a count of words
+  that were wrong and got fixed. Read it as "how much personalization fired,"
+  not "how many mistakes were caught."
+- **top apps** shows the 5 most-dictated-into apps by count; an empty app
+  name (context styles off, or an app that didn't report one) is bucketed as
+  `(unknown)`.
+- **current streak** counts consecutive active days ending today OR
+  yesterday -- dictating yesterday but not yet today still shows a live
+  streak; it only resets to `0` once a full calendar day passes with zero
+  dictations (today *and* yesterday both empty). **longest streak** is the
+  longest run found within the records the current `--since` window
+  includes -- pass `--since all` for a true all-time longest streak, since a
+  narrower window naturally can't see runs before it.
+- A record whose timestamp can't be parsed is excluded from the report
+  entirely (every field, not just the ones that need a date) rather than
+  being arbitrarily counted in one window or another; if any were skipped
+  this way, a one-line note says how many.
+- The heatmap under "last 8 weeks" is a plain-text activity grid: one row
+  per weekday (`Mon`..`Sun`), one column per week (oldest first, this week
+  last), `#` for a day with >=1 dictation and `.` otherwise.
 
 ### Crash-safe audio recovery
 
@@ -825,6 +888,10 @@ Setup wizard (`uv run local-flow setup` on a machine without a config yet):
 29. `LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run` → every
     dictation lands pre-polished by the named transform, on top of the
     normal cleanup level.
+30. `uv run local-flow stats` → totals, streak, and heatmap print for your
+    real history; `--since 7d`/`--since all` narrow/widen the window, and an
+    empty store (or empty window) prints a friendly message instead of
+    zeros.
 
 ## Development
 

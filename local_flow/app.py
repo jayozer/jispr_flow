@@ -11,6 +11,7 @@ Subcommands:
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
 - ``history`` list/search/clear the local dictation history
 - ``learn``   mine history for candidate dictionary terms, optionally add them
+- ``stats``   local-only personal insights: words, streaks, top apps
 - ``tray``    menu-bar app with live states + style/language quick-switch
 - ``setup``   interactive onboarding wizard that writes a validated config
 """
@@ -23,7 +24,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -736,6 +737,135 @@ def _cmd_learn(args: argparse.Namespace, config: Config) -> int:
             print(f"added '{term}' to dictionary")
         else:
             print(f"'{term}' already in dictionary")
+    return 0
+
+
+def _parse_history_timestamp(raw: str) -> datetime | None:
+    """Parse a stored history timestamp, tolerating a trailing ``Z``.
+
+    Same tolerant idiom as ``_display_timestamp`` (and
+    ``local_flow.history.store._parse_timestamp`` /
+    ``local_flow.insights.stats._parse_timestamp``) -- duplicated rather
+    than imported, consistent with how those already each independently
+    re-implement it. Used by ``_cmd_stats`` for the ``--since`` window
+    cutoff; a naive value is treated as UTC, matching how every timestamp in
+    this project is generated (see ``HistoryStore.append_new``).
+    """
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _parse_since(raw: str) -> timedelta | None:
+    """Parse ``stats --since``'s ``Nd`` / ``all`` grammar into a lookback
+    window. ``None`` means ``all`` -- no cutoff, subject only to the
+    unparseable-timestamp exclusion ``_cmd_stats`` always applies.
+
+    Anything else must be a positive integer immediately followed by ``d``
+    (days); anything that doesn't match fails fast with a hint rather than
+    silently falling back to ``all`` or ``30d``.
+    """
+    if raw == "all":
+        return None
+    digits = raw[:-1]
+    if raw.endswith("d") and digits.isdigit() and int(digits) > 0:
+        return timedelta(days=int(digits))
+    raise LocalFlowError(
+        f"invalid --since value {raw!r}.",
+        hint="Use e.g. `7d`, `30d` (the default), or `all`.",
+    )
+
+
+def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
+    """``local-flow stats``: a purely local personal-insights report.
+
+    Mirrors ``_cmd_history``'s "history disabled" notice (stats reads the
+    same store; a disabled history just means there's nothing NEW to report
+    on, not that the command itself stops working). ``now`` is read once,
+    right here, at the CLI boundary -- ``compute_stats``/``render_heatmap``
+    themselves never touch the wall clock (see
+    ``local_flow.insights.stats``).
+
+    ``--since`` (``Nd``/``all``, see ``_parse_since``) filters records by
+    timestamp *before* they ever reach ``compute_stats``. A record whose
+    timestamp fails to parse is excluded from the report entirely (matching
+    ``compute_stats``'s own "excluded everywhere" rule) rather than being
+    arbitrarily included in one window or another; if any were skipped this
+    way, a one-line note says how many.
+    """
+    from local_flow.insights.stats import compute_stats, render_heatmap
+
+    store = _build_history_store(config)
+    if not config.history_enabled:
+        print(
+            "note: history recording is currently disabled "
+            "(LOCAL_FLOW_HISTORY_ENABLED=false); showing existing records, if any."
+        )
+
+    all_records = list(store.all())
+    if not all_records:
+        print(f"no dictation history yet (file: {store.path})")
+        return 0
+
+    cutoff = _parse_since(args.since)
+    now = datetime.now(UTC)
+    since_at = now - cutoff if cutoff is not None else None
+
+    windowed = []
+    unparseable = 0
+    for record in all_records:
+        parsed = _parse_history_timestamp(record.timestamp)
+        if parsed is None:
+            unparseable += 1
+            continue
+        if since_at is not None and parsed < since_at:
+            continue
+        windowed.append(record)
+
+    if not windowed:
+        print(
+            f"no dictations in the last {args.since} "
+            "(try `local-flow stats --since all`)."
+        )
+        if unparseable:
+            print(f"note: {unparseable} record(s) skipped (unparseable timestamp).")
+        return 0
+
+    stats = compute_stats(windowed, now)
+
+    top_apps = (
+        ", ".join(f"{app} ({count})" for app, count in stats.top_apps)
+        if stats.top_apps
+        else "(none)"
+    )
+    rows = [
+        ("total dictations", str(stats.total_dictations)),
+        ("total words", str(stats.total_words)),
+        ("words per minute", f"{stats.words_per_minute:.1f}"),
+        ("cleaned words", str(stats.cleaned_words_delta)),
+        # Honest label (see `local_flow.insights.stats.Stats.replacements`):
+        # a count of substitutions applied, not confirmed corrections.
+        ("smart replacements applied", str(stats.replacements)),
+        ("failed (LM Studio skipped)", str(stats.failed)),
+        ("top apps", top_apps),
+        ("current streak", f"{stats.current_streak} day(s)"),
+        ("longest streak", f"{stats.longest_streak} day(s)"),
+    ]
+    width = max(len(label) for label, _ in rows)
+
+    print(f"local-flow stats -- since {args.since}")
+    for label, value in rows:
+        print(f"  {label:<{width}} : {value}")
+    if unparseable:
+        print(f"  (note: {unparseable} record(s) skipped: unparseable timestamp)")
+
+    print()
+    print("last 8 weeks:")
+    print(render_heatmap(stats.active_days, now))
     return 0
 
 
@@ -1696,6 +1826,16 @@ def main(argv: list[str] | None = None) -> int:
         "--add-all", action="store_true", help="add every suggestion shown to the dictionary"
     )
 
+    stats_p = sub.add_parser(
+        "stats", help="local-only personal insights: words, streaks, top apps"
+    )
+    stats_p.add_argument(
+        "--since",
+        default="30d",
+        metavar="Nd|all",
+        help="time window: `Nd` (e.g. `7d`, `30d` -- the default) or `all`",
+    )
+
     args = parser.parse_args(argv)
     if args.command is None:
         parser.print_help()
@@ -1717,6 +1857,7 @@ def main(argv: list[str] | None = None) -> int:
         "check": _cmd_check,
         "history": _cmd_history,
         "learn": _cmd_learn,
+        "stats": _cmd_stats,
         "tray": _cmd_tray,
         "setup": _cmd_setup,
     }
