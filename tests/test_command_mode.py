@@ -62,3 +62,26 @@ class TestCommandMode:
         mode = CommandMode(MockChatClient())
         with pytest.raises(ValueError, match="instruction"):
             mode.run("   ", target_text="something")
+
+
+class TestCommandModeCallableDictionaryTerms:
+    """dictionary_terms may be a zero-arg callable, resolved fresh per run()."""
+
+    def test_terms_added_after_construction_appear_in_the_next_run(self):
+        terms = ["Alpha"]
+        llm = MockChatClient(["ok", "ok"])
+        mode = CommandMode(llm, dictionary_terms=lambda: terms)
+
+        mode.run("x", target_text="y")
+        assert "Alpha" in llm.requests[0][0]["content"]
+        assert "Bravo" not in llm.requests[0][0]["content"]
+
+        terms.append("Bravo")  # e.g. a spoken "add Bravo to the dictionary"
+        mode.run("x", target_text="y")
+        assert "Bravo" in llm.requests[1][0]["content"]
+
+    def test_plain_iterable_still_works(self):
+        llm = MockChatClient(["ok"])
+        mode = CommandMode(llm, dictionary_terms=["JiSpr Flow"])
+        mode.run("x", target_text="y")
+        assert "JiSpr Flow" in llm.requests[0][0]["content"]

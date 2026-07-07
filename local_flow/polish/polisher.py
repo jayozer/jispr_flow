@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from local_flow.context.field_text import FieldContext
 from local_flow.errors import LMStudioError
 from local_flow.llm.base import ChatClient
 from local_flow.personalization.store import PersonalizationStore
@@ -33,25 +34,93 @@ class TranscriptPolisher:
         chat_client: ChatClient | None,
         store: PersonalizationStore,
         style: str = "default",
+        level: str = "medium",
         fallback_to_rules: bool = True,
     ) -> None:
         self.chat_client = chat_client
         self.store = store
-        self.style = style
+        self._style = style
+        self._level = level
         self.fallback_to_rules = fallback_to_rules
 
-    def polish(self, rough: str) -> PolishResult:
+    @property
+    def style(self) -> str:
+        """Default style name used by :meth:`polish` when called without an
+        explicit ``style=`` override.
+
+        Settable so a caller (e.g. the tray app's Style submenu) can change
+        the active style for future utterances without rebuilding the
+        pipeline.
+        """
+        return self._style
+
+    @style.setter
+    def style(self, value: str) -> None:
+        self._style = value
+
+    @property
+    def level(self) -> str:
+        """Cleanup level used by :meth:`polish` (none|light|medium|high; see
+        ``local_flow.config.Config.cleanup_level``).
+
+        Settable so a caller can change the active cleanup level for future
+        utterances without rebuilding the pipeline, mirroring ``style`` above.
+        """
+        return self._level
+
+    @level.setter
+    def level(self, value: str) -> None:
+        self._level = value
+
+    def polish(
+        self,
+        rough: str,
+        style: str | None = None,
+        field_context: FieldContext | None = None,
+    ) -> PolishResult:
+        """Rules first, then an LLM polish pass using ``style``.
+
+        ``style`` overrides the constructor default for this one call
+        (``None`` keeps using ``self.style``); this is how per-app style
+        overrides from :class:`local_flow.context.router.ContextRouter` reach
+        the polisher without changing any other call site.
+
+        ``field_context`` (E10, see ``local_flow.context.field_text``) is the
+        focused field's existing text, best-effort and resolved once per
+        utterance by :class:`local_flow.pipeline.DictationPipeline`; ``None``
+        (the default) adds nothing to the prompt, so callers that never pass
+        it are unaffected. Forwarded straight to
+        :func:`~local_flow.polish.prompting.build_polish_messages`, which
+        only appends a continuation block when it is non-empty.
+
+        At ``level == "none"`` this returns ``rough`` untouched in both
+        ``cleaned`` and ``polished`` -- no rule-based cleanup runs and
+        ``self.chat_client`` is never called. Dictionary/snippet/dictation
+        command handling still happens downstream in
+        :class:`local_flow.pipeline.DictationPipeline` (that's
+        personalization, not cleanup).
+        """
+        if self._level == "none":
+            return PolishResult(rough=rough, cleaned=rough, polished=rough)
+
         cleaned = clean_transcript(rough)
         result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
         if not cleaned or self.chat_client is None:
             return result
 
-        style_name, style_rules = self.store.style_rules(self.style)
+        requested_style = style if style is not None else self.style
+        style_name, style_rules = self.store.style_rules(requested_style)
+        if requested_style and style_name != requested_style:
+            result.warnings.append(
+                f"style {requested_style!r} not found; using {style_name!r}"
+            )
         messages = build_polish_messages(
             cleaned,
             dictionary_terms=self.store.dictionary_terms(),
             style_name=style_name,
             style_rules=style_rules,
+            level=self._level,
+            field_context=field_context,
         )
         try:
             polished = self.chat_client.chat(messages)

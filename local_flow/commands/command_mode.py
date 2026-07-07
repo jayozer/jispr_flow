@@ -7,7 +7,7 @@ dictation transcript.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from local_flow.llm.base import ChatClient, Message
 
@@ -42,12 +42,23 @@ class CommandMode:
     def __init__(
         self,
         chat_client: ChatClient,
-        dictionary_terms: Iterable[str] = (),
+        dictionary_terms: Iterable[str] | Callable[[], list[str]] = (),
         style_rules: str = "",
     ) -> None:
+        """``dictionary_terms`` may be a static iterable, or a zero-arg callable.
+
+        Passing a callable (e.g. :meth:`PersonalizationStore.dictionary_terms`
+        as a bound method) means terms are looked up fresh on every
+        :meth:`run`, so new terms (added by voice, ``learn``, or hand-editing
+        ``dictionary.json``) reach the prompt without recreating this object.
+        """
         self.chat_client = chat_client
-        self.dictionary_terms = list(dictionary_terms)
+        self.dictionary_terms = dictionary_terms
         self.style_rules = style_rules
+
+    def _current_dictionary_terms(self) -> list[str]:
+        source = self.dictionary_terms
+        return list(source() if callable(source) else source)
 
     def run(
         self,
@@ -68,7 +79,7 @@ class CommandMode:
         messages = build_command_messages(
             instruction,
             target,
-            dictionary_terms=self.dictionary_terms,
+            dictionary_terms=self._current_dictionary_terms(),
             style_rules=self.style_rules,
         )
         return self.chat_client.chat(messages)
