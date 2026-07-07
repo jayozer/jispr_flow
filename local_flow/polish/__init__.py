@@ -6,6 +6,7 @@ from local_flow.polish.rules import (
     apply_dictation_commands,
     clean_transcript,
     enforce_dictionary,
+    enforce_dictionary_detailed,
     expand_snippets,
     remove_fillers,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "apply_dictation_commands",
     "clean_transcript",
     "enforce_dictionary",
+    "enforce_dictionary_detailed",
     "expand_snippets",
     "remove_fillers",
 ]

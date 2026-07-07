@@ -112,6 +112,95 @@ class TestPersonalizationStore:
         assert "dictionary.json" in str(excinfo.value)
 
 
+class TestDictionaryRichEntries:
+    """dictionary.json mixes legacy strings with rich {starred, uses} entries."""
+
+    def test_mixed_entries_order_starred_then_uses_then_insertion(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "dictionary.json").write_text(
+            json.dumps(
+                {
+                    "terms": [
+                        "Alpha",
+                        {"term": "Bravo", "uses": 5},
+                        {"term": "Charlie", "starred": True},
+                        {"term": "Delta", "uses": 9},
+                        {"term": "Echo", "starred": True, "uses": 2},
+                    ]
+                }
+            )
+        )
+        assert store.dictionary_terms() == ["Echo", "Charlie", "Delta", "Bravo", "Alpha"]
+
+    def test_add_dictionary_term_returns_true_then_false_on_duplicate(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        assert store.add_dictionary_term("JiSpr Flow") is True
+        assert store.add_dictionary_term("JiSpr Flow") is False
+
+    def test_add_apostrophe_variant_of_existing_term_returns_false(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        assert store.add_dictionary_term("Iva") is True
+        assert store.add_dictionary_term("Iva's") is False
+        assert store.add_dictionary_term("Iva’s") is False  # curly apostrophe too
+        assert store.dictionary_terms() == ["Iva"]
+
+    def test_add_base_term_when_apostrophe_variant_already_exists_returns_false(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        assert store.add_dictionary_term("Iva's") is True
+        assert store.add_dictionary_term("Iva") is False
+        assert store.dictionary_terms() == ["Iva's"]
+
+    def test_unknown_fields_survive_add_dictionary_term(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "dictionary.json").write_text(
+            json.dumps({"terms": [{"term": "Foo", "starred": True, "note": "custom-field"}]})
+        )
+        assert store.add_dictionary_term("Bar") is True
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        foo_entry = next(e for e in on_disk["terms"] if isinstance(e, dict) and e["term"] == "Foo")
+        assert foo_entry["note"] == "custom-field"
+        assert foo_entry["starred"] is True
+        assert "Bar" in on_disk["terms"]
+
+    def test_unknown_fields_survive_record_term_uses(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "dictionary.json").write_text(
+            json.dumps({"terms": [{"term": "Foo", "note": "custom-field"}]})
+        )
+        store.record_term_uses({"Foo": 3})
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        foo_entry = next(e for e in on_disk["terms"] if e["term"] == "Foo")
+        assert foo_entry["note"] == "custom-field"
+        assert foo_entry["uses"] == 3
+
+    def test_record_term_uses_upgrades_legacy_string_and_increments(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        store.add_dictionary_term("PostgreSQL")
+        store.record_term_uses({"PostgreSQL": 2})
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert on_disk["terms"] == [{"term": "PostgreSQL", "uses": 2}]
+
+        store.record_term_uses({"PostgreSQL": 3})
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert on_disk["terms"] == [{"term": "PostgreSQL", "uses": 5}]
+        assert store.dictionary_terms() == ["PostgreSQL"]
+
+    def test_record_term_uses_ignores_unknown_terms(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        store.add_dictionary_term("PostgreSQL")
+        store.record_term_uses({"Nonexistent": 5})
+        assert store.dictionary_terms() == ["PostgreSQL"]
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert on_disk["terms"] == ["PostgreSQL"]
+
+    def test_record_term_uses_empty_counts_is_noop(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        store.add_dictionary_term("PostgreSQL")
+        store.record_term_uses({})
+        on_disk = json.loads((tmp_path / "dictionary.json").read_text())
+        assert on_disk["terms"] == ["PostgreSQL"]
+
+
 class TestBuiltinStyles:
     def test_fresh_store_includes_email_and_chat_styles(self, tmp_path):
         store = PersonalizationStore(tmp_path)

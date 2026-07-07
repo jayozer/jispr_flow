@@ -5,6 +5,7 @@ from local_flow.polish.rules import (
     apply_dictation_commands,
     clean_transcript,
     enforce_dictionary,
+    enforce_dictionary_detailed,
     expand_snippets,
     remove_fillers,
 )
@@ -126,6 +127,28 @@ class TestDictionaryReplacementCount:
         )
         assert text == "PostgreSQL and JiSpr Flow"
         assert count == 2
+
+
+class TestDictionaryDetailedCounts:
+    def test_per_term_counts(self):
+        text, counts = enforce_dictionary_detailed(
+            "postgresql and postgresql again, plus jispr flow",
+            ["PostgreSQL", "JiSpr Flow"],
+        )
+        assert text == "PostgreSQL and PostgreSQL again, plus JiSpr Flow"
+        assert counts == {"PostgreSQL": 2, "JiSpr Flow": 1}
+
+    def test_terms_with_zero_matches_are_omitted(self):
+        _text, counts = enforce_dictionary_detailed("nothing here", ["PostgreSQL"])
+        assert counts == {}
+
+    def test_wrapper_sum_matches_detailed_total(self):
+        sample = "postgresql and jispr flow and postgresql"
+        terms = ["PostgreSQL", "JiSpr Flow"]
+        text_detailed, counts = enforce_dictionary_detailed(sample, terms)
+        text_wrapper, total = enforce_dictionary(sample, terms)
+        assert text_detailed == text_wrapper
+        assert total == sum(counts.values())
 
 
 class TestSnippetReplacementCount:

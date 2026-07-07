@@ -15,6 +15,7 @@ from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.polish.rules import (
     apply_dictation_commands,
     enforce_dictionary,
+    enforce_dictionary_detailed,
     expand_snippets,
 )
 
@@ -76,7 +77,10 @@ class DictationPipeline:
         ctx = self.router.resolve() if self.router is not None else ResolvedContext()
 
         polish = self.polisher.polish(rough, style=ctx.style)
-        text, dict_count = enforce_dictionary(polish.polished, self.store.dictionary_terms())
+        text, dict_counts = enforce_dictionary_detailed(
+            polish.polished, self.store.dictionary_terms()
+        )
+        dict_count = sum(dict_counts.values())
         text, snippet_count = expand_snippets(text, self.store.snippets())
         text, actions = apply_dictation_commands(text)
 
@@ -98,6 +102,9 @@ class DictationPipeline:
             result.inserted = True
             if text:
                 self.last_transcript = text
+
+        if dict_counts and self.store is not None:
+            self.store.record_term_uses(dict_counts)
 
         if rough and self.history is not None:
             self.history.append_new(

@@ -103,6 +103,27 @@ def clean_transcript(text: str, fillers: Iterable[str] = FILLER_WORDS) -> str:
     return remove_fillers(apply_backtracking(text), fillers)
 
 
+def enforce_dictionary_detailed(text: str, terms: Iterable[str]) -> tuple[str, dict[str, int]]:
+    """Rewrite case-insensitive matches of each term to its canonical form.
+
+    Multi-word terms tolerate flexible whitespace, so ``"jispr   flow"``
+    still becomes ``"JiSpr Flow"``. Matches respect word boundaries.
+
+    Returns ``(text, counts)`` where ``counts`` maps each term to the number
+    of substitutions performed for it; terms with zero matches are omitted.
+    """
+    counts: dict[str, int] = {}
+    for term in terms:
+        stripped = term.strip()
+        if not stripped:
+            continue
+        escaped = re.escape(stripped).replace(r"\ ", r"\s+")
+        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", stripped, text)
+        if count:
+            counts[stripped] = counts.get(stripped, 0) + count
+    return text, counts
+
+
 def enforce_dictionary(text: str, terms: Iterable[str]) -> tuple[str, int]:
     """Rewrite case-insensitive matches of each term to its canonical form.
 
@@ -110,16 +131,11 @@ def enforce_dictionary(text: str, terms: Iterable[str]) -> tuple[str, int]:
     still becomes ``"JiSpr Flow"``. Matches respect word boundaries.
 
     Returns ``(text, count)`` where ``count`` is the number of substitutions
-    performed across all terms.
+    performed across all terms. Thin wrapper around
+    :func:`enforce_dictionary_detailed` for callers that only need the total.
     """
-    total = 0
-    for term in terms:
-        if not term.strip():
-            continue
-        escaped = re.escape(term.strip()).replace(r"\ ", r"\s+")
-        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", term.strip(), text)
-        total += count
-    return text, total
+    text, counts = enforce_dictionary_detailed(text, terms)
+    return text, sum(counts.values())
 
 
 def expand_snippets(text: str, snippets: Mapping[str, str]) -> tuple[str, int]:

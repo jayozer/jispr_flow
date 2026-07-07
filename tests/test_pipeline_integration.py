@@ -3,6 +3,8 @@
 No microphone, GPU, downloaded model, or running LM Studio is needed.
 """
 
+import json
+
 import pytest
 
 from local_flow.asr.mock import MockTranscriber
@@ -265,3 +267,31 @@ class TestContextRoutingThroughPipeline:
 
         assert sink.events == [("insert", "ok")]
         assert history.recent()[0].app == ""
+
+
+class TestDictionaryUsageTracking:
+    """process_transcript records per-term usage back into the dictionary."""
+
+    def test_two_enforced_terms_update_uses_in_dictionary_json(self, store, tmp_path):
+        llm = MockChatClient(
+            ["The JiSpr Flow rollout uses PostgreSQL and PostgreSQL again."]
+        )
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink)
+
+        pipeline.process_transcript("some rough words")
+
+        on_disk = json.loads((tmp_path / "data" / "dictionary.json").read_text())
+        entries = {e["term"]: e for e in on_disk["terms"] if isinstance(e, dict)}
+        assert entries["JiSpr Flow"]["uses"] == 1
+        assert entries["PostgreSQL"]["uses"] == 2
+
+    def test_no_dictionary_terms_matched_leaves_dictionary_untouched(self, store, tmp_path):
+        llm = MockChatClient(["nothing special here"])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, llm, sink)
+
+        pipeline.process_transcript("some rough words")
+
+        on_disk = json.loads((tmp_path / "data" / "dictionary.json").read_text())
+        assert on_disk["terms"] == ["JiSpr Flow", "PostgreSQL"]
