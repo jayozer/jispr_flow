@@ -34,7 +34,10 @@ class TestSelectionCapture:
         assert sleeps[-1] == 0.15  # the settle sleep before restoring
 
     def test_nothing_selected_times_out_to_empty_string(self):
-        backend = MockSelectionBackend(clipboard="", selection_text=None)
+        # Non-empty starting clipboard: capture() clears it to "" before the
+        # copy chord (see its docstring), so on a "nothing selected" timeout
+        # the caller's restore() must be what brings "precious" back.
+        backend = MockSelectionBackend(clipboard="precious", selection_text=None)
         sleeps = []
         capture = SelectionCapture(
             backend, poll_timeout_s=0.1, poll_interval_s=0.02, sleep=sleeps.append
@@ -45,6 +48,10 @@ class TestSelectionCapture:
         assert result == ""
         assert sleeps  # it did poll (not zero-iteration)
         assert all(s == 0.02 for s in sleeps)
+        assert backend.clipboard == ""  # cleared, not yet restored
+
+        capture.restore()
+        assert backend.clipboard == "precious"
 
     def test_capture_does_not_sleep_when_selection_appears_immediately(self):
         backend = MockSelectionBackend(clipboard="x", selection_text="fast text")
@@ -63,6 +70,40 @@ class TestSelectionCapture:
         # _saved_clipboard currently holds (constructor default "").
         capture.replace("hello")
         assert backend.events == ["write:hello", "paste", "write:"]
+
+    def test_restore_is_noop_before_capture(self):
+        backend = MockSelectionBackend(clipboard="untouched")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+
+        capture.restore()
+
+        assert backend.clipboard == "untouched"
+        assert backend.events == []  # no write_clipboard call at all
+
+    def test_restore_restores_after_capture(self):
+        backend = MockSelectionBackend(clipboard="precious", selection_text="selected text")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+
+        capture.capture()
+        assert backend.clipboard == "selected text"  # clipboard now holds the copy
+
+        capture.restore()
+
+        assert backend.clipboard == "precious"
+
+    def test_restore_is_noop_after_replace(self):
+        backend = MockSelectionBackend(clipboard="precious", selection_text="selected text")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+
+        capture.capture()
+        capture.replace("NEW TEXT")
+        assert backend.clipboard == "precious"
+        events_after_replace = list(backend.events)
+
+        capture.restore()  # stray extra call: must not write again
+
+        assert backend.clipboard == "precious"
+        assert backend.events == events_after_replace
 
 
 class TestBuildTransformMessages:
@@ -212,7 +253,11 @@ class TestTransformCli:
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         import local_flow.app as app_module
 
-        backend = MockSelectionBackend(clipboard="", selection_text=None)
+        # Non-empty starting clipboard: capture() has already cleared it to
+        # "" by the time the "nothing selected" error is raised, so the
+        # original content must come back via capture.restore(), not survive
+        # by accident.
+        backend = MockSelectionBackend(clipboard="precious", selection_text=None)
         monkeypatch.setattr(
             app_module,
             "_build_selection_capture",
@@ -227,3 +272,37 @@ class TestTransformCli:
         assert code == 1
         err = capsys.readouterr().err
         assert "No text is selected" in err
+        assert backend.clipboard == "precious"
+
+    def test_selection_transform_failure_restores_clipboard(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """A successful capture followed by a failing transform (e.g. LM
+        Studio unreachable) must still restore the original clipboard, not
+        leave the copied selection behind -- and the error must still
+        propagate as a CLI failure.
+        """
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        import local_flow.app as app_module
+
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted text")
+        monkeypatch.setattr(
+            app_module,
+            "_build_selection_capture",
+            lambda config: SelectionCapture(backend, sleep=lambda s: None),
+        )
+
+        class FailingClient(MockChatClient):
+            def chat(self, messages, *, temperature=0.2, max_tokens=None):
+                raise LMStudioConnectionError("LM Studio is unreachable")
+
+        monkeypatch.setattr(
+            app_module, "_build_chat_client", lambda config: FailingClient()
+        )
+
+        code = main(["transform", "Polish", "--selection"])
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "unreachable" in err
+        assert backend.clipboard == "precious"

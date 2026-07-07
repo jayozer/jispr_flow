@@ -128,6 +128,17 @@ class SelectionCapture:
     transform operation: ``capture()`` remembers the clipboard as it was
     *before* capture started, and ``replace()`` restores exactly that saved
     value afterward.
+
+    Contract for callers (the ``transform --selection`` CLI branch and, per
+    the Phase 6 plan, the hotkey callback): every call to ``capture()`` must
+    be followed by exactly one of ``replace()`` or ``restore()`` before
+    control leaves the caller, even on an exception -- ``capture()`` has
+    already overwritten the OS clipboard by the time it returns (see its
+    docstring), so skipping both would leave the user's original clipboard
+    content lost. Wrap the capture in a ``try/except`` (or ``finally``) that
+    calls ``restore()`` on any failure path; ``replace()`` already restores on
+    the happy path. Both methods are idempotent with respect to each other:
+    once one of them runs, a stray extra call to ``restore()`` is a no-op.
     """
 
     def __init__(
@@ -142,6 +153,7 @@ class SelectionCapture:
         self.poll_interval_s = poll_interval_s
         self._sleep = sleep
         self._saved_clipboard = ""
+        self._captured = False
 
     def capture(self) -> str:
         """Return the current selection's text, or ``""`` when nothing is selected.
@@ -166,6 +178,7 @@ class SelectionCapture:
         harmless behavior.
         """
         self._saved_clipboard = self.backend.read_clipboard()
+        self._captured = True
         self.backend.write_clipboard("")
         self.backend.send_copy()
 
@@ -192,3 +205,19 @@ class SelectionCapture:
         self.backend.send_paste()
         self._sleep(0.15)
         self.backend.write_clipboard(self._saved_clipboard)
+        self._captured = False
+
+    def restore(self) -> None:
+        """Write the saved clipboard back, if ``capture()`` has run since the
+        last ``replace()``/``restore()``.
+
+        A no-op when nothing has been captured (before the first
+        ``capture()``, or after a ``replace()``/``restore()`` already ran) --
+        this is what makes it safe for callers to call unconditionally on any
+        non-happy-path exit from a capture, without tracking whether a
+        capture actually happened.
+        """
+        if not self._captured:
+            return
+        self.backend.write_clipboard(self._saved_clipboard)
+        self._captured = False

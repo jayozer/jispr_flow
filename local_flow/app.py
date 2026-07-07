@@ -380,15 +380,25 @@ def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
     if selection_given:
         capture = _build_selection_capture(config)
         selected = capture.capture()
-        if not selected:
-            raise LocalFlowError(
-                "No text is selected.",
-                hint="Highlight some text in the frontmost app before running "
-                "`local-flow transform ... --selection`.",
-            )
-        chat_client = _build_chat_client(config)
-        result = apply_transform(chat_client, prompt, selected)
-        capture.replace(result)
+        try:
+            if not selected:
+                raise LocalFlowError(
+                    "No text is selected.",
+                    hint="Highlight some text in the frontmost app before running "
+                    "`local-flow transform ... --selection`.",
+                )
+            chat_client = _build_chat_client(config)
+            result = apply_transform(chat_client, prompt, selected)
+            capture.replace(result)
+        except BaseException:
+            # capture() has already overwritten the clipboard by this point
+            # (see SelectionCapture.capture's docstring); on any failure --
+            # "nothing selected", LM Studio unreachable, or anything else --
+            # restore the user's original clipboard before the exception
+            # propagates. A no-op once replace() above has already restored
+            # (SelectionCapture tracks that internally).
+            capture.restore()
+            raise
         print(f"replaced selection with the {args.name!r} transform.", file=sys.stderr)
         return 0
 
