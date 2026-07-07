@@ -172,6 +172,20 @@ class NoteStore:
         dictation, so a plain overwrite (no blank-line separator logic) is
         the right operation. Creates the notes directory lazily; validates
         ``name`` first, same as every other method here.
+
+        Concurrency note (mirrors :meth:`append`'s): no cross-process
+        locking here either, and this is a stronger clobber risk than
+        ``append``'s -- a whole-buffer overwrite has no way to merge with
+        whatever else is on disk, so the last writer simply wins, full
+        stop. ``ScratchpadWindow`` is the one caller today, and it guards
+        the gap itself rather than pushing the guard down here: before
+        calling this, it checks the note file's mtime against the mtime it
+        last loaded/saved (``_should_autosave``), and skips the write
+        entirely if they've diverged (an external append landed in
+        between) rather than silently destroying that write. A caller that
+        skips that check -- e.g. a future non-window caller of this method
+        -- gets no such protection; it is purely a `NoteStore.write`-level
+        "whole buffer overwrite, last writer wins" primitive.
         """
         target = name if name is not None else self.active_note()
         _validate_name(target)

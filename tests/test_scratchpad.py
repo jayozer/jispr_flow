@@ -8,7 +8,7 @@ from local_flow.app import main
 from local_flow.errors import LocalFlowError
 from local_flow.scratchpad.sink import ScratchpadSink
 from local_flow.scratchpad.store import NoteStore
-from local_flow.scratchpad.window import ScratchpadWindow
+from local_flow.scratchpad.window import ScratchpadWindow, _should_autosave
 
 
 class TestNoteStoreBasics:
@@ -477,3 +477,38 @@ class TestScratchpadWindowConstruction:
         assert "pad --show" in exc_info.value.message
         assert exc_info.value.hint
         assert "python3-tk" in exc_info.value.hint or "python-tk" in exc_info.value.hint
+
+
+class TestShouldAutosave:
+    """`_should_autosave` (pure helper): `ScratchpadWindow._autosave`'s
+    conflict guard against clobbering an external write (e.g. the dictate-
+    to-pad hotkey's `append`, or another terminal's `pad --append`) that
+    landed while the window had unsaved edits in flight. See the class
+    docstring's third sync rule; the actual title/UI change on a conflict is
+    manual-verify only (needs a real `Tk` instance), so only the decision
+    itself -- do the mtimes still match? -- is unit-tested here.
+    """
+
+    def test_matching_mtimes_is_safe_to_save(self):
+        assert _should_autosave(100.0, 100.0) is True
+
+    def test_both_none_is_safe_to_save(self):
+        # A brand-new note that has never been loaded or saved from disk:
+        # nothing has written to it, so there is nothing to conflict with.
+        assert _should_autosave(None, None) is True
+
+    def test_mismatched_mtimes_blocks_save(self):
+        # The file's mtime moved since our last load/save -- something else
+        # (an external append, the dictate-to-pad hotkey) wrote to it.
+        assert _should_autosave(200.0, 100.0) is False
+
+    def test_file_appeared_externally_since_last_known_state_blocks_save(self):
+        # We last saw no file at all (`known_mtime=None`), but one now
+        # exists on disk -- created by an external writer in the meantime.
+        assert _should_autosave(100.0, None) is False
+
+    def test_file_vanished_externally_since_last_known_state_blocks_save(self):
+        # We last saw a real file, but it's gone now (deleted externally) --
+        # still a change since our last known state, so still not safe to
+        # blindly overwrite (recreate) without the user's awareness.
+        assert _should_autosave(None, 100.0) is False

@@ -302,6 +302,91 @@ class TestRunLoopScratchpadHotkeyToggle:
         assert note_store.read(note_store.active_note()) == ""
 
 
+class TestRunLoopScratchpadHotkeyToggleMidRecording:
+    """Same end-to-end machinery as `TestRunLoopScratchpadHotkeyToggle`, but
+    the tap lands BETWEEN `on_press()` (recording started) and
+    `on_release()` (utterance processed) instead of strictly before either.
+    Pins that `finish()` reads `pad_active[0]` at the moment IT runs, not
+    whatever it was when the recording started: since `_toggle_pad` and
+    `finish` are wrapped by the very same `CallbackDispatcher` (a single
+    FIFO worker thread -- see `_toggle_pad`'s docstring), the toggle
+    (enqueued and fully processed here before `on_release()` is even called)
+    is guaranteed to have already applied by the time `finish()` runs,
+    regardless of how the tap and the press/release interleave in real
+    time.
+    """
+
+    def test_toggle_mid_recording_still_routes_that_utterance_to_pad(
+        self, tmp_path, monkeypatch
+    ):
+        normal_sink = FakeTextSink()
+        llm = MockChatClient(["mid utterance"])
+        pipeline = _pipeline(
+            tmp_path, normal_sink, llm=llm, transcriber=MockTranscriber(["mid utterance"])
+        )
+        config = _config(scratchpad_hotkey="f8")
+        reporter = FakeReporter()
+        note_store = NoteStore(tmp_path / "pad-data")
+        scratchpad_sink = ScratchpadSink(note_store)
+        done = threading.Event()
+        fire_tap = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        class FakeTapListener:
+            def __init__(self, key_name):
+                pass
+
+            def run(self, on_tap):
+                # Held back until the keyboard listener confirms the
+                # recording has actually started (below) -- pins the tap
+                # landing strictly AFTER `start()`, not before it.
+                fire_tap.wait(timeout=5)
+                on_tap()
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()  # enqueue start(): recording begins
+                assert _wait_until(
+                    lambda: any(state == "recording" for state, _d in reporter.events)
+                ), "recording never started"
+                fire_tap.set()  # let the tap fire now, mid-recording
+                assert _wait_until(
+                    lambda: any("scratchpad on" in d for _s, d in reporter.events)
+                ), "scratchpad toggle-on notification never arrived"
+                on_release()  # enqueue finish(): only now does it process
+                done.wait(timeout=5)
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", FakeTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        class _FakeSource:
+            def record_until(self, stop, frame_ms):
+                # Blocks until `finish()` (run only after the toggle has
+                # already landed) sets `stop` -- so the utterance is
+                # "captured" strictly after the toggle applied.
+                stop.wait(timeout=5)
+                return b"pcm-bytes"
+
+        _run_loop(
+            config, "push-to-talk", SignalingReporter(),
+            dependencies=RunDependencies(
+                pipeline, _FakeSource(), None, scratchpad_sink=scratchpad_sink
+            ),
+        )
+
+        assert done.wait(timeout=2)
+        assert normal_sink.events == []
+        assert note_store.read(note_store.active_note()) == "mid utterance"
+
+
 class TestRunScratchpadListenerErrorVisible:
     """An uncaught exception on the scratchpad hotkey's daemon thread is
     silently swallowed by Python; `_run_scratchpad_listener` must catch

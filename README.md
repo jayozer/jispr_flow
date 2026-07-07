@@ -278,7 +278,11 @@ keystroke), and the window polls the active note's file every 500ms to pick
 up changes made elsewhere (another terminal's `pad --append`, or the
 dictate-to-pad hotkey below) -- except while you have unsaved edits in the
 window, when that external-refresh poll is skipped so it can never clobber
-what you're mid-typing.
+what you're mid-typing. The reverse race is guarded too: if an external
+write lands on disk while you have unsaved edits, the next autosave notices
+the note's mtime moved and refuses to overwrite it, instead flipping the
+window title to a conflict notice until you copy your text out or switch
+notes -- so neither side's text is ever silently destroyed.
 
 **Two-process design, on purpose:** `--window` runs as its own blocking main
 program (like `local-flow tray`'s menu-bar icon) rather than as a thread

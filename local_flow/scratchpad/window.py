@@ -43,6 +43,21 @@ _AUTOSAVE_DEBOUNCE_MS = 1000
 _REFRESH_POLL_MS = 500
 
 
+def _should_autosave(disk_mtime: float | None, known_mtime: float | None) -> bool:
+    """Whether `_autosave` may safely overwrite the note file right now.
+
+    True only when the file's current on-disk mtime still matches
+    `known_mtime` -- the mtime this window last saw at its own most recent
+    load or save of this note. A mismatch means the file changed on disk
+    for some OTHER reason in between (an external `pad --append`, or the
+    dictate-to-pad hotkey in a separate `local-flow run` process landing an
+    utterance) -- see `_autosave`'s docstring for what happens instead of
+    clobbering it. A pure function of the two mtimes so the decision itself
+    is unit-testable without a real `Tk` instance.
+    """
+    return disk_mtime == known_mtime
+
+
 class ScratchpadWindow:
     """A small always-on-top editor over one `NoteStore`'s active note.
 
@@ -61,6 +76,17 @@ class ScratchpadWindow:
       can never clobber text the user is actively mid-edit on. Once the
       debounce fires (or the user switches notes, which flushes
       immediately), the next poll tick sees the fresh mtime and catches up.
+
+    A third rule guards the reverse race: `_autosave` itself checks the
+    note file's mtime (`_should_autosave`) before writing, and refuses to
+    overwrite when it has moved since this window's own last load/save --
+    i.e. an external append landed WHILE the buffer had unsaved edits, so
+    the "skip the poll while dirty" rule above didn't help. Rather than
+    silently destroying that external write (the old behavior), the stale
+    autosave is a no-op: the user's buffer stays in the widget untouched,
+    the external content on disk stays untouched, and the window title
+    flips to a visible conflict notice until the user switches notes (or
+    otherwise reconciles the mtimes) -- no data lost on either side.
     """
 
     def __init__(self, store: NoteStore) -> None:
@@ -149,7 +175,25 @@ class ScratchpadWindow:
         self._autosave_job = self.root.after(_AUTOSAVE_DEBOUNCE_MS, self._autosave)
 
     def _autosave(self) -> None:
+        """Write the Text widget's buffer to disk -- unless `_should_autosave`
+        says the note file changed on disk since this window last loaded or
+        saved it (see the class docstring's third sync rule). On a conflict,
+        this is a silent-to-disk, visible-in-title no-op: `self._dirty` is
+        left `True` (so `_poll_refresh` keeps refusing to reload and clobber
+        the buffer from the widget's side), nothing is written (so the
+        external content already on disk is untouched), and the window title
+        gets a conflict notice so the stall isn't invisible to the user. The
+        next edit re-arms the debounce timer as usual, so this re-checks
+        (and can resolve) the next time the user types or switches notes.
+        """
         self._autosave_job = None
+        disk_mtime = self._mtime()
+        if not _should_autosave(disk_mtime, self._note_mtime):
+            self.root.title(
+                f"local-flow scratchpad — {self._current_note} — conflict: "
+                "note changed on disk; copy your text or switch notes"
+            )
+            return
         content = self.text.get("1.0", "end-1c")
         self.store.write(content, name=self._current_note)
         self._dirty = False

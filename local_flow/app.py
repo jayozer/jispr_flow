@@ -1711,6 +1711,16 @@ def _run_loop(
                 else:
 
                     def _toggle_pad(sink=scratchpad_sink) -> None:
+                        """Flip `pad_active`. Wrapped by the very same
+                        `dispatcher` as `start`/`finish` (and enqueued the
+                        same way -- see `CallbackDispatcher.wrap`), so this
+                        is serialized against them: the toggle applies to
+                        any utterance whose `finish()` runs after the tap,
+                        deterministically, even one already mid-recording
+                        (started by an earlier `start()`) when the tap
+                        lands, since `finish()` only reads `pad_active[0]`
+                        at the moment IT executes.
+                        """
                         pad_active[0] = not pad_active[0]
                         if pad_active[0]:
                             note = sink.store.active_note()
