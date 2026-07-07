@@ -206,8 +206,17 @@ class TapListener:
     replace", unlike push-to-talk's press-to-start/release-to-stop. This
     deliberately does not subclass :class:`HotkeyListener` -- its callback
     shape (``run(on_tap)``, one zero-arg callback fired on key-down only) is
-    different from ``run(on_press, on_release, on_cancel)`` -- and needs none
-    of :class:`PushToTalkCore`'s held-state bookkeeping.
+    different from ``run(on_press, on_release, on_cancel)``.
+
+    ``held`` guards against OS key-repeat: holding the key down generates a
+    stream of press events from the OS (no matching release in between), and
+    without this guard each one would fire ``on_tap`` -- a "transform storm"
+    that fires the (slow, LLM-backed) transform repeatedly for what the user
+    experiences as a single key-hold. ``handle_release`` re-arms it, so a
+    fresh physical press-release-press cycle still fires twice. This is a
+    narrower version of :class:`PushToTalkCore`'s held-state bookkeeping
+    (only the repeat-guard, none of the press/release/cancel callback
+    triple), so it isn't reused directly here.
     """
 
     def __init__(self, key_name: str) -> None:
@@ -222,6 +231,7 @@ class TapListener:
         self.key_name = key_name
         self._target = resolve_key(keyboard, key_name)
         self._on_tap: Callable[[], None] | None = None
+        self.held = False
 
     def handle_press(self, key, injected: bool = False) -> None:
         """Process one key-press event.
@@ -233,17 +243,40 @@ class TapListener:
         events (e.g. this process's own ``TypingSink`` typing a transcript)
         must never trigger a transform, same ``injected`` guard invariant as
         every other hotkey listener.
+
+        ``on_tap`` fires only on the *first* press while the key is down --
+        see the class docstring's OS auto-repeat rationale. ``self.held``
+        tracks that, re-armed by :meth:`handle_release`.
         """
         if injected:
             return
-        if key == self._target and self._on_tap is not None:
+        if key != self._target:
+            return
+        if self.held:
+            return  # OS auto-repeat while the key is still physically down
+        self.held = True
+        if self._on_tap is not None:
             self._on_tap()
+
+    def handle_release(self, key, injected: bool = False) -> None:
+        """Re-arm the repeat guard on release of the target key.
+
+        Synthetic (``injected``) releases are ignored, same invariant as
+        ``handle_press`` -- this process's own typed output must never
+        re-arm (or otherwise affect) the tap guard.
+        """
+        if injected:
+            return
+        if key == self._target:
+            self.held = False
 
     def run(self, on_tap: Callable[[], None]) -> None:
         self._on_tap = on_tap
         keyboard = self._keyboard
         try:
-            with keyboard.Listener(on_press=self.handle_press) as listener:
+            with keyboard.Listener(
+                on_press=self.handle_press, on_release=self.handle_release
+            ) as listener:
                 listener.join()
         except Exception as exc:
             raise HotkeyBackendMissingError(

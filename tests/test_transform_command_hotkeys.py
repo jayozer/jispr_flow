@@ -5,18 +5,28 @@ routing logic and `_run_loop`'s daemon-thread wiring for both new hotkeys.
 """
 
 import threading
+import time
+
+import pytest
 
 from local_flow.app import (
     RunDependencies,
+    _build_pipeline,
     _run_command_hotkey_listener,
     _run_loop,
     _run_transform_listener,
     _run_voice_command,
+    _transform_tap_debounced,
 )
 from local_flow.asr.mock import MockTranscriber
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
-from local_flow.errors import HotkeyBackendMissingError, LMStudioConnectionError, LocalFlowError
+from local_flow.errors import (
+    ConfigError,
+    HotkeyBackendMissingError,
+    LMStudioConnectionError,
+    LocalFlowError,
+)
 from local_flow.insertion.base import FakeTextSink
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import PersonalizationStore
@@ -562,3 +572,372 @@ class TestRunCommandHotkeyListenerErrorVisible:
         _run_command_hotkey_listener(QuietListener(), lambda: None, lambda: None)
 
         assert capsys.readouterr().err == ""
+
+
+def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.01) -> bool:
+    """Poll ``predicate`` until it's true or ``timeout`` elapses (test-only
+    helper for synchronizing across the dispatcher's worker thread and any
+    daemon listener threads without a fixed ``sleep``).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+class TestTransformTapDebounced:
+    """Pure unit tests for ``_transform_tap_debounced`` -- the guard
+    ``_run_loop``'s transform-hotkey tap handler uses to reject a duplicate
+    tap arriving too soon after the previous one *completed*. Extracted as a
+    standalone function specifically so this threshold logic is testable
+    with plain floats, no live clock or thread timing races (see its
+    docstring for why a simple busy flag can't do this job on a serialized
+    dispatcher).
+    """
+
+    def test_first_ever_tap_is_never_debounced(self):
+        # 0.0 sentinel ("never yet"): a real `time.monotonic()` reading is
+        # always large and positive, so `now - 0.0` always clears any
+        # sane threshold.
+        assert _transform_tap_debounced(0.0, now=100.0) is False
+
+    def test_tap_immediately_after_completion_is_debounced(self):
+        assert _transform_tap_debounced(100.0, now=100.3) is True
+
+    def test_tap_well_after_the_threshold_is_not_debounced(self):
+        assert _transform_tap_debounced(100.0, now=105.0) is False
+
+    def test_tap_just_under_the_threshold_is_debounced(self):
+        assert _transform_tap_debounced(100.0, now=100.999, threshold_s=1.0) is True
+
+    def test_tap_at_or_past_the_threshold_is_not_debounced(self):
+        assert _transform_tap_debounced(100.0, now=101.0, threshold_s=1.0) is False
+
+    def test_custom_threshold_is_honored(self):
+        assert _transform_tap_debounced(100.0, now=100.4, threshold_s=0.5) is True
+        assert _transform_tap_debounced(100.0, now=100.6, threshold_s=0.5) is False
+
+
+class TestRunLoopTransformHotkeyDebounce:
+    """`_run_loop`'s transform-hotkey tap handler debounces a rapid duplicate
+    tap (see ``_transform_tap_debounced``): a real key-*hold* is already
+    fully suppressed by ``TapListener``'s own ``held`` guard (test_hotkeys.py),
+    but two distinct tap events fired back-to-back -- a bouncy/stuck key, or
+    the user mashing it -- must not both run the (slow, LLM-backed)
+    transform.
+    """
+
+    def test_rapid_double_tap_second_one_is_debounced_with_a_warning(
+        self, tmp_path, monkeypatch
+    ):
+        import local_flow.app as app_module
+
+        sink = FakeTextSink()
+        llm = MockChatClient(["POLISHED SELECTION", "POLISHED SELECTION 2"])
+        pipeline = _pipeline(tmp_path, sink, llm=llm)
+        config = _config(transform_hotkey="f6")
+        reporter = FakeReporter()
+        replace_done = threading.Event()
+        warned_done = threading.Event()
+
+        backend = MockSelectionBackend(
+            clipboard="original clipboard", selection_text="highlighted"
+        )
+        replace_calls: list[str] = []
+
+        class SignalingCapture(SelectionCapture):
+            def replace(self, text):
+                super().replace(text)
+                replace_calls.append(text)
+                replace_done.set()
+
+        capture = SignalingCapture(backend, sleep=lambda s: None)
+        monkeypatch.setattr(app_module, "_build_selection_capture", lambda config: capture)
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "warning" and "already running" in detail:
+                    warned_done.set()
+
+        class FakeTapListener:
+            def __init__(self, key_name):
+                self.key_name = key_name
+
+            def run(self, on_tap):
+                on_tap()
+                on_tap()  # rapid duplicate: e.g. a bouncy key or a fast re-tap
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                warned_done.wait(timeout=5)
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", FakeTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        _run_loop(
+            config, "push-to-talk", SignalingReporter(),
+            dependencies=RunDependencies(pipeline, None, None),
+        )
+
+        assert replace_done.wait(timeout=2)
+        assert warned_done.is_set()
+        assert replace_calls == ["POLISHED SELECTION"]  # only the first tap ran
+        assert backend.clipboard == "original clipboard"
+        warnings = [detail for state, detail in reporter.events if state == "warning"]
+        assert any("already running" in w for w in warnings)
+
+
+class _ContentionSource:
+    """A fake ``AudioSource`` that counts concurrent ``record_until`` calls,
+    so tests can prove ``_run_loop``'s ``mic_in_use`` guard never lets the
+    main PTT recorder and the command-hotkey recorder open the (single,
+    shared) microphone at the same time.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.calls = 0
+        self.active = 0
+        self.max_concurrent = 0
+
+    def record_until(self, stop, frame_ms):
+        with self._lock:
+            self.calls += 1
+            self.active += 1
+            self.max_concurrent = max(self.max_concurrent, self.active)
+        stop.wait(timeout=5)
+        with self._lock:
+            self.active -= 1
+        return b"pcm-bytes"
+
+
+class TestMicMutualExclusion:
+    """`_run_loop`'s ``mic_in_use`` flag: the main PTT recorder and the
+    command-hotkey recorder both call ``source.record_until`` on the same
+    ``SounddeviceSource`` (concurrent PortAudio opens are device contention,
+    not two clean recordings), so the second one to start while the other is
+    already recording is refused with a warning instead of racing it.
+    """
+
+    def test_command_start_refused_while_main_is_recording(self, tmp_path, monkeypatch):
+        import local_flow.app as app_module
+
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config(command_hotkey="f7")
+        reporter = FakeReporter()
+        source = _ContentionSource()
+        done = threading.Event()
+        cmd_attempted = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        backend = MockSelectionBackend(clipboard="untouched", selection_text=None)
+        capture = SelectionCapture(
+            backend, poll_timeout_s=0.01, poll_interval_s=0.005, sleep=lambda s: None
+        )
+        monkeypatch.setattr(app_module, "_build_selection_capture", lambda config: capture)
+
+        def _busy_warned() -> bool:
+            return any(
+                "microphone busy" in detail
+                for state, detail in reporter.events
+                if state == "warning"
+            )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()  # main start
+                assert _wait_until(lambda: source.calls >= 1), "main recording never started"
+                assert cmd_attempted.wait(timeout=2), "command hotkey never attempted"
+                on_release()  # main finish
+                done.wait(timeout=5)
+
+        class FakePynput:
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                pass
+
+            def run(self, on_press, on_release):
+                assert _wait_until(lambda: source.calls >= 1), "main recording never started"
+                on_press()  # cmd start attempt: must be refused (mic busy)
+                assert _wait_until(_busy_warned), "command hotkey was not refused"
+                on_release()  # cmd finish: guarded no-op, nothing was started
+                cmd_attempted.set()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+        monkeypatch.setattr("local_flow.hotkeys.base.PynputPushToTalk", FakePynput)
+
+        _run_loop(
+            config, "push-to-talk", SignalingReporter(),
+            dependencies=RunDependencies(pipeline, source, None),
+        )
+
+        assert done.is_set()
+        assert source.calls == 1  # the command hotkey never actually opened the mic
+        assert source.max_concurrent == 1
+
+    def test_main_start_refused_while_command_hotkey_is_recording(
+        self, tmp_path, monkeypatch
+    ):
+        import local_flow.app as app_module
+
+        sink = FakeTextSink()
+        llm = MockChatClient(["BULLET LIST"])
+        transcriber = MockTranscriber(["turn it into bullets"])
+        pipeline = _pipeline(tmp_path, sink, llm=llm, transcriber=transcriber)
+        pipeline.last_transcript = "earlier dictation"
+        config = _config(command_hotkey="f7")
+        reporter = FakeReporter()
+        source = _ContentionSource()
+        done = threading.Event()
+        cmd_started = threading.Event()
+        main_attempted = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        backend = MockSelectionBackend(clipboard="untouched", selection_text=None)
+        capture = SelectionCapture(
+            backend, poll_timeout_s=0.01, poll_interval_s=0.005, sleep=lambda s: None
+        )
+        monkeypatch.setattr(app_module, "_build_selection_capture", lambda config: capture)
+
+        def _busy_warned() -> bool:
+            return any(
+                "microphone busy" in detail
+                for state, detail in reporter.events
+                if state == "warning"
+            )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                assert cmd_started.wait(timeout=2), "command recording never started"
+                on_press()  # main start attempt: must be refused (mic busy)
+                assert _wait_until(_busy_warned), "main hotkey was not refused"
+                on_release()  # main finish: guarded no-op, nothing was started
+                main_attempted.set()
+                done.wait(timeout=5)
+
+        class FakePynput:
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                pass
+
+            def run(self, on_press, on_release):
+                on_press()  # cmd start: succeeds, claims the mic
+                assert _wait_until(
+                    lambda: source.calls >= 1
+                ), "command recording never started"
+                cmd_started.set()
+                assert main_attempted.wait(timeout=2)
+                on_release()  # cmd finish: proceeds normally
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+        monkeypatch.setattr("local_flow.hotkeys.base.PynputPushToTalk", FakePynput)
+
+        _run_loop(
+            config, "push-to-talk", SignalingReporter(),
+            dependencies=RunDependencies(pipeline, source, None),
+        )
+
+        assert done.is_set()
+        assert sink.events == [("insert", "BULLET LIST")]  # command hotkey's own path ran
+        assert source.calls == 1  # the main hotkey never actually opened the mic
+        assert source.max_concurrent == 1
+
+    def test_sequential_use_is_unaffected(self, tmp_path, monkeypatch):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config()  # command_hotkey unset: plain main hotkey only
+        reporter = FakeReporter()
+        source = _ContentionSource()
+        idle_count = [0]
+        done = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "idle":
+                    idle_count[0] += 1
+                    if idle_count[0] == 2:
+                        done.set()
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                on_release()
+                assert _wait_until(lambda: idle_count[0] >= 1), "first cycle never finished"
+                on_press()
+                on_release()
+                done.wait(timeout=5)
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        _run_loop(
+            config, "push-to-talk", SignalingReporter(),
+            dependencies=RunDependencies(pipeline, source, None),
+        )
+
+        assert done.is_set()
+        warnings = [detail for state, detail in reporter.events if state == "warning"]
+        assert not any("microphone busy" in w for w in warnings)
+        assert source.calls == 2
+        assert source.max_concurrent == 1
+
+
+class TestBuildPipelineUnknownAutoTransform:
+    """Missing-test fix: `_build_pipeline` (via `_resolve_auto_transform_prompt`)
+    must fail fast with a `ConfigError` listing the known transform names when
+    `auto_transform` names something not in `transforms.json` -- the harsher,
+    intentional counterpart to `transform_default`'s soft warn-and-disable
+    (see `_resolve_auto_transform_prompt`'s docstring for why).
+    """
+
+    def test_unknown_auto_transform_raises_config_error_listing_known_names(
+        self, tmp_path
+    ):
+        data_dir = tmp_path / "data"
+        # `PersonalizationStore.__init__` seeds `transforms.json` with the
+        # built-in Polish/Prompt Engineer transforms on first use; `_build_pipeline`
+        # constructs its own store against the same `data_dir` below, so it
+        # sees that same seeded file.
+        config = load_config(
+            env={
+                "LOCAL_FLOW_DATA_DIR": str(data_dir),
+                "LOCAL_FLOW_AUTO_TRANSFORM": "Nonexistent",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_LMSTUDIO_BASE_URL": "http://127.0.0.1:59999/v1",
+            }
+        )
+        chat_client = MockChatClient(["ok"])  # headless-constructible, no network
+        sink = FakeTextSink()
+
+        with pytest.raises(ConfigError, match="Unknown auto_transform") as excinfo:
+            _build_pipeline(config, chat_client, sink)
+
+        message = str(excinfo.value)
+        hint = excinfo.value.hint or ""
+        assert "Nonexistent" in message
+        assert "Polish" in hint
+        assert "Prompt Engineer" in hint

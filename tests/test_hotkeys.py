@@ -258,16 +258,62 @@ class TestTapListener:
 
         assert calls == []
 
-    def test_repeated_taps_each_fire(self):
+    def test_repeated_press_while_held_fires_once(self):
+        """OS auto-repeat sends a stream of press events with no release in
+        between while a key is held down -- without the ``held`` guard this
+        would fire the (slow, LLM-backed) transform repeatedly for what the
+        user experiences as a single tap/hold. See ``TapListener``'s
+        docstring.
+        """
         calls = []
         listener = TapListener("f9")
         listener._on_tap = lambda: calls.append("tap")
 
         listener.handle_press(listener._target)
+        listener.handle_press(listener._target)  # auto-repeat: still held
+        listener.handle_press(listener._target)  # auto-repeat: still held
+
+        assert calls == ["tap"]
+
+    def test_press_release_press_fires_twice(self):
+        """A real release re-arms the guard: a fresh press afterward fires
+        again -- distinct taps are not suppressed, only same-hold repeats.
+        """
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
         listener.handle_press(listener._target)
+        listener.handle_release(listener._target)
         listener.handle_press(listener._target)
 
-        assert calls == ["tap", "tap", "tap"]
+        assert calls == ["tap", "tap"]
+
+    def test_injected_release_does_not_rearm(self):
+        """A synthetic release (e.g. this process's own typed output) must
+        not re-arm the guard -- same ``injected`` invariant as every other
+        hotkey listener.
+        """
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(listener._target)
+        listener.handle_release(listener._target, injected=True)
+        listener.handle_press(listener._target)  # still "held": no-op
+
+        assert calls == ["tap"]
+
+    def test_release_of_other_key_does_not_rearm(self):
+        calls = []
+        listener = TapListener("f9")
+        listener._on_tap = lambda: calls.append("tap")
+
+        listener.handle_press(listener._target)
+        listener.handle_release(object())  # some other key's release
+        listener.handle_press(listener._target)  # still "held": no-op
+
+        assert calls == ["tap"]
 
     def test_injected_events_are_ignored(self):
         calls = []

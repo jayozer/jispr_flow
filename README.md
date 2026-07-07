@@ -480,8 +480,12 @@ push-to-talk key for *spoken* edit instructions -- Wispr Flow calls this
 "command mode": hold the key, say what you want done ("make this more
 formal", "turn it into bullets"), release. Empty (the default) disables it
 entirely; it runs independently of (and alongside) the main dictation
-hotkey, with its own recording state, so holding both at once doesn't
-corrupt either recording.
+hotkey, with its own recording state. Both ultimately record from the same
+microphone/`SounddeviceSource`, though, and opening it twice at once is
+device contention, not two clean recordings -- so holding both hotkeys down
+at the same time gets the *second* one refused outright (a "microphone busy;
+finish the other recording first" warning, no recorder started) rather than
+corrupting either recording.
 
 ```bash
 LOCAL_FLOW_COMMAND_HOTKEY=f7 uv run local-flow run
@@ -514,6 +518,14 @@ whenever there's no chat client configured or `LOCAL_FLOW_CLEANUP_LEVEL=none`
 (a full verbatim bypass); an LM Studio failure during the auto-transform call
 degrades gracefully -- the un-transformed text still gets inserted, with a
 warning explaining why.
+
+This is intentionally more severe than an unknown `LOCAL_FLOW_TRANSFORM_DEFAULT`
+(see "Transform anywhere" above), which only warns and disables that one
+hotkey: `transform_default` gates an opt-in, per-tap feature, so failing soft
+just means one fewer hotkey; `auto_transform` gates something that would
+otherwise silently no-op (or warn) on *every single dictation*, so a typo is
+worth stopping the whole process for, immediately, rather than discovering it
+utterance by utterance.
 
 ```bash
 LOCAL_FLOW_AUTO_TRANSFORM=Polish uv run local-flow run   # every dictation gets an extra polish pass
