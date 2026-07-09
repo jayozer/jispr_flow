@@ -173,6 +173,16 @@ class ScratchpadWindow:
         """
         if self._dirty and not force:
             return
+        # Stat BEFORE reading, so the recorded mtime is a lower bound on
+        # what the buffer reflects. Statting after the read (the old order)
+        # had a TOCTOU hole: an external append landing between the read and
+        # the stat got its mtime stamped "already seen" while its text never
+        # made it into the buffer -- and the next autosave, seeing matching
+        # mtimes, would overwrite it with the stale buffer. With the stat
+        # first, that same append leaves the on-disk mtime newer than the
+        # recorded one, so `_should_autosave` refuses and the append
+        # survives (at worst a spurious conflict notice, never data loss).
+        mtime = self._mtime()
         content = self.store.read(self._current_note)
         self.text.delete("1.0", "end")
         self.text.insert("1.0", content)
@@ -182,7 +192,7 @@ class ScratchpadWindow:
         # pointless autosave of content that's already on disk verbatim).
         self.text.edit_modified(False)
         self._dirty = False
-        self._note_mtime = self._mtime()
+        self._note_mtime = mtime
 
     def _on_modified(self, _event=None) -> None:
         if not self.text.edit_modified():
@@ -225,9 +235,16 @@ class ScratchpadWindow:
             )
             return False
         content = self.text.get("1.0", "end-1c")
-        self.store.write(content, name=self._current_note)
+        # Record the mtime `NoteStore.write` returns -- statted on its tmp
+        # file before the atomic rename publishes the save -- rather than
+        # re-statting the note file afterwards. A re-stat had a TOCTOU hole
+        # symmetric to `_load_active`'s: an external append landing between
+        # the write and the stat got stamped "already seen" and the NEXT
+        # autosave would overwrite it. The pre-publish value is a race-free
+        # lower bound: that same append leaves the on-disk mtime newer, so
+        # the next autosave sees the conflict and the append survives.
+        self._note_mtime = self.store.write(content, name=self._current_note)
         self._dirty = False
-        self._note_mtime = self._mtime()
         return True
 
     def _on_note_selected(self, name: str) -> None:

@@ -426,3 +426,58 @@ class TestMatchAppRule:
 
     def test_empty_rules_returns_none(self):
         assert match_app_rule({}, "anything", "Anything") is None
+
+
+def _crash_mid_write_tempfile(monkeypatch):
+    """Make every ``tempfile.NamedTemporaryFile`` write half its payload and
+    then raise -- simulating a crash mid-write inside ``_atomic_write``'s tmp
+    file, before ``os.replace`` publishes anything."""
+    import tempfile
+
+    real = tempfile.NamedTemporaryFile
+
+    def exploding(*args, **kwargs):
+        tmp = real(*args, **kwargs)
+
+        class _Exploding:
+            name = tmp.name
+
+            @staticmethod
+            def write(text):
+                tmp.write(text[: len(text) // 2])
+                raise OSError("simulated crash mid-write")
+
+            @staticmethod
+            def close():
+                tmp.close()
+
+        return _Exploding()
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", exploding)
+
+
+class TestWriteCrashSafety:
+    """Every JSON write -- snippets.json and styles.json, including the
+    ``active`` style selection -- routes through ``_atomic_write`` (review
+    item 9): a crash mid-write must never truncate or corrupt the existing
+    file, which previously held e.g. ALL of a user's styles."""
+
+    def test_crash_mid_set_snippet_keeps_snippets_file_intact(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path)
+        store.set_snippet("sig", "Best regards,\nJay")
+        _crash_mid_write_tempfile(monkeypatch)
+        with pytest.raises(OSError):
+            store.set_snippet("addr", "42 Main St")
+        # the original file is untouched: parseable, prior snippet intact
+        assert store.snippets() == {"sig": "Best regards,\nJay"}
+
+    def test_crash_mid_set_active_style_keeps_styles_file_intact(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path)
+        _crash_mid_write_tempfile(monkeypatch)
+        with pytest.raises(OSError):
+            store.set_active_style("professional")
+        # styles.json is still the pristine default file: parseable, every
+        # built-in style present, active selection unchanged
+        assert store.styles() == DEFAULT_STYLES
+        name, _rules = store.style_rules()
+        assert name == "default"

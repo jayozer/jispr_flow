@@ -22,6 +22,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from local_flow.atomicio import atomic_write_text
 from local_flow.errors import LocalFlowError
 
 # Letters, digits, spaces, '.', '_', '-' only -- no '/' or other path
@@ -161,10 +162,10 @@ class NoteStore:
             path.touch()
         return path
 
-    def write(self, text: str, name: str | None = None) -> Path:
+    def write(self, text: str, name: str | None = None) -> float:
         """Overwrite ``name`` (or the active note) with ``text`` verbatim --
         the "save the whole buffer" counterpart to :meth:`append`'s "add a
-        paragraph" semantics.
+        paragraph" semantics. Returns the note file's resulting ``st_mtime``.
 
         Used by :class:`~local_flow.scratchpad.window.ScratchpadWindow`'s
         debounced autosave: once a note is open for hand-editing, the Text
@@ -172,6 +173,15 @@ class NoteStore:
         dictation, so a plain overwrite (no blank-line separator logic) is
         the right operation. Creates the notes directory lazily; validates
         ``name`` first, same as every other method here.
+
+        The write is crash-safe (same-directory tmp file + ``os.replace``,
+        via :func:`local_flow.atomicio.atomic_write_text` -- the same helper
+        behind the history and personalization stores' rewrites), and the
+        returned mtime is statted on the tmp file *before* the rename
+        publishes it. The window records that value as "the mtime of my own
+        save", so an external append landing right after the rename can
+        never be absorbed into it and later clobbered as "already seen"
+        (the autosave-TOCTOU review fix).
 
         Concurrency note (mirrors :meth:`append`'s): no cross-process
         locking here either, and this is a stronger clobber risk than
@@ -190,6 +200,4 @@ class NoteStore:
         target = name if name is not None else self.active_note()
         _validate_name(target)
         self.notes_dir.mkdir(parents=True, exist_ok=True)
-        path = self._note_path(target)
-        path.write_text(text, encoding="utf-8")
-        return path
+        return atomic_write_text(self._note_path(target), text)
