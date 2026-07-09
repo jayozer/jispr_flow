@@ -57,9 +57,16 @@ Legend: 🟢 near-term (high value, fits current architecture) ·
 
 ## 4. Polish & LLM
 
-- [ ] 🟢 **Ollama / llama.cpp presets** — they're OpenAI-compatible, so mostly
-      documentation plus tested defaults (`http://localhost:11434/v1`);
-      keep the cloud-endpoint refusal list.
+**LM Studio is the primary and default backend.** Presets, prompts, and
+testing target LM Studio first; other local servers are secondary
+conveniences and must never dilute the LM Studio experience.
+
+- [ ] 🟢 **LM Studio model presets** — curated defaults for recommended
+      LM Studio models (Qwen, Llama, Phi) with tested polish prompts,
+      timeouts, and context settings per model family.
+- [ ] 🟡 **Ollama support (secondary)** — Ollama is OpenAI-compatible, so
+      support is mostly documentation plus tested defaults
+      (`http://localhost:11434/v1`); keep the cloud-endpoint refusal list.
 - [ ] 🟢 **Custom prompt templates** — user-editable polish/command prompts in
       the data dir, like styles.
 - [ ] 🟢 **Polish intensity levels** — `none | light | full` per dictation
@@ -124,17 +131,20 @@ Legend: 🟢 near-term (high value, fits current architecture) ·
 
 ## 9. Product surface
 
-- [ ] 🟡 **Menu bar / tray app** — recording indicator, mode toggle, style
+**Prioritized:** the product surface comes first so the app can be tested
+as a real desktop tool (not just a CLI) from early on.
+
+- [ ] 🟢 **Menu bar / tray app** — recording indicator, mode toggle, style
       picker, last-transcript view (rumps on macOS, pystray elsewhere).
       Biggest single UX upgrade over the bare CLI.
-- [ ] 🟡 **Floating recording pill** — small always-on-top indicator with
+- [ ] 🟢 **Floating recording pill** — small always-on-top indicator with
       mic level while recording.
-- [ ] 🟡 **Onboarding wizard** — guided macOS permission setup (Microphone /
+- [ ] 🟢 **Onboarding wizard** — guided macOS permission setup (Microphone /
       Accessibility / Input Monitoring), first-run model download with
       progress, LM Studio connectivity check.
 - [ ] 🟡 **Settings UI** — edit config/dictionary/snippets/styles visually
       (local web page served on localhost, or native).
-- [ ] 🔵 **Packaged distribution** — signed .app / Homebrew formula /
+- [ ] 🟡 **Packaged distribution** — signed .app / Homebrew formula /
       PyInstaller binaries; auto-start at login.
 
 ## 10. Engineering & quality
@@ -153,10 +163,11 @@ Legend: 🟢 near-term (high value, fits current architecture) ·
 
 ## Suggested sequencing
 
-1. **Now** — chord hotkeys, toggle mode, Silero VAD, vocab boosting via
-   `initial_prompt`, clipboard preservation, CLI personalization commands,
-   polish intensity levels.
-2. **Next** — menu bar app + recording indicator, local history, per-app
-   styles, multilingual ASR, MLX Whisper, onboarding wizard.
-3. **Later** — streaming transcription, Wayland/UIA sinks, settings UI,
-   packaged distribution, wake word, plugin system.
+1. **Now** — menu bar app + floating recording pill, onboarding wizard,
+   LM Studio model presets, chord hotkeys, toggle mode, Silero VAD, vocab
+   boosting via `initial_prompt`, clipboard preservation, CLI
+   personalization commands, polish intensity levels.
+2. **Next** — settings UI, packaged distribution, local history, per-app
+   styles, multilingual ASR, MLX Whisper, Ollama support.
+3. **Later** — streaming transcription, Wayland/UIA sinks, wake word,
+   plugin system.
