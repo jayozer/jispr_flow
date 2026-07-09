@@ -503,6 +503,14 @@ def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
                 )
             chat_client = _build_chat_client(config)
             result = apply_transform(chat_client, prompt, selected)
+            if not result.strip():
+                # Never paste an empty completion over the user's selection
+                # (the paste is unrecoverable -- restore() rewrites the
+                # clipboard, not the selection). The except below restores.
+                raise LocalFlowError(
+                    "The transform returned no text; the selection was left unchanged.",
+                    hint="Check the transform's prompt and the LM Studio model, then retry.",
+                )
             capture.replace(result)
         except BaseException:
             # On any failure -- capture itself, "nothing selected", LM Studio
@@ -1208,6 +1216,15 @@ def _run_voice_command(
             transformed, _count = enforce_dictionary(
                 transformed, pipeline.store.dictionary_terms()
             )
+            if not transformed.strip():
+                # Never paste an empty completion over the selection (the
+                # paste is unrecoverable; restore() only rewrites the
+                # clipboard) -- keep the user's text and warn instead.
+                capture.restore()
+                reporter.notify(
+                    "warning", "voice command returned no text; selection left unchanged"
+                )
+                return
             capture.replace(transformed)
         else:
             capture.restore()  # nothing was selected; nothing to replace
@@ -1738,6 +1755,16 @@ def _run_loop(
                             result = apply_transform(
                                 pipeline.polisher.chat_client, prompt, selected
                             )
+                            if not result.strip():
+                                # Never paste an empty completion over the
+                                # selection (unrecoverable; restore() only
+                                # rewrites the clipboard).
+                                capture.restore()
+                                reporter.notify(
+                                    "warning",
+                                    "transform returned no text; selection left unchanged",
+                                )
+                                return
                             capture.replace(result)
                         except Exception as exc:
                             capture.restore()

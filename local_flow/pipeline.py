@@ -190,10 +190,19 @@ class DictationPipeline:
             try:
                 from local_flow.transforms.registry import apply_transform
 
-                text = apply_transform(
+                transformed = apply_transform(
                     self.polisher.chat_client, self.auto_transform_prompt, text
                 )
-                result.final = text
+                # Same guard as TranscriptPolisher's `if polished:`: an empty
+                # completion must not silently discard the whole utterance --
+                # keep the untransformed text and say why.
+                if transformed.strip():
+                    text = transformed
+                    result.final = text
+                else:
+                    result.warnings.append(
+                        "auto-transform returned no text; keeping the untransformed text"
+                    )
             except LMStudioError as exc:
                 # Degrade, don't block: the original (pre-transform) text
                 # still gets inserted, with a warning explaining why.

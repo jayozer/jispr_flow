@@ -8,8 +8,13 @@ from local_flow.app import main
 from local_flow.errors import ClipboardError, ConfigError, LMStudioConnectionError
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import DEFAULT_TRANSFORMS, PersonalizationStore
+from local_flow.transforms.pasteboard import restore_items, snapshot_items
 from local_flow.transforms.registry import apply_transform, build_transform_messages
-from local_flow.transforms.selection import MockSelectionBackend, SelectionCapture
+from local_flow.transforms.selection import (
+    ClipboardSnapshot,
+    MockSelectionBackend,
+    SelectionCapture,
+)
 
 
 class TestSelectionCapture:
@@ -307,6 +312,35 @@ class TestTransformCli:
         assert "unreachable" in err
         assert backend.clipboard == "precious"
 
+    def test_selection_empty_transform_output_fails_without_touching_selection(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """A whitespace-only completion must never be pasted over the user's
+        selection (the paste is unrecoverable -- restore() rewrites the
+        clipboard, not the selection): the CLI fails with a hint, replace()
+        never runs, and the original clipboard comes back.
+        """
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        import local_flow.app as app_module
+
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted text")
+        monkeypatch.setattr(
+            app_module,
+            "_build_selection_capture",
+            lambda config: SelectionCapture(backend, sleep=lambda s: None),
+        )
+        monkeypatch.setattr(
+            app_module, "_build_chat_client", lambda config: MockChatClient(["   "])
+        )
+
+        code = main(["transform", "Polish", "--selection"])
+
+        assert code == 1
+        err = capsys.readouterr().err
+        assert "returned no text" in err
+        assert "paste" not in backend.events  # replace() never ran
+        assert backend.clipboard == "precious"  # restored, not overwritten
+
     def test_mid_capture_backend_failure_still_restores_clipboard(
         self, capsys, tmp_path, monkeypatch
     ):
@@ -337,3 +371,176 @@ class TestTransformCli:
         err = capsys.readouterr().err
         assert "copy chord failed" in err
         assert backend.clipboard == "precious"  # restored, not left cleared
+
+
+class TestSelectionBackendSnapshotDefaults:
+    """The base `snapshot_clipboard`/`restore_clipboard` hooks: text-only by
+    default (byte-identical to the old read/write round-trip), with a rich
+    `ClipboardSnapshot` degrading to its text on a backend that has no rich
+    restore of its own.
+    """
+
+    def test_default_snapshot_is_the_clipboard_text(self):
+        backend = MockSelectionBackend(clipboard="plain text")
+        assert backend.snapshot_clipboard() == "plain text"
+
+    def test_default_restore_writes_a_text_snapshot_back(self):
+        backend = MockSelectionBackend(clipboard="whatever")
+        backend.restore_clipboard("saved text")
+        assert backend.clipboard == "saved text"
+
+    def test_default_restore_degrades_a_rich_snapshot_to_its_text(self):
+        backend = MockSelectionBackend(clipboard="whatever")
+        backend.restore_clipboard(ClipboardSnapshot(items=object(), text="fallback"))
+        assert backend.clipboard == "fallback"
+
+
+class _RichClipboardBackend(MockSelectionBackend):
+    """A backend whose clipboard holds non-text content the plain-text path
+    cannot represent -- models the darwin NSPasteboard backend's overrides.
+    """
+
+    def __init__(self, payload, **kwargs):
+        super().__init__(**kwargs)
+        self.payload = payload
+        self.restored: list[object] = []
+
+    def snapshot_clipboard(self):
+        return ClipboardSnapshot(items=self.payload, text=self.read_clipboard())
+
+    def restore_clipboard(self, snapshot):
+        assert isinstance(snapshot, ClipboardSnapshot)
+        self.restored.append(snapshot.items)
+        self.clipboard = snapshot.text
+
+
+class TestSelectionCapturePreservesRichClipboard:
+    """`SelectionCapture` saves/restores through the backend's snapshot hooks,
+    so a platform backend with a rich pasteboard (an image, files, rich text)
+    gets its full content back after both `replace()` and `restore()` --
+    instead of the text-only round-trip destroying it.
+    """
+
+    def test_replace_hands_the_rich_snapshot_back_to_the_backend(self):
+        payload = {"public.png": b"\x89PNG fake image bytes"}
+        backend = _RichClipboardBackend(payload, clipboard="", selection_text="highlighted")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+
+        capture.capture()
+        capture.replace("NEW TEXT")
+
+        assert backend.restored == [payload]
+
+    def test_restore_hands_the_rich_snapshot_back_to_the_backend(self):
+        payload = {"public.file-url": b"file:///tmp/report.pdf"}
+        backend = _RichClipboardBackend(payload, clipboard="", selection_text=None)
+        capture = SelectionCapture(
+            backend, poll_timeout_s=0.01, poll_interval_s=0.005, sleep=lambda s: None
+        )
+
+        capture.capture()
+        capture.restore()
+
+        assert backend.restored == [payload]
+
+
+class _FakePasteboardItem:
+    """Duck-typed NSPasteboardItem: types() / dataForType_ / setData_forType_."""
+
+    def __init__(self, data_by_type=None):
+        self._data = dict(data_by_type or {})
+
+    def types(self):
+        return list(self._data)
+
+    def dataForType_(self, pb_type):
+        return self._data.get(pb_type)
+
+    def setData_forType_(self, data, pb_type):
+        self._data[pb_type] = data
+
+
+class _FakePasteboard:
+    """Duck-typed NSPasteboard: pasteboardItems() / clearContents() /
+    writeObjects_()."""
+
+    def __init__(self, items=()):
+        self.items = list(items)
+        self.clear_count = 0
+
+    def pasteboardItems(self):
+        return list(self.items)
+
+    def clearContents(self):
+        self.clear_count += 1
+        self.items = []
+
+    def writeObjects_(self, objects):
+        self.items = list(objects)
+
+
+class TestPasteboardSnapshotRestore:
+    """The macOS pasteboard leaf module's pure snapshot/restore helpers,
+    asserted against fake pasteboard objects -- no AppKit import anywhere,
+    fully headless.
+    """
+
+    def test_round_trips_a_multi_type_item_through_the_clipboard_hijack(self):
+        png = b"\x89PNG fake image bytes"
+        original = _FakePasteboardItem(
+            {"public.png": png, "public.utf8-plain-text": b"caption"}
+        )
+        pasteboard = _FakePasteboard([original])
+
+        snapshot = snapshot_items(pasteboard)
+        # Simulate the transform's clipboard hijack: clear + text-only write.
+        pasteboard.clearContents()
+        pasteboard.writeObjects_(
+            [_FakePasteboardItem({"public.utf8-plain-text": b"transform result"})]
+        )
+
+        restore_items(pasteboard, snapshot, _FakePasteboardItem)
+
+        assert len(pasteboard.items) == 1
+        restored = pasteboard.items[0]
+        assert restored.dataForType_("public.png") == png
+        assert restored.dataForType_("public.utf8-plain-text") == b"caption"
+
+    def test_restore_clears_before_writing(self):
+        pasteboard = _FakePasteboard([_FakePasteboardItem({"t": b"old"})])
+        snapshot = snapshot_items(pasteboard)
+
+        restore_items(pasteboard, snapshot, _FakePasteboardItem)
+
+        assert pasteboard.clear_count == 1
+
+    def test_empty_pasteboard_snapshots_to_empty_and_restores_to_cleared(self):
+        pasteboard = _FakePasteboard([])
+        snapshot = snapshot_items(pasteboard)
+        assert snapshot == []
+
+        pasteboard.writeObjects_([_FakePasteboardItem({"t": b"junk"})])
+        restore_items(pasteboard, snapshot, _FakePasteboardItem)
+
+        assert pasteboard.items == []  # cleared, nothing written back
+
+    def test_none_pasteboard_items_treated_as_empty(self):
+        class NonePasteboard(_FakePasteboard):
+            def pasteboardItems(self):
+                return None
+
+        assert snapshot_items(NonePasteboard()) == []
+
+    def test_multiple_items_preserved_in_order(self):
+        first = _FakePasteboardItem({"public.file-url": b"file:///a"})
+        second = _FakePasteboardItem({"public.file-url": b"file:///b"})
+        pasteboard = _FakePasteboard([first, second])
+
+        snapshot = snapshot_items(pasteboard)
+        pasteboard.clearContents()
+        restore_items(pasteboard, snapshot, _FakePasteboardItem)
+
+        assert [i.dataForType_("public.file-url") for i in pasteboard.items] == [
+            b"file:///a",
+            b"file:///b",
+        ]

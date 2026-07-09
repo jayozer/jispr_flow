@@ -155,6 +155,31 @@ class TestDictionaryDetailedCounts:
         assert total == sum(counts.values())
 
 
+class TestDictionaryBackslashTerms:
+    """A term containing a backslash ("AC\\DC", "C:\\Users") must land in the
+    output verbatim, never be parsed as a `re.subn` replacement template --
+    the template reading raises "bad escape" (killing every dictation that
+    runs the rules stage) or injects a control character.
+    """
+
+    def test_backslash_term_substitutes_verbatim_without_raising(self):
+        text, counts = enforce_dictionary_detailed("we saw ac\\dc live", ["AC\\DC"])
+        assert text == "we saw AC\\DC live"
+        assert counts == {"AC\\DC": 1}
+
+    def test_windows_path_term_substitutes_verbatim(self):
+        text, count = enforce_dictionary("stored under c:\\users today", ["C:\\Users"])
+        assert text == "stored under C:\\Users today"
+        assert count == 1
+
+    def test_backslash_group_reference_is_not_expanded(self):
+        # "\1" in a replacement template would be a group reference; as a
+        # dictionary term it must come out as the literal characters.
+        text, count = enforce_dictionary("send to team\\1 now", ["Team\\1"])
+        assert text == "send to Team\\1 now"
+        assert count == 1
+
+
 class TestExtractDictionaryAdditions:
     def test_single_word_term(self):
         text, terms = extract_dictionary_additions("add JiSpr to the dictionary")

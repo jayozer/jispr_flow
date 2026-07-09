@@ -120,7 +120,12 @@ def enforce_dictionary_detailed(text: str, terms: Iterable[str]) -> tuple[str, d
         if not stripped:
             continue
         escaped = re.escape(stripped).replace(r"\ ", r"\s+")
-        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", stripped, text)
+        # The term goes through a lambda (like expand_snippets), never as a
+        # replacement template: a backslash in it ("AC\DC", "C:\Users") would
+        # otherwise be parsed as a group reference/escape by re.subn.
+        text, count = re.subn(
+            rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _t=stripped: _t, text
+        )
         if count:
             counts[stripped] = counts.get(stripped, 0) + count
     return text, counts

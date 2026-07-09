@@ -557,6 +557,26 @@ class TestAutoTransform:
         assert result.final  # rule-cleaned text still inserted
         assert sink.events[0][0] == "insert"
 
+    def test_empty_transform_output_keeps_original_text_with_a_warning(self, store):
+        # A whitespace-only completion must not silently discard the whole
+        # utterance -- same guard as TranscriptPolisher's `if polished:`:
+        # keep the untransformed text, insert it, and warn.
+        llm = MockChatClient(["polished text", "   "])  # polish, then transform
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=MockTranscriber(["placeholder"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            auto_transform_prompt="Rewrite for clarity.",
+        )
+
+        result = pipeline.process_transcript("hello world")
+
+        assert result.final == "polished text"  # original text, not lost
+        assert sink.events == [("insert", "polished text")]
+        assert any("auto-transform returned no text" in w for w in result.warnings)
+
     def test_empty_final_text_never_calls_the_transform(self, store):
         # Chat client IS configured (unlike the previous test) and level is
         # the default "medium" -- but the polish response is entirely a

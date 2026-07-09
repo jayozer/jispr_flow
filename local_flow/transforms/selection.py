@@ -18,8 +18,24 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from local_flow.errors import HotkeyBackendMissingError
+
+
+@dataclass
+class ClipboardSnapshot:
+    """A full-fidelity clipboard snapshot: opaque platform items + their
+    plain-text reading.
+
+    ``items`` is whatever the backend's rich pasteboard produced (see
+    :mod:`local_flow.transforms.pasteboard` on macOS) and is only ever handed
+    back to that same backend; ``text`` is the pyperclip-style text fallback
+    used when the rich restore is unavailable or fails.
+    """
+
+    items: object
+    text: str
 
 
 class SelectionBackend(ABC):
@@ -40,6 +56,21 @@ class SelectionBackend(ABC):
     @abstractmethod
     def send_paste(self) -> None:
         """Synthesize the platform paste chord (Cmd+V / Ctrl+V)."""
+
+    def snapshot_clipboard(self) -> str | ClipboardSnapshot:
+        """Snapshot the clipboard for a later :meth:`restore_clipboard`.
+
+        The default is text-only (``read_clipboard``); platform backends
+        override the pair to preserve non-text content (images, files, rich
+        text) that a text round-trip would destroy.
+        """
+        return self.read_clipboard()
+
+    def restore_clipboard(self, snapshot: str | ClipboardSnapshot) -> None:
+        """Put a :meth:`snapshot_clipboard` result back on the clipboard."""
+        if isinstance(snapshot, ClipboardSnapshot):
+            snapshot = snapshot.text
+        self.write_clipboard(snapshot)
 
 
 class PynputSelectionBackend(SelectionBackend):
@@ -69,12 +100,43 @@ class PynputSelectionBackend(SelectionBackend):
         self._pyperclip = pyperclip
         self._controller = keyboard.Controller()
         self._modifier = keyboard.Key.cmd if sys.platform == "darwin" else keyboard.Key.ctrl
+        # macOS only: full-fidelity NSPasteboard snapshot/restore, so a
+        # transform doesn't destroy an image/files/rich-text clipboard (the
+        # pyperclip path above round-trips text only). Best-effort -- when
+        # pyobjc (the desktop extra's Cocoa framework) is unavailable this
+        # degrades to the text-only default, exactly today's behavior.
+        self._pasteboard = None
+        if sys.platform == "darwin":
+            try:
+                from local_flow.transforms.pasteboard import DarwinPasteboard
+
+                self._pasteboard = DarwinPasteboard()
+            except Exception:
+                self._pasteboard = None
 
     def read_clipboard(self) -> str:
         return self._pyperclip.paste()
 
     def write_clipboard(self, text: str) -> None:
         self._pyperclip.copy(text)
+
+    def snapshot_clipboard(self) -> str | ClipboardSnapshot:
+        text = self.read_clipboard()
+        if self._pasteboard is not None:
+            try:
+                return ClipboardSnapshot(items=self._pasteboard.snapshot(), text=text)
+            except Exception:
+                pass  # degrade to the text-only snapshot below
+        return text
+
+    def restore_clipboard(self, snapshot: str | ClipboardSnapshot) -> None:
+        if isinstance(snapshot, ClipboardSnapshot) and self._pasteboard is not None:
+            try:
+                self._pasteboard.restore(snapshot.items)
+                return
+            except Exception:
+                pass  # degrade to restoring the snapshot's text below
+        super().restore_clipboard(snapshot)
 
     def _tap(self, char: str) -> None:
         with self._controller.pressed(self._modifier):
@@ -152,7 +214,7 @@ class SelectionCapture:
         self.poll_timeout_s = poll_timeout_s
         self.poll_interval_s = poll_interval_s
         self._sleep = sleep
-        self._saved_clipboard = ""
+        self._saved_clipboard: str | ClipboardSnapshot = ""
         self._captured = False
 
     def capture(self) -> str:
@@ -177,7 +239,7 @@ class SelectionCapture:
         as "no selection" (returns ``""``), which is the documented,
         harmless behavior.
         """
-        self._saved_clipboard = self.backend.read_clipboard()
+        self._saved_clipboard = self.backend.snapshot_clipboard()
         self._captured = True
         self.backend.write_clipboard("")
         self.backend.send_copy()
@@ -204,7 +266,7 @@ class SelectionCapture:
         self.backend.write_clipboard(text)
         self.backend.send_paste()
         self._sleep(0.15)
-        self.backend.write_clipboard(self._saved_clipboard)
+        self.backend.restore_clipboard(self._saved_clipboard)
         self._captured = False
 
     def restore(self) -> None:
@@ -219,5 +281,5 @@ class SelectionCapture:
         """
         if not self._captured:
             return
-        self.backend.write_clipboard(self._saved_clipboard)
+        self.backend.restore_clipboard(self._saved_clipboard)
         self._captured = False

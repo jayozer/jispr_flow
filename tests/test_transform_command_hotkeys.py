@@ -110,6 +110,29 @@ class TestRunVoiceCommandWithSelection:
 
         assert "write:please contact JiSpr Flow support" in backend.events
 
+    def test_empty_command_output_restores_selection_and_warns(self, tmp_path):
+        # A whitespace-only completion must never be pasted over the user's
+        # selection (the paste is unrecoverable -- restore() rewrites the
+        # clipboard, not the selection): replace() is never called, the saved
+        # clipboard comes back, and a warning says why.
+        sink = FakeTextSink()
+        llm = MockChatClient(["   "])
+        pipeline = _pipeline(tmp_path, sink, llm=llm)
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+        reporter = FakeReporter()
+
+        _run_voice_command(
+            RunDependencies(pipeline, None, None), capture, b"pcm", 16000, reporter
+        )
+
+        assert "paste" not in backend.events  # replace() never ran
+        assert backend.clipboard == "precious"  # restored, not overwritten
+        assert sink.events == []
+        assert reporter.events == [
+            ("warning", "voice command returned no text; selection left unchanged")
+        ]
+
     def test_llm_failure_restores_and_reports_warning(self, tmp_path):
         class FailingClient(MockChatClient):
             def chat(self, messages, *, temperature=0.2, max_tokens=None):
@@ -360,6 +383,66 @@ class TestRunLoopTransformHotkey:
         assert done.wait(timeout=2), "the transform tap never replaced the selection"
         assert backend.clipboard == "original clipboard"
         assert "write:POLISHED SELECTION" in backend.events
+
+    def test_end_to_end_empty_transform_output_restores_and_warns(
+        self, tmp_path, monkeypatch
+    ):
+        # A whitespace-only completion must never be pasted over the user's
+        # selection: replace() is never called, the saved clipboard comes
+        # back via restore(), and a warning says why.
+        import local_flow.app as app_module
+
+        sink = FakeTextSink()
+        llm = MockChatClient(["   "])
+        pipeline = _pipeline(tmp_path, sink, llm=llm)
+        config = _config(transform_hotkey="f6")
+        reporter = FakeReporter()
+        done = threading.Event()
+
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted")
+        replace_calls: list[str] = []
+
+        class SpyCapture(SelectionCapture):
+            def replace(self, text):
+                replace_calls.append(text)
+                super().replace(text)
+
+            def restore(self):
+                super().restore()
+                done.set()
+
+        capture = SpyCapture(backend, sleep=lambda s: None)
+        monkeypatch.setattr(app_module, "_build_selection_capture", lambda config: capture)
+
+        class FakeTapListener:
+            def __init__(self, key_name):
+                pass
+
+            def run(self, on_tap):
+                on_tap()
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                done.wait(timeout=5)
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", FakeTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, None, None),
+        )
+
+        assert done.wait(timeout=2)
+        assert replace_calls == []  # replace() never called with blank text
+        assert backend.clipboard == "precious"  # restored, not overwritten
+        assert (
+            "warning",
+            "transform returned no text; selection left unchanged",
+        ) in reporter.events
 
     def test_end_to_end_no_selection_reports_warning(self, tmp_path, monkeypatch):
         import local_flow.app as app_module
