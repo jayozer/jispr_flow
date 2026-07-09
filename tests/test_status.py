@@ -224,6 +224,79 @@ class TestHandleUtterance:
         assert "hint : Test-only failure." in capsys.readouterr().err
 
 
+class TestHandleUtteranceNonLocalFlowError:
+    """Group C item 2: `_handle_utterance` must survive *any* exception, not
+    just `LocalFlowError` -- a full-disk `OSError`, ctranslate2
+    `RuntimeError`, or bad `asr_language` `ValueError` used to escape and
+    kill the hands-free/tray session loop.
+    """
+
+    class _ExplodingTranscriber(MockTranscriber):
+        """Raises a non-LocalFlowError, as a crashed ctranslate2 would."""
+
+        def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+            self.calls.append((len(pcm), sample_rate))
+            raise RuntimeError("ctranslate2 aborted")
+
+    def test_runtime_error_reports_error_and_still_reaches_idle(self, tmp_path, capsys):
+        store = PersonalizationStore(tmp_path / "data")
+        pipeline = _make_pipeline(
+            store,
+            MockChatClient(["never reached"]),
+            FakeTextSink(),
+            transcriber=self._ExplodingTranscriber([]),
+        )
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm-bytes", sample_rate=16000)
+
+        assert [state for state, _ in reporter.events] == ["processing", "error", "idle"]
+        assert reporter.events[1] == ("error", "RuntimeError: ctranslate2 aborted")
+        # No curated hint exists for a non-LocalFlowError; the traceback goes
+        # to stderr instead so the failure stays diagnosable.
+        assert "RuntimeError: ctranslate2 aborted" in capsys.readouterr().err
+
+    def test_runtime_error_leaves_the_wav_in_pending(self, tmp_path):
+        from local_flow.audio.recovery import PendingAudioStore
+
+        store = PersonalizationStore(tmp_path / "data")
+        pending = PendingAudioStore(tmp_path / "recovery")
+        pipeline = _make_pipeline(
+            store,
+            MockChatClient(["never reached"]),
+            FakeTextSink(),
+            transcriber=self._ExplodingTranscriber([]),
+        )
+        reporter = FakeReporter()
+
+        # Even-length payload: WAV frames are 2 bytes each (16-bit mono).
+        _handle_utterance(pipeline, reporter, b"pcm-data", 16000, pending)
+
+        [saved_path] = pending.pending()
+        saved_pcm, saved_rate = pending.load(saved_path)
+        assert saved_pcm == b"pcm-data"
+        assert saved_rate == 16000
+
+    def test_failing_pending_save_is_reported_not_raised(self, tmp_path, capsys):
+        """`pending_store.save()` now sits inside the guard: a full disk
+        costs that one utterance (reported as "error"), not the session.
+        """
+
+        class FullDiskStore:
+            def save(self, pcm: bytes, sample_rate: int):
+                raise OSError(28, "No space left on device")
+
+        store = PersonalizationStore(tmp_path / "data")
+        pipeline = _make_pipeline(store, MockChatClient(["ok"]), FakeTextSink())
+        reporter = FakeReporter()
+
+        _handle_utterance(pipeline, reporter, b"pcm-bytes", 16000, FullDiskStore())
+
+        assert [state for state, _ in reporter.events] == ["processing", "error", "idle"]
+        assert "No space left on device" in reporter.events[1][1]
+        capsys.readouterr()  # swallow the traceback; asserted in the test above
+
+
 class DummyVAD:
     """Placeholder VAD passed through `_run_loop`'s `dependencies` tuple.
 
@@ -279,6 +352,77 @@ class TestHandsFreeReArmsRecording:
             "inserted",
             "idle",
         ]
+
+
+class TestHandsFreeLoopSurvivesTranscriberCrash:
+    """Group C item 2, end to end: a transcriber raising a non-LocalFlowError
+    mid-utterance must not kill the hands-free segment loop -- the error is
+    reported, the failed utterance's WAV stays in `pending/`, and the *next*
+    utterance still processes normally.
+    """
+
+    class _CrashOnceTranscriber(MockTranscriber):
+        """RuntimeError on the first utterance, scripted text afterwards."""
+
+        def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+            if not self.calls:
+                self.calls.append((len(pcm), sample_rate))
+                raise RuntimeError("ctranslate2 aborted")
+            return super().transcribe(pcm, sample_rate)
+
+    def test_error_on_first_utterance_second_still_inserts(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from local_flow.audio.recovery import PendingAudioStore
+
+        store = PersonalizationStore(tmp_path / "data")
+        llm = MockChatClient(["Second."])
+        sink = FakeTextSink()
+        pipeline = DictationPipeline(
+            transcriber=self._CrashOnceTranscriber(["second"]),
+            polisher=TranscriptPolisher(llm, store),
+            store=store,
+            sink=sink,
+            command_mode=CommandMode(llm, dictionary_terms=store.dictionary_terms()),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={})
+        pending = PendingAudioStore(tmp_path / "recovery")
+
+        # Even-length segments: WAV frames are 2 bytes each (16-bit mono).
+        monkeypatch.setattr(
+            "local_flow.audio.vad.segment_stream",
+            lambda *args, **kwargs: iter([b"segment-1st!", b"segment-2nd!"]),
+        )
+
+        class DummySource:
+            def frames(self, frame_ms):
+                return iter([])
+
+        result = _run_loop(
+            config,
+            "hands-free",
+            reporter,
+            dependencies=RunDependencies(pipeline, DummySource(), DummyVAD(), pending),
+        )
+
+        assert result == 0
+        assert [event[0] for event in reporter.events] == [
+            "recording",
+            "processing",
+            "error",
+            "idle",
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]
+        assert sink.events == [("insert", "Second.")]
+        # The crashed utterance's WAV survives for `local-flow recover`; the
+        # successful one deleted its own on the way out.
+        [saved_path] = pending.pending()
+        assert pending.load(saved_path) == (b"segment-1st!", config.sample_rate)
+        capsys.readouterr()  # swallow the traceback printed for the RuntimeError
 
 
 class TestCancelPathNotifiesIdle:

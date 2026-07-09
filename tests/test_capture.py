@@ -1,11 +1,15 @@
-"""`pick_input_device` (pure) and `SounddeviceSource` construction-time
-device resolution -- see the Phase 5 plan (E11: mic priority).
+"""`pick_input_device` (pure), `SounddeviceSource` construction-time
+device resolution (see the Phase 5 plan, E11: mic priority), and the
+`frames()` liveness guard (Group C item 34).
 """
 
 import sys
+import threading
+import time
 
 import pytest
 
+import local_flow.audio.capture as capture_module
 from local_flow.audio.capture import SounddeviceSource, pick_input_device
 from local_flow.errors import MicNotFoundError, MicPermissionError
 
@@ -125,3 +129,85 @@ class TestSounddeviceSourceDeviceResolution:
         fake_sounddevice(query_error=RuntimeError("boom"))
         with pytest.raises(MicPermissionError):
             SounddeviceSource()
+
+
+class _FakeRawInputStream:
+    """Stand-in for `sounddevice.RawInputStream`: hands frames to the
+    capture callback on demand and lets a test flip `active` off, the way
+    PortAudio does when the device disappears mid-session.
+    """
+
+    def __init__(self, callback, initial_frames=()):
+        self._callback = callback
+        self._initial_frames = list(initial_frames)
+        self.active = False
+
+    def deliver(self, frame: bytes) -> None:
+        self._callback(frame, len(frame) // 2, None, None)
+
+    def __enter__(self):
+        self.active = True
+        for frame in self._initial_frames:
+            self.deliver(frame)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.active = False
+
+
+class TestFramesLiveness:
+    """Group C item 34: `frames()` uses a timed `queue.get` and re-checks the
+    stream between waits, so a mid-session mic disconnect (PortAudio stops
+    invoking the callback, `active` goes False) ends the iteration instead
+    of hanging the hands-free loop forever.
+    """
+
+    def _source(self, fake_sounddevice, monkeypatch, initial_frames=()):
+        fake = fake_sounddevice(devices=[_device("Built-in Microphone")])
+        streams: list[_FakeRawInputStream] = []
+
+        def raw_input_stream(**kwargs):
+            stream = _FakeRawInputStream(kwargs["callback"], initial_frames)
+            streams.append(stream)
+            return stream
+
+        fake.RawInputStream = raw_input_stream
+        monkeypatch.setattr(capture_module, "_FRAMES_LIVENESS_TIMEOUT_S", 0.05)
+        return SounddeviceSource(), streams
+
+    def test_disconnect_ends_the_iteration_instead_of_hanging(
+        self, fake_sounddevice, monkeypatch
+    ):
+        source, streams = self._source(
+            fake_sounddevice, monkeypatch, initial_frames=[b"f1", b"f2"]
+        )
+
+        frames = source.frames(30)
+        assert next(frames) == b"f1"
+        assert next(frames) == b"f2"
+
+        streams[0].active = False  # mic unplugged: no more callbacks, ever
+        with pytest.raises(StopIteration):
+            next(frames)
+
+    def test_quiet_gap_on_a_live_stream_keeps_waiting(
+        self, fake_sounddevice, monkeypatch
+    ):
+        """A timeout alone must not end the loop: only inactivity does. A
+        frame delivered a few liveness-timeouts late is still yielded.
+        """
+        source, streams = self._source(fake_sounddevice, monkeypatch)
+        frames = source.frames(30)
+
+        def deliver_late() -> None:
+            # The stream only exists once `next(frames)` starts the
+            # generator; wait for it, then let a few 0.05s liveness
+            # timeouts elapse before delivering.
+            deadline = time.monotonic() + 2
+            while not streams and time.monotonic() < deadline:
+                time.sleep(0.005)
+            time.sleep(0.15)
+            streams[0].deliver(b"late")
+
+        threading.Thread(target=deliver_late, daemon=True).start()
+        assert next(frames) == b"late"

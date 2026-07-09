@@ -90,6 +90,12 @@ class CallbackDispatcher:
     running it inside a Windows low-level keyboard hook or a macOS event-tap
     callback gets the hook/tap disabled by the OS. A single worker preserves
     press -> release ordering.
+
+    ``_run_loop`` uses two instances -- one for the (fast) recording state
+    machine the hotkeys drive, one for the (slow) ASR + LLM + insertion work
+    -- so a new dictation can start recording while the previous utterance
+    is still being processed. See the ``dispatcher``/``processor`` wiring
+    there.
     """
 
     def __init__(self) -> None:
@@ -105,12 +111,19 @@ class CallbackDispatcher:
             except Exception as exc:  # a failing callback must not kill dispatch
                 print(f"hotkey callback failed: {exc}", file=sys.stderr)
 
+    def submit(self, fn: Callable[[], None]) -> None:
+        """Enqueue one callback -- for one-off closures bound at call time
+        (e.g. "process this utterance's PCM"), where :meth:`wrap`'s
+        fixed-callback shape doesn't fit.
+        """
+        self._queue.put(fn)
+
     def wrap(self, fn: Callable[[], None] | None) -> Callable[[], None] | None:
         if fn is None:
             return None
 
         def enqueue() -> None:
-            self._queue.put(fn)
+            self.submit(fn)
 
         return enqueue
 

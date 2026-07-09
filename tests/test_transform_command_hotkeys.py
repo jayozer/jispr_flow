@@ -778,7 +778,7 @@ class TestRunLoopTransformHotkeyDebounce:
 
 class _ContentionSource:
     """A fake ``AudioSource`` that counts concurrent ``record_until`` calls,
-    so tests can prove ``_run_loop``'s ``mic_in_use`` guard never lets the
+    so tests can prove ``_run_loop``'s ``mic_owner`` guard never lets the
     main PTT recorder and the command-hotkey recorder open the (single,
     shared) microphone at the same time.
     """
@@ -801,7 +801,7 @@ class _ContentionSource:
 
 
 class TestMicMutualExclusion:
-    """`_run_loop`'s ``mic_in_use`` flag: the main PTT recorder and the
+    """`_run_loop`'s ``mic_owner`` guard: the main PTT recorder and the
     command-hotkey recorder both call ``source.record_until`` on the same
     ``SounddeviceSource`` (concurrent PortAudio opens are device contention,
     not two clean recordings), so the second one to start while the other is
