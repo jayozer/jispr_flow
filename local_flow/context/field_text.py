@@ -27,9 +27,10 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 # Kept in sync with `local_flow.polish.prompting`'s defensive re-cap of the
-# same value -- this is the "source of truth" cap; prompting re-applies it so
-# the prompt is safe even if a future provider forgets to.
+# same values -- these are the "source of truth" caps; prompting re-applies
+# them so the prompt is safe even if a future provider forgets to.
 MAX_BEFORE_CURSOR = 1000
+MAX_SELECTED = 1000
 
 
 @dataclass(frozen=True)
@@ -39,7 +40,9 @@ class FieldContext:
     ``before_cursor``: the text immediately preceding the cursor/selection,
     tail-capped at ``MAX_BEFORE_CURSOR`` characters so a huge open document
     never balloons the polish prompt. ``selected``: whatever text (if any)
-    is currently highlighted in that same field. All-empty when unknown --
+    is currently highlighted in that same field, tail-capped at
+    ``MAX_SELECTED`` for the same reason (a select-all of a big document
+    would otherwise embed the whole document). All-empty when unknown --
     there's no separate "unknown" state to check for.
     """
 
@@ -130,7 +133,7 @@ class MacAXFieldText(FieldTextProvider):
                 if ok and cf_range is not None:
                     location, length = int(cf_range[0]), int(cf_range[1])
                     before_cursor = value[:location][-MAX_BEFORE_CURSOR:]
-                    selected = value[location : location + length]
+                    selected = value[location : location + length][-MAX_SELECTED:]
 
             return FieldContext(before_cursor=before_cursor, selected=selected)
         except Exception:

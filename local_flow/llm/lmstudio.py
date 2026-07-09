@@ -64,6 +64,10 @@ class LMStudioClient(ChatClient):
                 base_url,
             )
         self._client = httpx.Client(timeout=timeout, transport=transport)
+        # True once `resolve_model` auto-picked `self.model` (as opposed to a
+        # user-configured id): only auto-picked ids may be dropped and
+        # re-listed when they go stale (see `chat`).
+        self._auto_picked = False
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}/{path.lstrip('/')}"
@@ -95,6 +99,7 @@ class LMStudioClient(ChatClient):
                 "it, or set LOCAL_FLOW_LMSTUDIO_MODEL to a model identifier.",
             )
         self.model = models[0]
+        self._auto_picked = True
         return self.model
 
     def chat(
@@ -104,28 +109,14 @@ class LMStudioClient(ChatClient):
         temperature: float = 0.2,
         max_tokens: int | None = None,
     ) -> str:
-        payload: dict[str, object] = {
-            "model": self.resolve_model(),
-            "messages": messages,
-            "temperature": temperature,
-            "stream": False,
-        }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-
-        try:
-            response = self._client.post(self._url("chat/completions"), json=payload)
-        except httpx.TimeoutException as exc:
-            raise LMStudioConnectionError(
-                f"Timed out waiting for LM Studio at {self.base_url} "
-                f"(model {self.model!r}).",
-                hint="A slow or overloaded model can exceed the timeout; raise "
-                "LOCAL_FLOW_LMSTUDIO_TIMEOUT or load a smaller model.",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise LMStudioConnectionError(
-                f"Could not reach LM Studio at {self.base_url}: {exc}", hint=_CONNECT_HINT
-            ) from exc
+        response = self._post_chat(messages, temperature, max_tokens)
+        if response.status_code == 404 and self._auto_picked:
+            # The auto-picked model id has gone stale (the user swapped
+            # models in LM Studio); drop it, re-list, and retry once rather
+            # than 404 on every call until restart. A user-configured model
+            # is never substituted -- the 404 below stays actionable.
+            self.model = ""
+            response = self._post_chat(messages, temperature, max_tokens)
 
         if response.status_code == 404:
             raise LMStudioModelError(
@@ -156,6 +147,35 @@ class LMStudioClient(ChatClient):
                 hint="Make sure a chat-capable (instruct) model is loaded.",
             )
         return content.strip()
+
+    def _post_chat(
+        self,
+        messages: list[Message],
+        temperature: float,
+        max_tokens: int | None,
+    ) -> httpx.Response:
+        payload: dict[str, object] = {
+            "model": self.resolve_model(),
+            "messages": messages,
+            "temperature": temperature,
+            "stream": False,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        try:
+            return self._client.post(self._url("chat/completions"), json=payload)
+        except httpx.TimeoutException as exc:
+            raise LMStudioConnectionError(
+                f"Timed out waiting for LM Studio at {self.base_url} "
+                f"(model {self.model!r}).",
+                hint="A slow or overloaded model can exceed the timeout; raise "
+                "LOCAL_FLOW_LMSTUDIO_TIMEOUT or load a smaller model.",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LMStudioConnectionError(
+                f"Could not reach LM Studio at {self.base_url}: {exc}", hint=_CONNECT_HINT
+            ) from exc
 
     def _parse_json(self, response: httpx.Response) -> dict:
         try:

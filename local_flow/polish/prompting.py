@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from local_flow.context.field_text import MAX_BEFORE_CURSOR, FieldContext
+from local_flow.context.field_text import MAX_BEFORE_CURSOR, MAX_SELECTED, FieldContext
 from local_flow.llm.base import Message
 
 # Shared across every LLM level: never let the polish pass eat phrases that
@@ -146,7 +146,9 @@ def _field_context_block(field_context: FieldContext | None) -> str:
     ``local_flow.context.field_text`` -- so the prompt can never balloon
     regardless of what a provider hands back) is used as the tail via the
     continuation template. Otherwise, if only ``selected`` is set, the
-    selection-only variant is used instead, so the block always reads as a
+    selection-only variant is used instead (its tail re-capped at
+    ``MAX_SELECTED`` for the same reason -- a select-all of a big document
+    must never embed the whole document), so the block always reads as a
     sensible sentence rather than describing an empty tail.
     """
     if field_context is None:
@@ -156,7 +158,9 @@ def _field_context_block(field_context: FieldContext | None) -> str:
     if field_context.before_cursor:
         tail = field_context.before_cursor[-MAX_BEFORE_CURSOR:]
         return _FIELD_CONTEXT_TEMPLATE.format(tail=tail)
-    return _FIELD_CONTEXT_SELECTED_ONLY_TEMPLATE.format(tail=field_context.selected)
+    return _FIELD_CONTEXT_SELECTED_ONLY_TEMPLATE.format(
+        tail=field_context.selected[-MAX_SELECTED:]
+    )
 
 
 def _system_prompt_for_level(level: str) -> str:
