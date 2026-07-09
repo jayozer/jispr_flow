@@ -300,7 +300,16 @@ def run_wizard(
                 "wizard's answers."
             )
 
-    content = _render_toml({**existing, **values})
+    merged = {**existing, **values}
+    if asr_model.endswith(".en"):
+        # English-only models skip the language question. When overwriting a
+        # previous multilingual setup, do not preserve its now-incompatible
+        # `asr_language` (for example "auto" or "fr"): `_build_transcriber`
+        # correctly rejects that combination even though the individual
+        # config values are valid. Omitting the key restores Config's "en"
+        # default and keeps fresh wizard output minimal.
+        merged.pop("asr_language", None)
+    content = _render_toml(merged)
 
     # Write to a temp file in the same directory first and validate that,
     # so a pre-existing config at write_path is never touched unless the

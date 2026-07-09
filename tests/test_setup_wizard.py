@@ -323,6 +323,60 @@ class TestOverwriteConfirmation:
         assert data["context_styles"] is False
         assert data["lmstudio_timeout"] == 30.5
 
+    @pytest.mark.parametrize(
+        ("model_answer", "expected_model", "stale_language"),
+        [("1", "small.en", "auto"), ("3", "base.en", "fr")],
+    )
+    def test_english_only_model_drops_stale_multilingual_language(
+        self,
+        tmp_path,
+        monkeypatch,
+        model_answer,
+        expected_model,
+        stale_language,
+    ):
+        """An overwrite that switches from a multilingual model to an
+        English-only model must not merge the old language back in after the
+        wizard intentionally skips the language question.
+        """
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        config = Config(
+            data_dir=tmp_path / "data",
+            asr_model="small",
+            asr_language=stale_language,
+        )
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'asr_model = "small"\n'
+            f'asr_language = "{stale_language}"\n'
+            "vad_silence_ms = 900\n",
+            encoding="utf-8",
+        )
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+
+        # hotkey, mode, English-only model, style, confirm overwrite. There
+        # is deliberately no language answer because .en skips that prompt.
+        ask = _scripted_ask(["", "", model_answer, "", "y"])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["asr_model"] == expected_model
+        assert "asr_language" not in data
+        assert data["vad_silence_ms"] == 900  # unrelated merge behavior remains
+
+        loaded = load_config(config_file=target)
+        assert loaded.asr_model == expected_model
+        assert loaded.asr_language == "en"
+
     def test_overwrite_of_unparseable_config_warns_and_writes_wizard_keys(
         self, tmp_path, monkeypatch
     ):
