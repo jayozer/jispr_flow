@@ -738,6 +738,15 @@ class TestQuartzFnListenerRunWiresCancelGate:
             def __init__(self, on_press, on_release, on_cancel, cancel_gate=None):
                 captured["cancel_gate"] = cancel_gate
 
+            def key_down(self):
+                captured.setdefault("events", []).append("press")
+
+            def key_up(self):
+                captured.setdefault("events", []).append("release")
+
+            def cancel_down(self):
+                captured.setdefault("events", []).append("cancel")
+
         monkeypatch.setattr(macos_fn, "PushToTalkCore", FakeCore)
         gate = lambda: True  # noqa: E731
         listener = macos_fn.QuartzFnListener(cancel_gate=gate)
@@ -747,18 +756,29 @@ class TestQuartzFnListenerRunWiresCancelGate:
             kCGEventTapDisabledByUserInput = 2
             kCGEventFlagsChanged = 3
             kCGEventKeyDown = 4
-            kCGEventTapOptionListenOnly = 5
+            kCGEventTapOptionDefault = 5
             kCGSessionEventTap = 6
             kCGHeadInsertEventTap = 7
             kCFRunLoopCommonModes = 8
+            kCGKeyboardEventKeycode = 9
+            kCGEventFlagMaskSecondaryFn = 1
 
             @staticmethod
             def CGEventMaskBit(_bit):
                 return 0
 
             @staticmethod
-            def CGEventTapCreate(*_a, **_k):
+            def CGEventTapCreate(*args, **_kwargs):
+                captured["tap_args"] = args
                 return object()
+
+            @staticmethod
+            def CGEventGetIntegerValueField(event, _field):
+                return event["keycode"]
+
+            @staticmethod
+            def CGEventGetFlags(event):
+                return event["flags"]
 
             @staticmethod
             def CFMachPortCreateRunLoopSource(*_a, **_k):
@@ -785,3 +805,20 @@ class TestQuartzFnListenerRunWiresCancelGate:
         listener.run(lambda: None, lambda: None, lambda: None)
 
         assert captured["cancel_gate"] is gate
+        assert captured["tap_args"][2] == FakeQuartz.kCGEventTapOptionDefault
+
+        callback = captured["tap_args"][4]
+        fn_down = {"keycode": 63, "flags": FakeQuartz.kCGEventFlagMaskSecondaryFn}
+        fn_up = {"keycode": 63, "flags": 0}
+        other_flags = {"keycode": 0, "flags": 0}
+
+        # Fn press/release drive local-flow but are consumed so another
+        # global Fn listener (including macOS Dictation) cannot duplicate the
+        # utterance. Unrelated flagsChanged events still pass through.
+        assert callback(None, FakeQuartz.kCGEventFlagsChanged, fn_down, None) is None
+        assert callback(None, FakeQuartz.kCGEventFlagsChanged, fn_up, None) is None
+        assert captured["events"] == ["press", "release"]
+        assert (
+            callback(None, FakeQuartz.kCGEventFlagsChanged, other_flags, None)
+            is other_flags
+        )
