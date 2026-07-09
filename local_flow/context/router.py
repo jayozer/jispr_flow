@@ -7,6 +7,7 @@ history ``app`` value for that dictation.
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -36,6 +37,20 @@ class ContextRouter:
         self.provider = provider
         self.rules = rules
         self.sinks_by_method = sinks_by_method
+        # A typo'd per-app "insert" (e.g. "Type" -- the lookup is
+        # case-sensitive, like config.insert_method) would otherwise fall
+        # back to the default sink silently on every utterance; warn once at
+        # construction instead, naming the rule and the valid values.
+        # resolve() still degrades to the default sink, unchanged.
+        for rule_key, rule in rules.items():
+            if rule.insert and rule.insert not in sinks_by_method:
+                valid = ", ".join(sorted(sinks_by_method)) or "(none)"
+                print(
+                    f"warning: app_styles.json rule {rule_key!r}: unknown "
+                    f"insert {rule.insert!r}; using the default sink "
+                    f"(valid values: {valid})",
+                    file=sys.stderr,
+                )
 
     def resolve(self) -> ResolvedContext:
         info = self.provider.current()

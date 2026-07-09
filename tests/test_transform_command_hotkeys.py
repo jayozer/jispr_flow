@@ -492,6 +492,91 @@ class TestRunLoopTransformHotkey:
         assert ("warning", "no text selected") in reporter.events
 
 
+class TestSecondaryHotkeyUnsupportedKeyDegrades:
+    """Review item 14: a distinct-but-unsupported secondary hotkey value
+    (e.g. `transform_hotkey=fn` -- pynput cannot observe Fn) used to raise
+    out of listener construction on the main thread and abort the whole app.
+    It must instead disable just that one hotkey with an actionable warning
+    while the main push-to-talk loop keeps running.
+    """
+
+    def test_unsupported_transform_hotkey_warns_and_keeps_running(
+        self, tmp_path, monkeypatch
+    ):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config(hotkey="f9", transform_hotkey="fn")
+        reporter = FakeReporter()
+        main_listener_ran = threading.Event()
+
+        class RaisingTapListener:
+            def __init__(self, key_name):
+                raise HotkeyBackendMissingError(
+                    f"Unknown hotkey {key_name!r}.",
+                    hint="Use a pynput key name such as f9, f8, scroll_lock, "
+                    "or a single character.",
+                )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                main_listener_ran.set()
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", RaisingTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        result = _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, None, None),
+        )
+
+        assert result == 0  # the app did not abort
+        assert main_listener_ran.is_set()  # the main hotkey still ran
+        warnings = [d for s, d in reporter.events if s == "warning"]
+        assert any("transform hotkey disabled" in w for w in warnings)
+        assert any("'fn'" in w for w in warnings)  # names the bad value
+
+    def test_unsupported_command_hotkey_warns_and_keeps_running(
+        self, tmp_path, monkeypatch
+    ):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config(hotkey="f9", command_hotkey="fn")
+        reporter = FakeReporter()
+        main_listener_ran = threading.Event()
+
+        class RaisingPynput:
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                raise HotkeyBackendMissingError(
+                    f"Unknown hotkey {key_name!r}.",
+                    hint="Use a pynput key name such as f9, f8, scroll_lock, "
+                    "or a single character.",
+                )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                main_listener_ran.set()
+
+        monkeypatch.setattr("local_flow.hotkeys.base.PynputPushToTalk", RaisingPynput)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        result = _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, _FakeSource(), None),
+        )
+
+        assert result == 0
+        assert main_listener_ran.is_set()
+        warnings = [d for s, d in reporter.events if s == "warning"]
+        assert any("voice command hotkey disabled" in w for w in warnings)
+        assert any("'fn'" in w for w in warnings)
+
+
 class _FakeSource:
     def record_until(self, stop, frame_ms):
         stop.wait(timeout=5)

@@ -34,7 +34,7 @@ from local_flow import __version__
 from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
 from local_flow.config import Config, load_config
-from local_flow.errors import ConfigError, LocalFlowError
+from local_flow.errors import ConfigError, HotkeyBackendMissingError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
 
@@ -1449,6 +1449,34 @@ def _run_command_hotkey_listener(
             print(f"hint : {exc.hint}", file=sys.stderr)
 
 
+def _build_secondary_listener(
+    factory: Callable[[], object],
+    field_name: str,
+    value: str,
+    feature: str,
+    reporter: StatusReporter,
+):
+    """Construct a secondary-hotkey listener, or warn and return ``None``.
+
+    The transform/command/scratchpad hotkeys are optional extras: a value the
+    backend can't observe (``fn`` needs a Quartz tap that only the *main*
+    hotkey has, and pynput itself may be missing) must disable just that one
+    feature with an actionable warning -- raising here would abort the whole
+    ``run`` loop on the main thread for a hotkey the session can live
+    without. Same warn-and-disable precedent as an unknown
+    ``transform_default``.
+    """
+    try:
+        return factory()
+    except HotkeyBackendMissingError as exc:
+        detail = exc.message + (f" {exc.hint}" if exc.hint else "")
+        reporter.notify(
+            "warning",
+            f"{field_name} {value!r} is unusable ({detail}); {feature} disabled",
+        )
+        return None
+
+
 def _transform_tap_debounced(
     last_completed_at: float, now: float, threshold_s: float = _TRANSFORM_DEBOUNCE_S
 ) -> bool:
@@ -1878,16 +1906,23 @@ def _run_loop(
                         finally:
                             last_transform_at[0] = time.monotonic()
 
-                    transform_listener = TapListener(config.transform_hotkey)
-                    # On the processor lane (LLM + clipboard), so a tap can
-                    # never run concurrently with an in-flight insertion --
-                    # and so it doesn't block start()/finish() while the
-                    # (slow) transform runs.
-                    threading.Thread(
-                        target=_run_transform_listener,
-                        args=(transform_listener, processor.wrap(_transform_tap)),
-                        daemon=True,
-                    ).start()
+                    transform_listener = _build_secondary_listener(
+                        lambda: TapListener(config.transform_hotkey),
+                        "transform_hotkey",
+                        config.transform_hotkey,
+                        "transform hotkey",
+                        reporter,
+                    )
+                    if transform_listener is not None:
+                        # On the processor lane (LLM + clipboard), so a tap
+                        # can never run concurrently with an in-flight
+                        # insertion -- and so it doesn't block
+                        # start()/finish() while the (slow) transform runs.
+                        threading.Thread(
+                            target=_run_transform_listener,
+                            args=(transform_listener, processor.wrap(_transform_tap)),
+                            daemon=True,
+                        ).start()
 
             if config.scratchpad_hotkey:
                 # `scratchpad_sink` is always built by `_build_run_dependencies`
@@ -1927,12 +1962,19 @@ def _run_loop(
                                 "warning", "scratchpad off: dictating normally"
                             )
 
-                    pad_listener = TapListener(config.scratchpad_hotkey)
-                    threading.Thread(
-                        target=_run_scratchpad_listener,
-                        args=(pad_listener, dispatcher.wrap(_toggle_pad)),
-                        daemon=True,
-                    ).start()
+                    pad_listener = _build_secondary_listener(
+                        lambda: TapListener(config.scratchpad_hotkey),
+                        "scratchpad_hotkey",
+                        config.scratchpad_hotkey,
+                        "scratchpad hotkey",
+                        reporter,
+                    )
+                    if pad_listener is not None:
+                        threading.Thread(
+                            target=_run_scratchpad_listener,
+                            args=(pad_listener, dispatcher.wrap(_toggle_pad)),
+                            daemon=True,
+                        ).start()
 
             if config.command_hotkey:
                 # A second, independent push-to-talk recorder: its own
@@ -2004,16 +2046,23 @@ def _run_loop(
 
                 # No cancel key: this listener has no cancel gesture of its
                 # own (mirrors mouse push-to-talk -- see README).
-                command_listener = PynputPushToTalk(config.command_hotkey, cancel_key="")
-                threading.Thread(
-                    target=_run_command_hotkey_listener,
-                    args=(
-                        command_listener,
-                        dispatcher.wrap(cmd_start),
-                        dispatcher.wrap(cmd_finish),
-                    ),
-                    daemon=True,
-                ).start()
+                command_listener = _build_secondary_listener(
+                    lambda: PynputPushToTalk(config.command_hotkey, cancel_key=""),
+                    "command_hotkey",
+                    config.command_hotkey,
+                    "voice command hotkey",
+                    reporter,
+                )
+                if command_listener is not None:
+                    threading.Thread(
+                        target=_run_command_hotkey_listener,
+                        args=(
+                            command_listener,
+                            dispatcher.wrap(cmd_start),
+                            dispatcher.wrap(cmd_finish),
+                        ),
+                        daemon=True,
+                    ).start()
 
             listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
     except KeyboardInterrupt:
