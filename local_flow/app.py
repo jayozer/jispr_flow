@@ -23,6 +23,7 @@ import argparse
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import fields, replace
 from datetime import UTC, datetime, timedelta
@@ -33,7 +34,7 @@ from local_flow import __version__
 from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
 from local_flow.config import Config, load_config
-from local_flow.errors import ConfigError, LocalFlowError
+from local_flow.errors import ConfigError, HotkeyBackendMissingError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
 
@@ -58,6 +59,11 @@ _WHISPER_PRESET_ENERGY_THRESHOLD = 150.0
 # tap COMPLETES before another is allowed to run -- see `_run_loop`'s
 # `_transform_tap` and `_transform_tap_debounced` below.
 _TRANSFORM_DEBOUNCE_S = 1.0
+
+# How long `_Recording.finish` waits for a push-to-talk recorder thread to
+# exit after its stop event is set. Module-level so tests can monkeypatch it
+# down and exercise the stalled-recorder path without a real 5-second wait.
+_RECORDER_JOIN_TIMEOUT_S = 5.0
 
 
 def parse_mic_priority(raw: str) -> list[str]:
@@ -503,6 +509,14 @@ def _cmd_transform(args: argparse.Namespace, config: Config) -> int:
                 )
             chat_client = _build_chat_client(config)
             result = apply_transform(chat_client, prompt, selected)
+            if not result.strip():
+                # Never paste an empty completion over the user's selection
+                # (the paste is unrecoverable -- restore() rewrites the
+                # clipboard, not the selection). The except below restores.
+                raise LocalFlowError(
+                    "The transform returned no text; the selection was left unchanged.",
+                    hint="Check the transform's prompt and the LM Studio model, then retry.",
+                )
             capture.replace(result)
         except BaseException:
             # On any failure -- capture itself, "nothing selected", LM Studio
@@ -559,7 +573,7 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
     )
     transcriber = _build_transcriber(transcriber_config)
 
-    final_text = ""
+    transcripts = []
     for path in paths:
         print(f"transcribing {path.name}...", file=sys.stderr)
         text = transcriber.transcribe_path(path)
@@ -572,12 +586,14 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         if len(paths) > 1:
             print(f"== {path.name} ==")
         print(text)
-        final_text = text
+        transcripts.append(text)
 
     if args.copy:
         from local_flow.insertion.desktop import ClipboardOnlySink
 
-        ClipboardOnlySink().insert(final_text)
+        # Every file's transcript, not just the last one's; blank-line
+        # separated so multi-file output pastes as distinct paragraphs.
+        ClipboardOnlySink().insert("\n\n".join(transcripts))
 
     return 0
 
@@ -1001,7 +1017,10 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
             print(f"note: {unparseable} record(s) skipped: unparseable timestamp")
         return 0
 
-    stats = compute_stats(windowed, now)
+    # tz=None: bucket active days/streaks/heatmap by the MACHINE's local
+    # calendar (an evening dictation west of UTC belongs to the user's local
+    # day, not the next UTC day). The --since cutoff above stays instant-based.
+    stats = compute_stats(windowed, now, tz=None)
 
     top_apps = (
         ", ".join(f"{app} ({count})" for app, count in stats.top_apps)
@@ -1037,7 +1056,7 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
 
     print()
     print("last 8 weeks:")
-    print(render_heatmap(stats.active_days, now))
+    print(render_heatmap(stats.active_days, now, tz=None))  # same local-zone bucketing
     return 0
 
 
@@ -1088,11 +1107,20 @@ def _handle_utterance(
     fully handled either way. Extracted from ``_run_loop`` so it can be
     exercised directly in tests without mocking audio capture or hotkeys.
 
+    *Any* exception is caught, not just ``LocalFlowError``: this runs inside
+    the hands-free segment loop (and the tray's), where an escaping
+    full-disk ``OSError``, ctranslate2 ``RuntimeError``, or bad
+    ``asr_language`` ``ValueError`` would silently kill the whole session --
+    push-to-talk survives such errors only because ``CallbackDispatcher``'s
+    worker happens to swallow them. One utterance may fail; the loop lives.
+
     When ``pending_store`` is given (see ``local_flow.audio.recovery`` and
     config ``audio_recovery``), the PCM is saved to disk *before*
     ``pipeline.process_audio`` runs and deleted only once that call returns
     normally -- if it raises (caught below as ``error``) or the process
     dies first, the saved WAV is left behind for ``local-flow recover``.
+    The save itself sits inside the same guard, so a failing save (disk
+    full) costs that one utterance, not the session.
     ``pending_store=None`` is byte-identical to before this existed.
 
     When ``normalize_audio`` is set (``vad_preset="whisper"``; see
@@ -1117,12 +1145,14 @@ def _handle_utterance(
     already processed and inserted).
     """
     reporter.notify("processing")
-    if normalize_audio:
-        from local_flow.audio.gain import normalize_peak
-
-        pcm = normalize_peak(pcm)
-    pending_path = pending_store.save(pcm, sample_rate) if pending_store is not None else None
     try:
+        if normalize_audio:
+            from local_flow.audio.gain import normalize_peak
+
+            pcm = normalize_peak(pcm)
+        pending_path = (
+            pending_store.save(pcm, sample_rate) if pending_store is not None else None
+        )
         process_kwargs = {"sink_override": sink_override} if sink_override is not None else {}
         result = pipeline.process_audio(pcm, sample_rate, **process_kwargs)
         for warning in result.warnings:
@@ -1141,6 +1171,12 @@ def _handle_utterance(
         reporter.notify("error", exc.message)
         if exc.hint:
             print(f"hint : {exc.hint}", file=sys.stderr)
+    except Exception as exc:
+        # Not a LocalFlowError, so there is no curated message/hint -- report
+        # the class and keep the full traceback on stderr for diagnosis. The
+        # saved pending WAV (if any) is deliberately left for `recover`.
+        reporter.notify("error", f"{type(exc).__name__}: {exc}")
+        traceback.print_exc()
     finally:
         reporter.notify("idle")
 
@@ -1177,8 +1213,8 @@ def _run_voice_command(
     selection-replace path, and inside ``run_command`` itself for the
     fallback path. Every failure (capture, no command mode configured, empty
     transcription, LLM error) restores the clipboard and reports a
-    ``"warning"`` instead of raising -- this runs on the command hotkey's
-    dispatcher-wrapped worker thread, so nothing here may crash the loop.
+    ``"warning"`` instead of raising -- this runs on ``_run_loop``'s
+    ``processor`` worker thread, so nothing here may crash the loop.
     """
     pipeline = deps.pipeline
     try:
@@ -1208,6 +1244,15 @@ def _run_voice_command(
             transformed, _count = enforce_dictionary(
                 transformed, pipeline.store.dictionary_terms()
             )
+            if not transformed.strip():
+                # Never paste an empty completion over the selection (the
+                # paste is unrecoverable; restore() only rewrites the
+                # clipboard) -- keep the user's text and warn instead.
+                capture.restore()
+                reporter.notify(
+                    "warning", "voice command returned no text; selection left unchanged"
+                )
+                return
             capture.replace(transformed)
         else:
             capture.restore()  # nothing was selected; nothing to replace
@@ -1409,6 +1454,34 @@ def _run_command_hotkey_listener(
             print(f"hint : {exc.hint}", file=sys.stderr)
 
 
+def _build_secondary_listener(
+    factory: Callable[[], object],
+    field_name: str,
+    value: str,
+    feature: str,
+    reporter: StatusReporter,
+):
+    """Construct a secondary-hotkey listener, or warn and return ``None``.
+
+    The transform/command/scratchpad hotkeys are optional extras: a value the
+    backend can't observe (``fn`` needs a Quartz tap that only the *main*
+    hotkey has, and pynput itself may be missing) must disable just that one
+    feature with an actionable warning -- raising here would abort the whole
+    ``run`` loop on the main thread for a hotkey the session can live
+    without. Same warn-and-disable precedent as an unknown
+    ``transform_default``.
+    """
+    try:
+        return factory()
+    except HotkeyBackendMissingError as exc:
+        detail = exc.message + (f" {exc.hint}" if exc.hint else "")
+        reporter.notify(
+            "warning",
+            f"{field_name} {value!r} is unusable ({detail}); {feature} disabled",
+        )
+        return None
+
+
 def _transform_tap_debounced(
     last_completed_at: float, now: float, threshold_s: float = _TRANSFORM_DEBOUNCE_S
 ) -> bool:
@@ -1419,19 +1492,57 @@ def _transform_tap_debounced(
     physical key-hold fires `on_tap` only once -- see `TapListener`'s
     docstring). But a user rapidly re-tapping the key, or a bouncy/stuck key
     that toggles press/release several times in a fraction of a second, can
-    still enqueue more than one `_transform_tap` call on the dispatcher's
-    worker queue. A `busy`-style flag (set at the start of the callback,
-    cleared in a `finally`) can't catch this: every hotkey callback --
-    this one, the main PTT start/finish/cancel, and the command hotkey's
-    start/finish -- is wrapped by the SAME `CallbackDispatcher` and therefore
-    runs one at a time on its single worker thread, so by the time a queued
-    duplicate call actually runs, the first has already finished and cleared
-    its own flag. A plain monotonic-clock debounce sidesteps that: a tap
-    within `threshold_s` of the *previous tap's completion* (not its start)
-    is rejected outright, extracted here as a standalone pure function so it
+    still enqueue more than one `_transform_tap` call on its dispatcher's
+    worker queue (the `processor` lane -- see `_run_loop`). A `busy`-style
+    flag (set at the start of the callback, cleared in a `finally`) can't
+    catch this: that lane is a single `CallbackDispatcher` worker running
+    its callbacks one at a time, so by the time a queued duplicate call
+    actually runs, the first has already finished and cleared its own flag.
+    A plain monotonic-clock debounce sidesteps that: a tap within
+    `threshold_s` of the *previous tap's completion* (not its start) is
+    rejected outright, extracted here as a standalone pure function so it
     is unit-testable with plain floats instead of a live clock/thread race.
     """
     return now - last_completed_at < threshold_s
+
+
+class _Recording:
+    """One in-flight push-to-talk recording: its worker thread, private stop
+    event, and private capture box.
+
+    A fresh instance per ``start()`` (main or command hotkey), never reused.
+    That is the whole point: when :meth:`finish` times out waiting for the
+    thread (a PortAudio stall -- macOS mic-permission prompt, Bluetooth
+    dropout), the recording is *abandoned*. Whatever ``record_until``
+    eventually returns lands in this instance's box, which nothing reads
+    anymore -- it can never be popped by a later recording's finish and
+    typed into whatever field happens to be focused by then. The stop event
+    is per-instance for the same reason: the next recording must not
+    ``clear()`` a stalled thread's stop signal and revive its capture loop.
+    """
+
+    def __init__(self, source: AudioSource, frame_ms: int) -> None:
+        self._box: dict[str, bytes] = {}
+        self.stop = threading.Event()
+
+        def _record() -> None:
+            self._box["pcm"] = source.record_until(self.stop, frame_ms)
+
+        self.thread = threading.Thread(target=_record, daemon=True)
+        self.thread.start()
+
+    def finish(self) -> bytes | None:
+        """Stop the recorder and return its PCM (``b""`` when nothing was
+        captured). ``None`` means the thread is still alive after
+        ``_RECORDER_JOIN_TIMEOUT_S``: the buffer is abandoned, and the
+        caller must keep treating the microphone as busy until
+        :attr:`thread` actually dies.
+        """
+        self.stop.set()
+        self.thread.join(timeout=_RECORDER_JOIN_TIMEOUT_S)
+        if self.thread.is_alive():
+            return None
+        return self._box.pop("pcm", b"")
 
 
 def _run_loop(
@@ -1575,38 +1686,40 @@ def _run_loop(
                         f"mouse enter-key button active: "
                         f"{config.mouse_enter_button!r} (no mouse push-to-talk)"
                     )
-            stop = threading.Event()
-            recorder: dict[str, threading.Thread | None] = {"thread": None}
-            captured: dict[str, bytes] = {}
-            # Shared with the command-hotkey recorder below (if configured):
-            # both eventually call `source.record_until` on the very same
+            recorder: dict[str, _Recording | None] = {"current": None}
+            # Which `_Recording` currently owns the microphone -- shared with
+            # the command-hotkey recorder below (if configured): both
+            # eventually call `source.record_until` on the very same
             # `SounddeviceSource`, and opening two concurrent PortAudio input
             # streams on one source is device contention, not a clean second
-            # recording (see README "Voice command mode"). A plain
-            # list-boxed bool -- no lock -- is safe here because every
-            # callback that reads or writes it (this hotkey's start/finish/
-            # cancel AND the command hotkey's start/finish) is wrapped by the
-            # SAME `CallbackDispatcher` and therefore runs one at a time on
-            # its single worker thread: there is never a moment where two of
+            # recording (see README "Voice command mode"). The mic counts as
+            # busy while the owner's *thread* is alive, which also covers a
+            # stalled recorder abandoned by `finish()`/`cancel()` (see
+            # `_Recording.finish`): it keeps the mic busy until its thread
+            # actually exits, then the next `start()` reclaims it. A plain
+            # list box -- no lock -- is safe here because every callback that
+            # reads or writes it (this hotkey's start/finish/cancel AND the
+            # command hotkey's start/finish) is wrapped by the SAME
+            # `dispatcher` below and therefore runs one at a time on its
+            # single worker thread: there is never a moment where two of
             # these closures execute concurrently.
-            mic_in_use = [False]
+            mic_owner: list[_Recording | None] = [None]
+
+            def _mic_busy() -> bool:
+                owner = mic_owner[0]
+                return owner is not None and owner.thread.is_alive()
 
             def start() -> None:
-                if mic_in_use[0]:
+                if _mic_busy():
                     reporter.notify(
                         "warning", "microphone busy; finish the other recording first"
                     )
                     return
-                mic_in_use[0] = True
                 recording_active.set()
-                stop.clear()
                 reporter.notify("recording")
-
-                def record() -> None:
-                    captured["pcm"] = source.record_until(stop, config.vad_frame_ms)
-
-                recorder["thread"] = threading.Thread(target=record, daemon=True)
-                recorder["thread"].start()
+                rec = _Recording(source, config.vad_frame_ms)
+                recorder["current"] = rec
+                mic_owner[0] = rec
 
             def finish() -> None:
                 if not recording_active.is_set():
@@ -1614,28 +1727,50 @@ def _run_loop(
                     # `PushToTalkCore.held` still flips true/false on
                     # physical press/release regardless, so `finish()` still
                     # runs. Nothing was actually started, and this callback
-                    # never claimed `mic_in_use`, so there is nothing to stop
-                    # and nothing to clear (clearing it here could steal it
+                    # never claimed the mic, so there is nothing to stop and
+                    # nothing to release (releasing it here could steal it
                     # out from under whoever else does own it).
                     return
                 recording_active.clear()
-                stop.set()
-                thread = recorder["thread"]
-                if thread is not None:
-                    thread.join(timeout=5)
-                mic_in_use[0] = False
-                pcm = captured.pop("pcm", b"")
-                if pcm:
-                    _handle_utterance(
-                        pipeline,
-                        reporter,
-                        pcm,
-                        config.sample_rate,
-                        pending_store,
-                        normalize_audio,
-                        max_utterance_min,
-                        scratchpad_sink if pad_active[0] else None,
+                rec = recorder["current"]
+                recorder["current"] = None
+                if rec is None:
+                    return
+                pcm = rec.finish()
+                if pcm is None:
+                    # The recorder thread outlived the join timeout (a
+                    # PortAudio stall: mic-permission prompt, Bluetooth
+                    # dropout). Its buffer is abandoned -- never typed into
+                    # whatever field is focused once it finally returns --
+                    # and `mic_owner` still holds it, so the mic reads busy
+                    # until the thread actually exits (see `_mic_busy`).
+                    reporter.notify(
+                        "warning",
+                        "microphone did not stop in time; recording discarded",
                     )
+                    reporter.notify("idle")
+                    return
+                mic_owner[0] = None
+                if pcm:
+                    # Resolved here, not inside the processing task:
+                    # `finish()` runs on the same dispatcher as
+                    # `_toggle_pad`, so `pad_active` is read exactly when
+                    # finish() executes (see `_toggle_pad`'s docstring).
+                    sink_override = scratchpad_sink if pad_active[0] else None
+
+                    def _process(pcm: bytes = pcm) -> None:
+                        _handle_utterance(
+                            pipeline,
+                            reporter,
+                            pcm,
+                            config.sample_rate,
+                            pending_store,
+                            normalize_audio,
+                            max_utterance_min,
+                            sink_override,
+                        )
+
+                    processor.submit(_process)
 
             def cancel() -> None:
                 if not recording_active.is_set():
@@ -1646,21 +1781,39 @@ def _run_loop(
                     # recording between the gate check and this callback
                     # running, or `start()` refused (mic busy). Either way,
                     # there is nothing to discard and (per `finish()` above)
-                    # nothing of `mic_in_use` this callback owns.
+                    # no mic claim of this callback's own to release.
                     return
                 recording_active.clear()
-                stop.set()
-                thread = recorder["thread"]
-                if thread is not None:
-                    thread.join(timeout=5)
-                mic_in_use[0] = False
-                captured.pop("pcm", None)
+                rec = recorder["current"]
+                recorder["current"] = None
+                if rec is not None:
+                    if rec.finish() is None:
+                        # Same abandonment as finish(); the cancelled audio
+                        # was headed for the bin anyway, but the stalled
+                        # thread keeps the mic marked busy until it exits.
+                        reporter.notify(
+                            "warning", "microphone did not stop in time"
+                        )
+                    else:
+                        mic_owner[0] = None
                 print("dictation discarded")
                 # Silent on the console (ConsoleReporter has no output for
                 # "idle"); makes a tray reporter go back to its idle icon.
                 reporter.notify("idle")
 
             dispatcher = CallbackDispatcher()
+            # The second lane (Group C item 10): everything slow -- ASR +
+            # LLM + clipboard/typing insertion, i.e. dictation processing,
+            # voice-command handling, transform taps, the mouse enter-key
+            # press -- runs here, serialized FIFO among itself, while
+            # `dispatcher` above stays free to run the *next* start()/
+            # cancel() immediately. Without this split, a quick second
+            # dictation's start() queued behind the previous utterance's
+            # multi-second finish() and its first words were silently lost.
+            # Keeping ALL slow work on one lane preserves the old mutual
+            # exclusion: no two tasks ever touch the LLM client, clipboard,
+            # or sink concurrently.
+            processor = CallbackDispatcher()
             wrapped_start = dispatcher.wrap(start)
             wrapped_finish = dispatcher.wrap(finish)
             wrapped_cancel = dispatcher.wrap(cancel)
@@ -1676,7 +1829,9 @@ def _run_loop(
                             if exc.hint:
                                 print(f"hint : {exc.hint}", file=sys.stderr)
 
-                    mouse_listener.on_enter = dispatcher.wrap(_press_enter)
+                    # On the processor lane: it touches the sink, so it must
+                    # never interleave with an in-flight insertion.
+                    mouse_listener.on_enter = processor.wrap(_press_enter)
                 # Daemon thread: started before the blocking keyboard
                 # `listener.run()` below, sharing the very same
                 # dispatcher-wrapped start/finish callbacks so a click and a
@@ -1738,6 +1893,16 @@ def _run_loop(
                             result = apply_transform(
                                 pipeline.polisher.chat_client, prompt, selected
                             )
+                            if not result.strip():
+                                # Never paste an empty completion over the
+                                # selection (unrecoverable; restore() only
+                                # rewrites the clipboard).
+                                capture.restore()
+                                reporter.notify(
+                                    "warning",
+                                    "transform returned no text; selection left unchanged",
+                                )
+                                return
                             capture.replace(result)
                         except Exception as exc:
                             capture.restore()
@@ -1746,12 +1911,23 @@ def _run_loop(
                         finally:
                             last_transform_at[0] = time.monotonic()
 
-                    transform_listener = TapListener(config.transform_hotkey)
-                    threading.Thread(
-                        target=_run_transform_listener,
-                        args=(transform_listener, dispatcher.wrap(_transform_tap)),
-                        daemon=True,
-                    ).start()
+                    transform_listener = _build_secondary_listener(
+                        lambda: TapListener(config.transform_hotkey),
+                        "transform_hotkey",
+                        config.transform_hotkey,
+                        "transform hotkey",
+                        reporter,
+                    )
+                    if transform_listener is not None:
+                        # On the processor lane (LLM + clipboard), so a tap
+                        # can never run concurrently with an in-flight
+                        # insertion -- and so it doesn't block
+                        # start()/finish() while the (slow) transform runs.
+                        threading.Thread(
+                            target=_run_transform_listener,
+                            args=(transform_listener, processor.wrap(_transform_tap)),
+                            daemon=True,
+                        ).start()
 
             if config.scratchpad_hotkey:
                 # `scratchpad_sink` is always built by `_build_run_dependencies`
@@ -1791,46 +1967,45 @@ def _run_loop(
                                 "warning", "scratchpad off: dictating normally"
                             )
 
-                    pad_listener = TapListener(config.scratchpad_hotkey)
-                    threading.Thread(
-                        target=_run_scratchpad_listener,
-                        args=(pad_listener, dispatcher.wrap(_toggle_pad)),
-                        daemon=True,
-                    ).start()
+                    pad_listener = _build_secondary_listener(
+                        lambda: TapListener(config.scratchpad_hotkey),
+                        "scratchpad_hotkey",
+                        config.scratchpad_hotkey,
+                        "scratchpad hotkey",
+                        reporter,
+                    )
+                    if pad_listener is not None:
+                        threading.Thread(
+                            target=_run_scratchpad_listener,
+                            args=(pad_listener, dispatcher.wrap(_toggle_pad)),
+                            daemon=True,
+                        ).start()
 
             if config.command_hotkey:
                 # A second, independent push-to-talk recorder: its own
-                # stop-event/thread/captured-pcm state, deliberately NOT
-                # shared with the main hotkey's `stop`/`recorder`/`captured`
-                # above. It DOES share `mic_in_use` with the main hotkey,
-                # though: both ultimately call `source.record_until` on the
-                # same `SounddeviceSource`, and a concurrent second open is
-                # PortAudio device contention, not a clean second recording
-                # -- so holding both hotkeys at once has the second one
-                # refused (with a warning) rather than corrupting either
-                # recording. See `mic_in_use`'s definition above for why a
-                # plain flag (no lock) is safe.
-                cmd_stop = threading.Event()
-                cmd_recorder: dict[str, threading.Thread | None] = {"thread": None}
-                cmd_captured: dict[str, bytes] = {}
+                # `_Recording` holder, deliberately NOT shared with the main
+                # hotkey's `recorder` above. It DOES share `mic_owner` with
+                # the main hotkey, though: both ultimately call
+                # `source.record_until` on the same `SounddeviceSource`, and
+                # a concurrent second open is PortAudio device contention,
+                # not a clean second recording -- so holding both hotkeys at
+                # once has the second one refused (with a warning) rather
+                # than corrupting either recording. See `mic_owner`'s
+                # definition above for why a plain box (no lock) is safe.
+                cmd_recorder: dict[str, _Recording | None] = {"current": None}
                 cmd_recording_active = threading.Event()
 
                 def cmd_start() -> None:
-                    if mic_in_use[0]:
+                    if _mic_busy():
                         reporter.notify(
                             "warning", "microphone busy; finish the other recording first"
                         )
                         return
-                    mic_in_use[0] = True
                     cmd_recording_active.set()
-                    cmd_stop.clear()
                     reporter.notify("recording")
-
-                    def record() -> None:
-                        cmd_captured["pcm"] = source.record_until(cmd_stop, config.vad_frame_ms)
-
-                    cmd_recorder["thread"] = threading.Thread(target=record, daemon=True)
-                    cmd_recorder["thread"].start()
+                    rec = _Recording(source, config.vad_frame_ms)
+                    cmd_recorder["current"] = rec
+                    mic_owner[0] = rec
 
                 def cmd_finish() -> None:
                     if not cmd_recording_active.is_set():
@@ -1838,38 +2013,61 @@ def _run_loop(
                         # listener's own `PushToTalkCore.held` still flips on
                         # physical press/release regardless, so `finish()`
                         # still runs. Nothing was actually started here, and
-                        # this callback never claimed `mic_in_use`, so there
-                        # is nothing to stop and nothing to clear.
+                        # this callback never claimed the mic, so there is
+                        # nothing to stop and nothing to release.
                         return
                     cmd_recording_active.clear()
-                    stop_thread = cmd_recorder["thread"]
-                    cmd_stop.set()
-                    if stop_thread is not None:
-                        stop_thread.join(timeout=5)
-                    mic_in_use[0] = False
-                    pcm = cmd_captured.pop("pcm", b"")
-                    if pcm:
-                        reporter.notify("processing")
-                        # Captured (not just built) at the start of finish(),
-                        # before the -- slower -- transcription step inside
-                        # `_run_voice_command`, so it reflects whatever was
-                        # selected while the user was speaking.
-                        capture = _build_selection_capture(config)
-                        _run_voice_command(deps, capture, pcm, config.sample_rate, reporter)
-                    reporter.notify("idle")
+                    rec = cmd_recorder["current"]
+                    cmd_recorder["current"] = None
+                    if rec is None:
+                        return
+                    pcm = rec.finish()
+                    if pcm is None:
+                        # Same stalled-recorder abandonment as the main
+                        # hotkey's finish() above.
+                        reporter.notify(
+                            "warning",
+                            "microphone did not stop in time; recording discarded",
+                        )
+                        reporter.notify("idle")
+                        return
+                    mic_owner[0] = None
+
+                    def _process(pcm: bytes = pcm) -> None:
+                        if pcm:
+                            reporter.notify("processing")
+                            # Captured (not just built) first thing in this
+                            # task, before the -- slower -- transcription
+                            # step inside `_run_voice_command`, so it
+                            # reflects the selection as close to the key
+                            # release as the processor lane allows.
+                            capture = _build_selection_capture(config)
+                            _run_voice_command(
+                                deps, capture, pcm, config.sample_rate, reporter
+                            )
+                        reporter.notify("idle")
+
+                    processor.submit(_process)
 
                 # No cancel key: this listener has no cancel gesture of its
                 # own (mirrors mouse push-to-talk -- see README).
-                command_listener = PynputPushToTalk(config.command_hotkey, cancel_key="")
-                threading.Thread(
-                    target=_run_command_hotkey_listener,
-                    args=(
-                        command_listener,
-                        dispatcher.wrap(cmd_start),
-                        dispatcher.wrap(cmd_finish),
-                    ),
-                    daemon=True,
-                ).start()
+                command_listener = _build_secondary_listener(
+                    lambda: PynputPushToTalk(config.command_hotkey, cancel_key=""),
+                    "command_hotkey",
+                    config.command_hotkey,
+                    "voice command hotkey",
+                    reporter,
+                )
+                if command_listener is not None:
+                    threading.Thread(
+                        target=_run_command_hotkey_listener,
+                        args=(
+                            command_listener,
+                            dispatcher.wrap(cmd_start),
+                            dispatcher.wrap(cmd_finish),
+                        ),
+                        daemon=True,
+                    ).start()
 
             listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
     except KeyboardInterrupt:

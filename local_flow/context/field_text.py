@@ -27,9 +27,29 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 # Kept in sync with `local_flow.polish.prompting`'s defensive re-cap of the
-# same value -- this is the "source of truth" cap; prompting re-applies it so
-# the prompt is safe even if a future provider forgets to.
+# same values -- these are the "source of truth" caps; prompting re-applies
+# them so the prompt is safe even if a future provider forgets to.
 MAX_BEFORE_CURSOR = 1000
+MAX_SELECTED = 1000
+
+
+def _utf16_offset_to_index(text: str, offset: int) -> int:
+    """Convert a UTF-16 code-unit offset into a Python ``str`` index.
+
+    AX's ``kAXSelectedTextRangeAttribute`` CFRange counts UTF-16 code units
+    (NSString semantics), while Python strings index by code point, so every
+    non-BMP character (emoji) before the offset shifts the two apart by one.
+    Out-of-range offsets clamp to the ends; an offset landing inside a
+    surrogate pair rounds up past it, never splitting the character.
+    """
+    if offset <= 0:
+        return 0
+    units = 0
+    for index, char in enumerate(text):
+        if units >= offset:
+            return index
+        units += 2 if ord(char) > 0xFFFF else 1
+    return len(text)
 
 
 @dataclass(frozen=True)
@@ -39,7 +59,9 @@ class FieldContext:
     ``before_cursor``: the text immediately preceding the cursor/selection,
     tail-capped at ``MAX_BEFORE_CURSOR`` characters so a huge open document
     never balloons the polish prompt. ``selected``: whatever text (if any)
-    is currently highlighted in that same field. All-empty when unknown --
+    is currently highlighted in that same field, tail-capped at
+    ``MAX_SELECTED`` for the same reason (a select-all of a big document
+    would otherwise embed the whole document). All-empty when unknown --
     there's no separate "unknown" state to check for.
     """
 
@@ -89,7 +111,9 @@ class MacAXFieldText(FieldTextProvider):
 
     The selection range comes back wrapped in an opaque ``AXValueRef``;
     ``AXValueGetValue`` with ``kAXValueCFRangeType`` unwraps it to an
-    ``(ok, (location, length))`` pair. If that unwrap fails or the attribute
+    ``(ok, (location, length))`` pair, counted in UTF-16 code units --
+    NOT Python code points -- so both endpoints go through
+    :func:`_utf16_offset_to_index` before slicing. If that unwrap fails or the attribute
     simply isn't available (both observed in practice -- not every focused
     element exposes a selection range), this degrades to ``before_cursor``
     built from the *whole* value's tail with no cursor position, and an
@@ -128,9 +152,14 @@ class MacAXFieldText(FieldTextProvider):
             if not err and ax_range is not None:
                 ok, cf_range = AS.AXValueGetValue(ax_range, AS.kAXValueCFRangeType, None)
                 if ok and cf_range is not None:
+                    # The CFRange is in UTF-16 code units, not code points;
+                    # convert both endpoints before slicing (see
+                    # _utf16_offset_to_index).
                     location, length = int(cf_range[0]), int(cf_range[1])
-                    before_cursor = value[:location][-MAX_BEFORE_CURSOR:]
-                    selected = value[location : location + length]
+                    start = _utf16_offset_to_index(value, location)
+                    end = _utf16_offset_to_index(value, location + length)
+                    before_cursor = value[:start][-MAX_BEFORE_CURSOR:]
+                    selected = value[start:end][-MAX_SELECTED:]
 
             return FieldContext(before_cursor=before_cursor, selected=selected)
         except Exception:

@@ -1,9 +1,11 @@
-"""Fn-key push-to-talk on macOS via a listen-only Quartz event tap.
+"""Fn-key push-to-talk on macOS via a suppressing Quartz event tap.
 
 pynput has no ``Key.fn``: the Fn key arrives as a ``flagsChanged`` event
 (keycode 63) whose ``kCGEventFlagMaskSecondaryFn`` bit tracks the key
-state. ``FnLogic`` is pure so CI can drive it with fake events; only
-``QuartzFnListener.run`` touches Quartz.
+state. The tap consumes those Fn events while local-flow owns the hotkey so
+macOS Dictation (or another global Fn listener) cannot transcribe and insert
+the same utterance a second time. ``FnLogic`` is pure so CI can drive it with
+fake events; only ``QuartzFnListener.run`` touches Quartz.
 """
 
 from __future__ import annotations
@@ -91,6 +93,12 @@ class QuartzFnListener(HotkeyListener):
                 if keycode == FN_KEYCODE:
                     flags = q.CGEventGetFlags(event)
                     logic.flags_changed(bool(flags & q.kCGEventFlagMaskSecondaryFn))
+                    # An active event tap may suppress an event by returning
+                    # None. Fn is the configured push-to-talk key, so letting
+                    # the same flagsChanged event continue would also trigger
+                    # macOS Dictation or any other global Fn-based dictation
+                    # app, producing a second transcript after ours.
+                    return None
             elif event_type == q.kCGEventKeyDown:
                 logic.key_down(keycode)
             return event
@@ -99,7 +107,7 @@ class QuartzFnListener(HotkeyListener):
         tap = q.CGEventTapCreate(
             q.kCGSessionEventTap,
             q.kCGHeadInsertEventTap,
-            q.kCGEventTapOptionListenOnly,
+            q.kCGEventTapOptionDefault,
             mask,
             callback,
             None,

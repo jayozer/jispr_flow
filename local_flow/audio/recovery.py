@@ -7,8 +7,10 @@ crashes (or is force-quit) mid-dictation, the WAV survives on disk and
 successful run the caller deletes the file right away, so ``pending/`` is
 empty in the common case and only ever holds genuinely lost utterances.
 
-Filenames are ``uuid4().hex`` -- no wall-clock read is needed for uniqueness
-or ordering, so ``save`` has no clock dependency at all.
+Filenames are ``uuid4().hex`` -- uniqueness without any clock read in
+``save``. Replay order comes from each file's mtime (stamped by the
+filesystem when ``save`` writes it), so ``pending()`` returns files in
+save order, not in meaningless uuid order.
 """
 
 from __future__ import annotations
@@ -44,7 +46,12 @@ class PendingAudioStore:
         Path(path).unlink(missing_ok=True)
 
     def pending(self) -> list[Path]:
-        """List pending WAV files, sorted by name for deterministic order.
+        """List pending WAV files in save order (mtime, then name).
+
+        The uuid4 filenames carry no order, so sorting by name would replay
+        a multi-utterance crash in scrambled order; mtime is when ``save``
+        wrote the file. Name breaks mtime ties (coarse filesystem
+        timestamps) so the order stays deterministic.
 
         Returns an empty list (rather than raising) when ``pending/`` does
         not exist yet, which is the common case before any crash has ever
@@ -52,20 +59,30 @@ class PendingAudioStore:
         """
         if not self.pending_dir.is_dir():
             return []
-        return sorted(self.pending_dir.glob("*.wav"))
+        return sorted(self.pending_dir.glob("*.wav"), key=lambda p: (p.stat().st_mtime, p.name))
 
     def load(self, path: Path) -> tuple[bytes, int]:
         """Read a WAV file back into ``(pcm_bytes, sample_rate)``.
 
         Raises :class:`ValueError` if the file cannot be read as a WAV
-        (corrupt or truncated) so callers processing a batch of pending
-        files (see ``local-flow recover``) can skip just that one file
-        instead of aborting the whole recovery run.
+        (corrupt or truncated) *or* is not the 16-bit mono PCM that ``save``
+        writes -- a stereo or 8-bit file (e.g. dropped into ``pending/`` by
+        hand) would otherwise be fed to ASR as garbage. Either way, callers
+        processing a batch of pending files (see ``local-flow recover``)
+        skip just that one file, leaving it on disk, instead of aborting
+        the whole recovery run.
         """
         try:
             with wave.open(str(path), "rb") as fh:
+                channels = fh.getnchannels()
+                sampwidth = fh.getsampwidth()
                 sample_rate = fh.getframerate()
                 pcm = fh.readframes(fh.getnframes())
         except Exception as exc:  # any bad file becomes a plain ValueError
             raise ValueError(f"could not read WAV file {path}: {exc}") from exc
+        if channels != 1 or sampwidth != 2:
+            raise ValueError(
+                f"unsupported WAV format in {path}: expected 16-bit mono, got "
+                f"{channels} channel(s) at {sampwidth * 8}-bit"
+            )
         return pcm, sample_rate

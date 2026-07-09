@@ -19,6 +19,13 @@ from local_flow.errors import (
     MicPermissionError,
 )
 
+# How long `SounddeviceSource.frames()` waits for the next mic frame before
+# re-checking that the stream is still alive. Frames normally arrive every
+# `frame_ms` (~30ms) even during silence, so hitting this at all already
+# means something is wrong with the device. Module-level so tests can
+# monkeypatch it down instead of sleeping a real second.
+_FRAMES_LIVENESS_TIMEOUT_S = 1.0
+
 _MIC_PERMISSION_HINTS = {
     "Darwin": "macOS: System Settings -> Privacy & Security -> Microphone, and "
     "enable access for your terminal app; then restart the terminal.",
@@ -194,7 +201,18 @@ class SounddeviceSource(AudioSource):
         stream = self._open_stream(frame_bytes, callback)
         with stream:
             while True:
-                yield frame_queue.get()
+                # Timed get, not a bare blocking one: when the device dies
+                # mid-session (mic unplugged, Bluetooth dropout) PortAudio
+                # simply stops invoking `callback`, and a blocking `get()`
+                # would hang this generator -- and the whole hands-free
+                # loop, including its `stop_event` check -- forever. On a
+                # quiet queue, end the iteration once the stream reports
+                # itself no longer active.
+                try:
+                    yield frame_queue.get(timeout=_FRAMES_LIVENESS_TIMEOUT_S)
+                except queue.Empty:
+                    if not getattr(stream, "active", True):
+                        return
 
     def record_until(self, stop: threading.Event, frame_ms: int = 30) -> bytes:
         frame_bytes = int(self.sample_rate * frame_ms / 1000) * 2

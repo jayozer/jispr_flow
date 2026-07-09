@@ -24,12 +24,11 @@ hand-editable files that are created with commented defaults on first use:
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_flow.atomicio import atomic_write_text
 from local_flow.errors import ConfigError
 
 # Strips a trailing possessive so "Iva's"/"Iva's" fold to the same key as
@@ -130,15 +129,15 @@ class PersonalizationStore:
 
     def _ensure_defaults(self) -> None:
         if not self._dictionary_path.exists():
-            self._write(self._dictionary_path, {"terms": []})
+            self._atomic_write(self._dictionary_path, {"terms": []})
         if not self._snippets_path.exists():
-            self._write(self._snippets_path, {"snippets": {}})
+            self._atomic_write(self._snippets_path, {"snippets": {}})
         if not self._styles_path.exists():
-            self._write(self._styles_path, {"active": "default", "styles": DEFAULT_STYLES})
+            self._atomic_write(self._styles_path, {"active": "default", "styles": DEFAULT_STYLES})
         else:
             self._merge_default_styles()
         if not self._transforms_path.exists():
-            self._write(self._transforms_path, {"transforms": DEFAULT_TRANSFORMS})
+            self._atomic_write(self._transforms_path, {"transforms": DEFAULT_TRANSFORMS})
 
     def _merge_default_styles(self) -> None:
         """Backfill built-in style names missing from an existing ``styles.json``.
@@ -164,33 +163,18 @@ class PersonalizationStore:
                 added = True
         if added:
             data["styles"] = styles
-            self._write(self._styles_path, data)
-
-    @staticmethod
-    def _write(path: Path, data: dict) -> None:
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            self._atomic_write(self._styles_path, data)
 
     @staticmethod
     def _atomic_write(path: Path, data: dict) -> None:
-        """Write ``data`` via a same-directory tmp file + ``os.replace``.
-
-        The tmp file gets a unique name (via ``tempfile.NamedTemporaryFile``)
-        so concurrent writers never collide on a shared ``<name>.tmp`` path.
+        """Write ``data`` as pretty-printed JSON via the shared crash-safe
+        tmp-file + ``os.replace`` helper (see
+        :func:`local_flow.atomicio.atomic_write_text`). Every JSON write in
+        this store routes through here, so a crash mid-write can never
+        truncate ``dictionary.json``/``snippets.json``/``styles.json``/
+        ``transforms.json`` and lose the user's hand-curated entries.
         """
-        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        tmp = tempfile.NamedTemporaryFile(
-            mode="w",
-            dir=path.parent,
-            prefix=f"{path.name}.",
-            suffix=".tmp",
-            delete=False,
-            encoding="utf-8",
-        )
-        try:
-            tmp.write(payload)
-        finally:
-            tmp.close()
-        os.replace(tmp.name, path)
+        atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _read(path: Path) -> dict:
@@ -288,7 +272,7 @@ class PersonalizationStore:
     def set_snippet(self, trigger: str, expansion: str) -> None:
         snippets = self.snippets()
         snippets[trigger.strip()] = expansion
-        self._write(self._snippets_path, {"snippets": snippets})
+        self._atomic_write(self._snippets_path, {"snippets": snippets})
 
     # --- styles ----------------------------------------------------------
     def styles(self) -> dict[str, str]:
@@ -314,7 +298,7 @@ class PersonalizationStore:
                 f"Edit {self._styles_path} to add one.",
             )
         data["active"] = name
-        self._write(self._styles_path, data)
+        self._atomic_write(self._styles_path, data)
 
     # --- transforms --------------------------------------------------------
     def transforms(self) -> dict[str, str]:

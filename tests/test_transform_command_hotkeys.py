@@ -110,6 +110,29 @@ class TestRunVoiceCommandWithSelection:
 
         assert "write:please contact JiSpr Flow support" in backend.events
 
+    def test_empty_command_output_restores_selection_and_warns(self, tmp_path):
+        # A whitespace-only completion must never be pasted over the user's
+        # selection (the paste is unrecoverable -- restore() rewrites the
+        # clipboard, not the selection): replace() is never called, the saved
+        # clipboard comes back, and a warning says why.
+        sink = FakeTextSink()
+        llm = MockChatClient(["   "])
+        pipeline = _pipeline(tmp_path, sink, llm=llm)
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted")
+        capture = SelectionCapture(backend, sleep=lambda s: None)
+        reporter = FakeReporter()
+
+        _run_voice_command(
+            RunDependencies(pipeline, None, None), capture, b"pcm", 16000, reporter
+        )
+
+        assert "paste" not in backend.events  # replace() never ran
+        assert backend.clipboard == "precious"  # restored, not overwritten
+        assert sink.events == []
+        assert reporter.events == [
+            ("warning", "voice command returned no text; selection left unchanged")
+        ]
+
     def test_llm_failure_restores_and_reports_warning(self, tmp_path):
         class FailingClient(MockChatClient):
             def chat(self, messages, *, temperature=0.2, max_tokens=None):
@@ -361,6 +384,66 @@ class TestRunLoopTransformHotkey:
         assert backend.clipboard == "original clipboard"
         assert "write:POLISHED SELECTION" in backend.events
 
+    def test_end_to_end_empty_transform_output_restores_and_warns(
+        self, tmp_path, monkeypatch
+    ):
+        # A whitespace-only completion must never be pasted over the user's
+        # selection: replace() is never called, the saved clipboard comes
+        # back via restore(), and a warning says why.
+        import local_flow.app as app_module
+
+        sink = FakeTextSink()
+        llm = MockChatClient(["   "])
+        pipeline = _pipeline(tmp_path, sink, llm=llm)
+        config = _config(transform_hotkey="f6")
+        reporter = FakeReporter()
+        done = threading.Event()
+
+        backend = MockSelectionBackend(clipboard="precious", selection_text="highlighted")
+        replace_calls: list[str] = []
+
+        class SpyCapture(SelectionCapture):
+            def replace(self, text):
+                replace_calls.append(text)
+                super().replace(text)
+
+            def restore(self):
+                super().restore()
+                done.set()
+
+        capture = SpyCapture(backend, sleep=lambda s: None)
+        monkeypatch.setattr(app_module, "_build_selection_capture", lambda config: capture)
+
+        class FakeTapListener:
+            def __init__(self, key_name):
+                pass
+
+            def run(self, on_tap):
+                on_tap()
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                done.wait(timeout=5)
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", FakeTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, None, None),
+        )
+
+        assert done.wait(timeout=2)
+        assert replace_calls == []  # replace() never called with blank text
+        assert backend.clipboard == "precious"  # restored, not overwritten
+        assert (
+            "warning",
+            "transform returned no text; selection left unchanged",
+        ) in reporter.events
+
     def test_end_to_end_no_selection_reports_warning(self, tmp_path, monkeypatch):
         import local_flow.app as app_module
 
@@ -407,6 +490,91 @@ class TestRunLoopTransformHotkey:
         assert done.wait(timeout=2)
         assert backend.clipboard == "precious"
         assert ("warning", "no text selected") in reporter.events
+
+
+class TestSecondaryHotkeyUnsupportedKeyDegrades:
+    """Review item 14: a distinct-but-unsupported secondary hotkey value
+    (e.g. `transform_hotkey=fn` -- pynput cannot observe Fn) used to raise
+    out of listener construction on the main thread and abort the whole app.
+    It must instead disable just that one hotkey with an actionable warning
+    while the main push-to-talk loop keeps running.
+    """
+
+    def test_unsupported_transform_hotkey_warns_and_keeps_running(
+        self, tmp_path, monkeypatch
+    ):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config(hotkey="f9", transform_hotkey="fn")
+        reporter = FakeReporter()
+        main_listener_ran = threading.Event()
+
+        class RaisingTapListener:
+            def __init__(self, key_name):
+                raise HotkeyBackendMissingError(
+                    f"Unknown hotkey {key_name!r}.",
+                    hint="Use a pynput key name such as f9, f8, scroll_lock, "
+                    "or a single character.",
+                )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                main_listener_ran.set()
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", RaisingTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        result = _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, None, None),
+        )
+
+        assert result == 0  # the app did not abort
+        assert main_listener_ran.is_set()  # the main hotkey still ran
+        warnings = [d for s, d in reporter.events if s == "warning"]
+        assert any("transform hotkey disabled" in w for w in warnings)
+        assert any("'fn'" in w for w in warnings)  # names the bad value
+
+    def test_unsupported_command_hotkey_warns_and_keeps_running(
+        self, tmp_path, monkeypatch
+    ):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        config = _config(hotkey="f9", command_hotkey="fn")
+        reporter = FakeReporter()
+        main_listener_ran = threading.Event()
+
+        class RaisingPynput:
+            def __init__(self, key_name, cancel_key="esc", cancel_gate=None):
+                raise HotkeyBackendMissingError(
+                    f"Unknown hotkey {key_name!r}.",
+                    hint="Use a pynput key name such as f9, f8, scroll_lock, "
+                    "or a single character.",
+                )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                main_listener_ran.set()
+
+        monkeypatch.setattr("local_flow.hotkeys.base.PynputPushToTalk", RaisingPynput)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        result = _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(pipeline, _FakeSource(), None),
+        )
+
+        assert result == 0
+        assert main_listener_ran.is_set()
+        warnings = [d for s, d in reporter.events if s == "warning"]
+        assert any("voice command hotkey disabled" in w for w in warnings)
+        assert any("'fn'" in w for w in warnings)
 
 
 class _FakeSource:
@@ -695,7 +863,7 @@ class TestRunLoopTransformHotkeyDebounce:
 
 class _ContentionSource:
     """A fake ``AudioSource`` that counts concurrent ``record_until`` calls,
-    so tests can prove ``_run_loop``'s ``mic_in_use`` guard never lets the
+    so tests can prove ``_run_loop``'s ``mic_owner`` guard never lets the
     main PTT recorder and the command-hotkey recorder open the (single,
     shared) microphone at the same time.
     """
@@ -718,7 +886,7 @@ class _ContentionSource:
 
 
 class TestMicMutualExclusion:
-    """`_run_loop`'s ``mic_in_use`` flag: the main PTT recorder and the
+    """`_run_loop`'s ``mic_owner`` guard: the main PTT recorder and the
     command-hotkey recorder both call ``source.record_until`` on the same
     ``SounddeviceSource`` (concurrent PortAudio opens are device contention,
     not two clean recordings), so the second one to start while the other is

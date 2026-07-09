@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -193,6 +193,53 @@ class TestActiveDaysAndStreaks:
         stats = compute_stats(records, NOW)
         assert stats.longest_streak == 3
         assert stats.current_streak == 0  # nothing near NOW
+
+
+# Fixed-offset stand-in for a US-west-coast user: deterministic on any CI
+# host, unlike the machine's real local zone (which `tz=None` selects).
+PACIFIC = timezone(timedelta(hours=-8))
+
+
+class TestLocalDateBucketing:
+    def test_evening_dictation_west_of_utc_counts_toward_the_local_day(self):
+        # 23:30 on 2026-07-05 in UTC-8 is 07:30Z on the 6th: UTC bucketing
+        # would place it on the 6th; the user dictated on their 5th.
+        records = [_record("2026-07-06T07:30:00Z")]
+        stats = compute_stats(records, NOW, tz=PACIFIC)
+        assert stats.active_days == ["2026-07-05"]
+
+    def test_streak_counts_consecutive_local_days_not_utc_days(self):
+        # Two dictations on consecutive LOCAL evenings -- 23:30 on the 4th
+        # and 08:00 on the 5th, both UTC-8 -- share one UTC date (the 5th):
+        # UTC bucketing would see a single active day and a streak of 1.
+        records = [
+            _record("2026-07-05T07:30:00Z"),  # 23:30 local on the 4th
+            _record("2026-07-05T16:00:00Z"),  # 08:00 local on the 5th
+        ]
+        stats = compute_stats(records, NOW, tz=PACIFIC)
+        assert stats.active_days == ["2026-07-04", "2026-07-05"]
+        # NOW is 04:00 local on the 6th: the run ended "yesterday", so the
+        # current streak survives.
+        assert stats.current_streak == 2
+        assert stats.longest_streak == 2
+
+    def test_default_tz_stays_utc_for_determinism(self):
+        # Pin: direct callers that pass no tz keep UTC bucketing -- the
+        # module never reads the machine's zone unless asked to (tz=None).
+        records = [_record("2026-07-06T07:30:00Z")]
+        stats = compute_stats(records, NOW)
+        assert stats.active_days == ["2026-07-06"]
+
+    def test_heatmap_anchors_today_to_the_local_date(self):
+        # 02:00Z on Monday July 6 is still Sunday July 5 in UTC-8, so the
+        # local grid's only column is the week of Mon June 29 and the 5th
+        # lights the Sunday row; a UTC grid would start at the 6th and show
+        # no activity at all.
+        now = datetime(2026, 7, 6, 2, 0, 0, tzinfo=UTC)
+        result = render_heatmap(["2026-07-05"], now, weeks=1, tz=PACIFIC)
+        lines = result.splitlines()
+        assert lines[6] == "Sun #"
+        assert all(line.endswith(" .") for line in lines[:6])
 
 
 class TestRenderHeatmap:
@@ -406,3 +453,32 @@ class TestStatsCommand:
         assert code == 0
         out = capsys.readouterr().out
         assert "streaks are measured within the --since window" not in out
+
+    def test_cli_buckets_by_the_machine_local_zone(self, tmp_path, monkeypatch):
+        """The stats CLI must pass tz=None (the machine's local zone) to both
+        compute_stats and render_heatmap -- that's what makes a 23:30 local
+        dictation count toward the local day for a real user."""
+        import local_flow.insights.stats as stats_mod
+
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = HistoryStore(tmp_path)
+        store.append_new(rough="x", final="hello world")
+
+        seen = {}
+        real_compute = stats_mod.compute_stats
+        real_render = stats_mod.render_heatmap
+
+        def spy_compute(records, now, tz=UTC):
+            seen["compute_tz"] = tz
+            return real_compute(records, now, tz=tz)
+
+        def spy_render(active_days, now, weeks=8, tz=UTC):
+            seen["render_tz"] = tz
+            return real_render(active_days, now, weeks=weeks, tz=tz)
+
+        monkeypatch.setattr(stats_mod, "compute_stats", spy_compute)
+        monkeypatch.setattr(stats_mod, "render_heatmap", spy_render)
+
+        code = main(["stats", "--since", "all"])
+        assert code == 0
+        assert seen == {"compute_tz": None, "render_tz": None}

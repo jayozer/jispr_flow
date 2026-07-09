@@ -20,6 +20,9 @@ from local_flow.errors import ConfigError
 
 ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
+VALID_MODES = ("push-to-talk", "hands-free")
+VALID_VAD_BACKENDS = ("energy", "webrtc", "mock")
+VALID_ASR_BACKENDS = ("faster-whisper", "mock")
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
@@ -188,11 +191,12 @@ def _read_dotenv(path: Path) -> dict[str, str]:
     Blank lines and full-line ``#`` comments are skipped; surrounding
     single/double quotes on the value are stripped. A trailing `` #``
     -prefixed (space-then-hash) inline comment is also stripped from the
-    value, e.g. ``KEY=value   # comment`` -> ``"value"`` -- values in this
-    project never legitimately contain a space followed by a hash, so this
-    is unambiguous. Without this, a copy-pasted example line with an inline
-    comment (see ``.env.example``) would silently become part of the value
-    and fail whatever validation that field has.
+    value, e.g. ``KEY=value   # comment`` -> ``"value"``. Without this, a
+    copy-pasted example line with an inline comment (see ``.env.example``)
+    would silently become part of the value and fail whatever validation
+    that field has. A `` #`` *inside* a quoted value is part of the value
+    (``KEY="my #notes"`` -> ``"my #notes"``): a quoted value ends at its
+    closing quote and anything after that is ignored as commentary.
     """
     values: dict[str, str] = {}
     if not path.is_file():
@@ -203,6 +207,12 @@ def _read_dotenv(path: Path) -> dict[str, str]:
             continue
         key, _, value = line.partition("=")
         value = value.strip()
+        if value[:1] in ("'", '"'):
+            closing = value.find(value[0], 1)
+            if closing != -1:
+                values[key.strip()] = value[1:closing]
+                continue
+            # No closing quote: fall through to the unquoted handling below.
         comment_at = value.find(" #")
         if comment_at != -1:
             value = value[:comment_at].rstrip()
@@ -308,6 +318,36 @@ def load_config(
             values[name] = _coerce(name, raw, field_types.get(name, str))
 
     config = Config(**values)  # type: ignore[arg-type]
+
+    if config.mode not in VALID_MODES:
+        raise ConfigError(
+            f"Invalid mode: {config.mode!r}",
+            hint=f"Valid values: {', '.join(VALID_MODES)}.",
+        )
+
+    if config.vad_backend not in VALID_VAD_BACKENDS:
+        raise ConfigError(
+            f"Invalid vad_backend: {config.vad_backend!r}",
+            hint=f"Valid values: {', '.join(VALID_VAD_BACKENDS)}.",
+        )
+
+    if config.asr_backend not in VALID_ASR_BACKENDS:
+        raise ConfigError(
+            f"Invalid asr_backend: {config.asr_backend!r}",
+            hint=f"Valid values: {', '.join(VALID_ASR_BACKENDS)}.",
+        )
+
+    # Whisper language codes are 2-3 lowercase ASCII letters (ISO 639-1 plus
+    # a few 639-3 codes like "yue"/"haw"); "auto" means detect per utterance.
+    lang = config.asr_language
+    if lang != "auto" and not (
+        2 <= len(lang) <= 3 and lang.isascii() and lang.isalpha() and lang.islower()
+    ):
+        raise ConfigError(
+            f"Invalid asr_language: {lang!r}",
+            hint='Valid values: "auto" (detect per utterance) or a lowercase '
+            'ISO 639 language code of 2-3 letters, e.g. "en", "fr".',
+        )
 
     if config.history_retention not in VALID_HISTORY_RETENTIONS:
         raise ConfigError(

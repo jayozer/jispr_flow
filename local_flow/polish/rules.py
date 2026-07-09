@@ -101,8 +101,13 @@ def apply_backtracking(text: str, markers: Iterable[str] = BACKTRACK_MARKERS) ->
 
 
 def clean_transcript(text: str, fillers: Iterable[str] = FILLER_WORDS) -> str:
-    """Rule-based cleanup that runs before (or instead of) the LLM polish."""
-    return remove_fillers(apply_backtracking(text), fillers)
+    """Rule-based cleanup that runs before (or instead of) the LLM polish.
+
+    Fillers are removed *before* backtracking: a filler segment between the
+    retracted text and the marker ("email John, um, scratch that, ...") would
+    otherwise be popped in place of the text being retracted.
+    """
+    return apply_backtracking(remove_fillers(text, fillers))
 
 
 def enforce_dictionary_detailed(text: str, terms: Iterable[str]) -> tuple[str, dict[str, int]]:
@@ -120,7 +125,12 @@ def enforce_dictionary_detailed(text: str, terms: Iterable[str]) -> tuple[str, d
         if not stripped:
             continue
         escaped = re.escape(stripped).replace(r"\ ", r"\s+")
-        text, count = re.subn(rf"(?i)(?<!\w){escaped}(?!\w)", stripped, text)
+        # The term goes through a lambda (like expand_snippets), never as a
+        # replacement template: a backslash in it ("AC\DC", "C:\Users") would
+        # otherwise be parsed as a group reference/escape by re.subn.
+        text, count = re.subn(
+            rf"(?i)(?<!\w){escaped}(?!\w)", lambda _m, _t=stripped: _t, text
+        )
         if count:
             counts[stripped] = counts.get(stripped, 0) + count
     return text, counts
@@ -225,8 +235,12 @@ def extract_dictionary_additions(text: str) -> tuple[str, list[str]]:
 # language ("I like snake case better") will also convert -- a known,
 # accepted false-positive risk for this MVP feature (see README).
 _CODE_WORD = r"[A-Za-z0-9]+"
+# Words are separated by spaces/tabs only, never newlines: this rule runs
+# after `apply_dictation_commands`, so a newline here is a commanded
+# "new line" boundary that the identifier must not swallow across.
 _SPOKEN_CODE_RE = re.compile(
-    rf"(?i)\b(camel case|snake case|all caps)\s+((?:{_CODE_WORD}\s+){{0,3}}{_CODE_WORD})"
+    rf"(?i)\b(camel case|snake case|all caps)[ \t]+"
+    rf"((?:{_CODE_WORD}[ \t]+){{0,3}}{_CODE_WORD})"
 )
 
 # Continuous speech runs the converted phrase straight into whatever comes

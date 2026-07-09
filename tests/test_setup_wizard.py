@@ -283,6 +283,126 @@ class TestOverwriteConfirmation:
         data = tomllib.loads(target.read_text())
         assert data["hotkey"] == "space"
 
+    def test_accept_overwrite_preserves_unasked_keys(self, tmp_path, monkeypatch):
+        """Review item 12: overwriting must merge with the existing config,
+        not replace it -- a customized `data_dir` (or any other key the
+        wizard never asked about) survives a wizard re-run, with its TOML
+        type intact, while the answered keys are updated.
+        """
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        config = Config(data_dir=tmp_path / "data")
+        target = tmp_path / "config.toml"
+        custom_data_dir = str(tmp_path / "custom-data")
+        target.write_text(
+            'hotkey = "f9"\n'
+            f'data_dir = "{custom_data_dir}"\n'
+            "vad_silence_ms = 900\n"
+            "context_styles = false\n"
+            "lmstudio_timeout = 30.5\n",
+            encoding="utf-8",
+        )
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+
+        # hotkey: "space"; mode/asr/style: defaults; then confirm overwrite.
+        ask = _scripted_ask(["space", "", "", "", "y"])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["hotkey"] == "space"  # asked key: updated
+        assert data["data_dir"] == custom_data_dir  # unasked keys: preserved
+        assert data["vad_silence_ms"] == 900
+        assert data["context_styles"] is False
+        assert data["lmstudio_timeout"] == 30.5
+
+    @pytest.mark.parametrize(
+        ("model_answer", "expected_model", "stale_language"),
+        [("1", "small.en", "auto"), ("3", "base.en", "fr")],
+    )
+    def test_english_only_model_drops_stale_multilingual_language(
+        self,
+        tmp_path,
+        monkeypatch,
+        model_answer,
+        expected_model,
+        stale_language,
+    ):
+        """An overwrite that switches from a multilingual model to an
+        English-only model must not merge the old language back in after the
+        wizard intentionally skips the language question.
+        """
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        config = Config(
+            data_dir=tmp_path / "data",
+            asr_model="small",
+            asr_language=stale_language,
+        )
+        target = tmp_path / "config.toml"
+        target.write_text(
+            'asr_model = "small"\n'
+            f'asr_language = "{stale_language}"\n'
+            "vad_silence_ms = 900\n",
+            encoding="utf-8",
+        )
+        say, _messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+
+        # hotkey, mode, English-only model, style, confirm overwrite. There
+        # is deliberately no language answer because .en skips that prompt.
+        ask = _scripted_ask(["", "", model_answer, "", "y"])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["asr_model"] == expected_model
+        assert "asr_language" not in data
+        assert data["vad_silence_ms"] == 900  # unrelated merge behavior remains
+
+        loaded = load_config(config_file=target)
+        assert loaded.asr_model == expected_model
+        assert loaded.asr_language == "en"
+
+    def test_overwrite_of_unparseable_config_warns_and_writes_wizard_keys(
+        self, tmp_path, monkeypatch
+    ):
+        """A corrupt existing config can't have its keys preserved; the wizard
+        must say so and still write a valid config from its own answers."""
+        monkeypatch.setattr("local_flow.setup_wizard.sys.platform", "darwin")
+        config = Config(data_dir=tmp_path / "data")
+        target = tmp_path / "config.toml"
+        target.write_text("not [ valid = toml\n", encoding="utf-8")
+        say, messages = _say_recorder()
+        probe_import, probe_lmstudio = _stub_probes()
+        ask = _scripted_ask(["", "", "", "", "y"])
+
+        run_wizard(
+            config,
+            ask=ask,
+            say=say,
+            target=target,
+            probe_import=probe_import,
+            probe_lmstudio=probe_lmstudio,
+        )
+
+        data = tomllib.loads(target.read_text())
+        assert data["hotkey"] == "fn"  # darwin default answered by Enter
+        assert any("could not parse" in m for m in messages)
+
 
 class TestConfigErrorCleansUp:
     def test_config_error_removes_the_written_file(self, tmp_path, monkeypatch):

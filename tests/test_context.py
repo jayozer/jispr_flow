@@ -343,6 +343,38 @@ class TestContextRouter:
 
         assert ctx.sink is None
 
+    def test_unknown_insert_override_warns_at_construction(self, capsys):
+        # Review item 20: a typo'd per-app `insert` in app_styles.json used to
+        # silently fall back to the default sink; it must warn (naming the
+        # rule, the bad value, and the valid values) while still falling back.
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        rules = {"slack": AppRule(insert="Type")}  # case-sensitive miss
+        ContextRouter(
+            provider, rules, {"type": FakeTextSink(), "auto": FakeTextSink()}
+        )
+
+        err = capsys.readouterr().err
+        assert "'Type'" in err  # the bad value
+        assert "slack" in err  # which rule to fix
+        assert "type" in err and "auto" in err  # the valid values
+
+    def test_unknown_insert_override_still_falls_back_to_default_sink(self, capsys):
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        rules = {"slack": AppRule(style="casual", insert="Type")}
+        router = ContextRouter(provider, rules, {"type": FakeTextSink()})
+
+        ctx = router.resolve()
+
+        assert ctx.sink is None  # default sink, same degradation as before
+        assert ctx.style == "casual"  # the rest of the rule still applies
+
+    def test_known_insert_override_does_not_warn(self, capsys):
+        provider = MockFrontmostApp(AppInfo("com.tinyspeck.slackmacgap", "Slack"))
+        rules = {"slack": AppRule(insert="type")}
+        ContextRouter(provider, rules, {"type": FakeTextSink()})
+
+        assert capsys.readouterr().err == ""
+
     def test_matches_against_title_when_app_id_unknown(self):
         provider = MockFrontmostApp(AppInfo("", "Claude Code"))
         rules = {"claude": AppRule(style="formal")}

@@ -70,6 +70,26 @@ class TestCleanTranscript:
         assert clean_transcript("") == ""
 
 
+class TestBacktrackingAfterFillerRemoval:
+    """`clean_transcript` removes fillers before applying backtracking: a
+    filler segment between the retracted text and the marker ("email John,
+    um, scratch that, ...") would otherwise be popped instead of the text
+    being retracted.
+    """
+
+    def test_filler_segment_between_text_and_marker(self):
+        assert (
+            clean_transcript("email John, um, scratch that, email Sarah")
+            == "email Sarah"
+        )
+
+    def test_multiple_filler_segments_before_marker(self):
+        assert (
+            clean_transcript("send it Monday, uh, um, no wait send it Friday")
+            == "send it Friday"
+        )
+
+
 class TestDictationCommands:
     def test_trailing_press_enter_becomes_key_action(self):
         text, actions = apply_dictation_commands("ship the release press enter")
@@ -153,6 +173,31 @@ class TestDictionaryDetailedCounts:
         text_wrapper, total = enforce_dictionary(sample, terms)
         assert text_detailed == text_wrapper
         assert total == sum(counts.values())
+
+
+class TestDictionaryBackslashTerms:
+    """A term containing a backslash ("AC\\DC", "C:\\Users") must land in the
+    output verbatim, never be parsed as a `re.subn` replacement template --
+    the template reading raises "bad escape" (killing every dictation that
+    runs the rules stage) or injects a control character.
+    """
+
+    def test_backslash_term_substitutes_verbatim_without_raising(self):
+        text, counts = enforce_dictionary_detailed("we saw ac\\dc live", ["AC\\DC"])
+        assert text == "we saw AC\\DC live"
+        assert counts == {"AC\\DC": 1}
+
+    def test_windows_path_term_substitutes_verbatim(self):
+        text, count = enforce_dictionary("stored under c:\\users today", ["C:\\Users"])
+        assert text == "stored under C:\\Users today"
+        assert count == 1
+
+    def test_backslash_group_reference_is_not_expanded(self):
+        # "\1" in a replacement template would be a group reference; as a
+        # dictionary term it must come out as the literal characters.
+        text, count = enforce_dictionary("send to team\\1 now", ["Team\\1"])
+        assert text == "send to Team\\1 now"
+        assert count == 1
 
 
 class TestExtractDictionaryAdditions:
@@ -321,3 +366,33 @@ class TestSpokenCodeSyntaxConnectorBounding:
         result, count = apply_spoken_code_syntax(text)
         assert result == text
         assert count == 0
+
+
+class TestSpokenCodeSyntaxNewlineBounding:
+    """`apply_spoken_code_syntax` runs after `apply_dictation_commands`, so a
+    commanded "new line" may sit inside its match window; the word-run must
+    never cross that newline ("... order total new line thanks" would
+    otherwise become "orderTotalThanks").
+    """
+
+    @pytest.mark.parametrize(
+        "text, expected, count",
+        [
+            ("camel case order total\nthanks", "orderTotal\nthanks", 1),
+            ("snake case user id\nsend it", "user_id\nsend it", 1),
+            ("all caps api key\ndone", "API KEY\ndone", 1),
+            ("camel case\nthanks anyway", "camel case\nthanks anyway", 0),
+        ],
+    )
+    def test_word_run_never_crosses_a_newline(self, text, expected, count):
+        result, actual_count = apply_spoken_code_syntax(text)
+        assert result == expected
+        assert actual_count == count
+
+    def test_commanded_new_line_keeps_next_word_off_the_identifier(self):
+        text, actions = apply_dictation_commands("camel case order total new line thanks")
+        assert text == "camel case order total\nthanks"
+        assert actions == []
+        result, count = apply_spoken_code_syntax(text)
+        assert result == "orderTotal\nthanks"
+        assert count == 1

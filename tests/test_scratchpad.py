@@ -1,6 +1,8 @@
 """NoteStore, ScratchpadSink, ScratchpadWindow, and the `local-flow pad` CLI."""
 
+import os
 import sys
+import types
 
 import pytest
 
@@ -125,8 +127,8 @@ class TestWrite:
 
     def test_write_creates_dirs_and_file_lazily(self, tmp_path):
         store = NoteStore(tmp_path)
-        path = store.write("hello", name="work")
-        assert path == tmp_path / "notes" / "work.md"
+        store.write("hello", name="work")
+        path = tmp_path / "notes" / "work.md"
         assert path.read_text() == "hello"
 
     def test_write_overwrites_existing_content_verbatim_no_blank_line(self, tmp_path):
@@ -147,10 +149,13 @@ class TestWrite:
         with pytest.raises(LocalFlowError):
             store.write("text", name="../evil")
 
-    def test_write_returns_path(self, tmp_path):
+    def test_write_returns_the_resulting_mtime(self, tmp_path):
+        # `ScratchpadWindow._autosave` records this value as "the mtime of my
+        # own save"; it is statted before the atomic rename publishes the
+        # write, so it can never absorb a concurrent writer landing after.
         store = NoteStore(tmp_path)
-        path = store.write("x", name="scratch")
-        assert path == tmp_path / "notes" / "scratch.md"
+        mtime = store.write("x", name="scratch")
+        assert mtime == (tmp_path / "notes" / "scratch.md").stat().st_mtime
 
     def test_write_empty_string_clears_the_note(self, tmp_path):
         store = NoteStore(tmp_path)
@@ -547,3 +552,240 @@ class TestShouldAbortNoteSwitch:
         # OLD note while it was dirty) -- switching now would discard the
         # user's unsaved edits with no way back.
         assert _should_abort_note_switch(was_dirty=True, flush_succeeded=False) is True
+
+
+def _install_fake_tkinter(monkeypatch):
+    """A minimal in-memory tkinter stand-in so the REAL `ScratchpadWindow`
+    logic (`_load_active`/`_autosave` and their mtime bookkeeping) runs
+    headless -- no display or Tk-enabled Python build needed. Implements only
+    what `__init__` and the autosave path actually touch."""
+
+    class _Widget:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def pack(self, **kwargs):
+            pass
+
+    class _Text(_Widget):
+        def __init__(self, *args, **kwargs):
+            self._content = ""
+            self._modified = False
+
+        def bind(self, *args, **kwargs):
+            pass
+
+        def delete(self, start, end):
+            self._content = ""
+
+        def insert(self, index, text):
+            self._content += text
+
+        def get(self, start, end):
+            return self._content
+
+        def edit_modified(self, flag=None):
+            if flag is None:
+                return self._modified
+            self._modified = bool(flag)
+
+    class _Tk:
+        def __init__(self):
+            self._title = ""
+
+        def title(self, text=None):
+            if text is not None:
+                self._title = text
+            return self._title
+
+        def attributes(self, *args):
+            pass
+
+        def geometry(self, spec):
+            pass
+
+        def after(self, ms, callback=None):
+            # Never auto-fires: tests drive the window's methods directly.
+            return "after#0"
+
+        def after_cancel(self, job):
+            pass
+
+        def mainloop(self):
+            pass
+
+    class _StringVar:
+        def __init__(self, value=""):
+            self._value = value
+
+        def set(self, value):
+            self._value = value
+
+        def get(self):
+            return self._value
+
+    class _Menu:
+        def __init__(self):
+            self.entries = []  # (label, command) in menu order
+
+        def delete(self, first, last):
+            self.entries = []
+
+        def add_command(self, label=None, command=None, **kwargs):
+            self.entries.append((label, command))
+
+    class _OptionMenu(_Widget):
+        def __init__(self, *args, **kwargs):
+            self._menu = _Menu()
+
+        def __getitem__(self, key):
+            return self._menu
+
+    fake = types.ModuleType("tkinter")
+    fake.Tk = _Tk
+    fake.StringVar = _StringVar
+    fake.Frame = _Widget
+    fake.Label = _Widget
+    fake.OptionMenu = _OptionMenu
+    fake.Text = _Text
+    monkeypatch.setitem(sys.modules, "tkinter", fake)
+
+
+def _bump_mtime(path):
+    """Push the file's mtime one full second forward. A racing external
+    append could otherwise land within the filesystem's mtime granularity of
+    the window's own load/save, making the race invisible to a stat-based
+    check -- this keeps the tests deterministic on any filesystem."""
+    stat = path.stat()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+
+
+class TestScratchpadAutosaveToctou:
+    """Review item 8: the window must stat the note's mtime BEFORE reading
+    content (and record its own save's pre-publish mtime), so the recorded
+    "last seen" mtime is a lower bound. An external dictation append landing
+    in the stat/read (or write/record) gap must then surface as a conflict on
+    the next autosave instead of being stamped "already seen" and overwritten
+    by the stale buffer."""
+
+    def test_append_between_read_and_stat_survives_next_autosave(self, tmp_path, monkeypatch):
+        _install_fake_tkinter(monkeypatch)
+        store = NoteStore(tmp_path)
+        store.write("hello", name="inbox")
+        note_path = tmp_path / "notes" / "inbox.md"
+
+        real_read = store.read
+
+        def read_then_external_append(name):
+            content = real_read(name)
+            # lands in `_load_active`'s gap between reading the content and
+            # recording the note's mtime
+            store.append("external dictation", name=name)
+            _bump_mtime(note_path)
+            return content
+
+        monkeypatch.setattr(store, "read", read_then_external_append)
+        window = ScratchpadWindow(store)  # the initial load races the append
+        monkeypatch.setattr(store, "read", real_read)
+
+        # the user edits the (stale) buffer; the debounced autosave fires
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "hello EDITED")
+        window._dirty = True
+
+        assert window._autosave() is False  # refused as a conflict...
+        content = note_path.read_text()
+        assert "external dictation" in content  # ...so the append survived
+        assert "EDITED" not in content  # and the stale buffer never landed
+        assert "conflict" in window.root.title()
+
+    def test_append_right_after_autosave_write_survives_next_autosave(
+        self, tmp_path, monkeypatch
+    ):
+        _install_fake_tkinter(monkeypatch)
+        store = NoteStore(tmp_path)
+        store.write("hello", name="inbox")
+        note_path = tmp_path / "notes" / "inbox.md"
+        window = ScratchpadWindow(store)
+
+        real_write = store.write
+
+        def write_then_external_append(content, name=None):
+            result = real_write(content, name=name)
+            # lands in `_autosave`'s gap between writing the buffer and
+            # recording the resulting mtime
+            store.append("external dictation", name=name)
+            _bump_mtime(note_path)
+            return result
+
+        monkeypatch.setattr(store, "write", write_then_external_append)
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "hello EDITED")
+        window._dirty = True
+        assert window._autosave() is True  # the save itself succeeds...
+        monkeypatch.setattr(store, "write", real_write)
+
+        # ...then the user keeps editing; the next autosave must treat the
+        # external append as a conflict rather than overwrite it
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "hello EDITED MORE")
+        window._dirty = True
+        assert window._autosave() is False
+        content = note_path.read_text()
+        assert "external dictation" in content
+        assert "MORE" not in content
+
+
+class TestNoteDropdownTracksActiveNote:
+    """Review item 28: `_refresh_note_menu` rebuilds the `OptionMenu`'s
+    entries as plain `add_command` items -- NOT the `tkinter._setit` wrapper
+    the constructor originally wired -- so nothing set `_note_var` (the
+    dropdown's button label) when a rebuilt entry was picked: after the
+    first poll tick the label stopped tracking the active note.
+    `_on_note_selected` must keep `_note_var` in sync itself.
+    """
+
+    def _window_with_two_notes(self, tmp_path, monkeypatch):
+        _install_fake_tkinter(monkeypatch)
+        store = NoteStore(tmp_path)
+        store.write("inbox content", name="inbox")
+        store.create("ideas")
+        return ScratchpadWindow(store)
+
+    def _rebuilt_command_for(self, window, name):
+        """The `command` callback for `name` in the REBUILT menu entries."""
+        window._refresh_note_menu()  # what every poll tick does
+        menu = window._option_menu["menu"]
+        return next(command for label, command in menu.entries if label == name)
+
+    def test_selecting_from_a_rebuilt_menu_updates_the_dropdown_label(
+        self, tmp_path, monkeypatch
+    ):
+        window = self._window_with_two_notes(tmp_path, monkeypatch)
+        assert window._note_var.get() == "inbox"
+
+        self._rebuilt_command_for(window, "ideas")()
+
+        assert window._current_note == "ideas"
+        assert window.store.active_note() == "ideas"
+        assert window._note_var.get() == "ideas"
+
+    def test_conflict_aborted_switch_keeps_the_label_on_the_current_note(
+        self, tmp_path, monkeypatch
+    ):
+        window = self._window_with_two_notes(tmp_path, monkeypatch)
+
+        # Dirty buffer + an external write to the note file underneath it:
+        # the flush `_on_note_selected` attempts is conflict-refused, so the
+        # switch aborts -- and the dropdown label must stay on the old note.
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "unsaved edits")
+        window._dirty = True
+        window.store.append("external dictation", name="inbox")
+        _bump_mtime(tmp_path / "notes" / "inbox.md")
+
+        self._rebuilt_command_for(window, "ideas")()
+
+        assert window._current_note == "inbox"
+        assert window._note_var.get() == "inbox"
+        assert "conflict" in window.root.title()

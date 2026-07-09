@@ -138,6 +138,32 @@ def build_menu(
     return tuple(entries)
 
 
+def _dispatch_to_main_thread(func: Callable[[], None]) -> None:
+    """Default :class:`TrayReporter` dispatch: run ``func`` on the main thread.
+
+    ``notify`` fires on the dictation-loop thread, but pystray's darwin
+    backend drives AppKit when ``.icon``/``.title`` are assigned, and AppKit
+    is only safe to touch from the main thread (which is blocked inside
+    ``TrayApp.run``'s ``icon.run()`` -- the Cocoa run loop). On macOS this
+    queues ``func`` onto that run loop via PyObjC (a pystray dependency
+    there); calls already on the main thread, other platforms, and a
+    missing/failing PyObjC all just run inline -- the pre-marshaling
+    behavior, so degraded is never worse than before.
+    """
+    if threading.current_thread() is threading.main_thread():
+        func()
+        return
+    if sys.platform == "darwin":
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(func)
+            return
+        except Exception:
+            pass  # PyObjC missing/unusable -> apply inline, as before
+    func()
+
+
 class TrayReporter(StatusReporter):
     """Applies dictation-loop state transitions to a pystray-like icon.
 
@@ -146,24 +172,50 @@ class TrayReporter(StatusReporter):
     :class:`~local_flow.tray.state.TrayStateMachine`, so this is fully
     testable by injecting a fake icon recorder -- no pystray/Pillow needed
     except to actually render the icon image inside :func:`notify`.
+
+    Every icon mutation is routed through ``dispatch`` (default:
+    :func:`_dispatch_to_main_thread`) rather than applied inline, because
+    ``notify`` runs on the dictation-loop thread while the icon backend is
+    only main-thread-safe. Re-rendering the icon image is skipped when the
+    mapped icon *kind* is unchanged (streaming previews re-notify the same
+    "processing" kind on every partial transcript); the tooltip still
+    updates every time.
     """
 
-    def __init__(self, icon: object, state_machine: TrayStateMachine | None = None) -> None:
+    def __init__(
+        self,
+        icon: object,
+        state_machine: TrayStateMachine | None = None,
+        dispatch: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
         self._icon = icon
         self._state_machine = state_machine or TrayStateMachine()
+        self._dispatch = dispatch or _dispatch_to_main_thread
+        # Only ever read/written inside dispatched closures, which the
+        # dispatcher runs serially on one thread -- no lock needed.
+        self._last_icon_kind: str | None = None
 
     def notify(self, state: State, detail: str = "") -> None:
         view = self._state_machine.apply(state, detail)
-        try:
-            self._icon.icon = draw_icon(view.icon)
-            self._icon.title = view.tooltip
-        except Exception:
-            pass  # icon redraws are best-effort; must never crash dictation
-        if state in ("error", "warning"):
+
+        def apply_view() -> None:
             try:
-                self._icon.notify(detail or view.tooltip)
+                if view.icon != self._last_icon_kind:
+                    self._icon.icon = draw_icon(view.icon)
+                    # Recorded only after the assignment succeeds, so a
+                    # swallowed backend failure is retried next notify
+                    # instead of leaving the icon stale forever.
+                    self._last_icon_kind = view.icon
+                self._icon.title = view.tooltip
             except Exception:
-                pass  # desktop notifications are best-effort (not all backends support them)
+                pass  # icon redraws are best-effort; must never crash dictation
+            if state in ("error", "warning"):
+                try:
+                    self._icon.notify(detail or view.tooltip)
+                except Exception:
+                    pass  # desktop notifications are best-effort (not all backends support them)
+
+        self._dispatch(apply_view)
 
 
 def _open_folder(path: Path) -> None:
@@ -316,6 +368,12 @@ class TrayApp:
         # the microphone before we might be asked to start a new one.
         if self._loop_thread is not None:
             self._loop_thread.join(timeout=_JOIN_TIMEOUT)
+        # The loop thread exits silently once it notices the stop event --
+        # it never emits a final state, so without this the icon stayed
+        # stuck on whatever it last showed (usually red "recording"). After
+        # the join so an in-flight notify from the winding-down thread
+        # can't land later and overwrite it.
+        self.reporter.notify("idle")
 
     def _toggle_dictation(self) -> None:
         # Push-to-talk has no loop-level Start/Stop concept (the hotkey

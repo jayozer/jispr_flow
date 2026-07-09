@@ -197,6 +197,73 @@ class TestVadPresetField:
         assert "whisper" in message
 
 
+class TestModeAndBackendValidation:
+    """Review item 13: `mode`/`vad_backend`/`asr_backend`/`asr_language` were
+    unvalidated, so a typo (`mode=handsfree`) silently ran push-to-talk and
+    nothing recorded, or fell back to a different VAD. Each must fail at load
+    with a ConfigError naming the allowed values.
+    """
+
+    def test_invalid_mode_raises_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="mode") as excinfo:
+            load_config(env={"LOCAL_FLOW_MODE": "handsfree"})
+        message = str(excinfo.value)
+        assert "handsfree" in message
+        assert "push-to-talk" in message
+        assert "hands-free" in message
+
+    def test_invalid_vad_backend_raises_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="vad_backend") as excinfo:
+            load_config(env={"LOCAL_FLOW_VAD_BACKEND": "silero"})
+        message = str(excinfo.value)
+        assert "silero" in message
+        assert "energy" in message
+        assert "webrtc" in message
+        assert "mock" in message
+
+    def test_invalid_asr_backend_raises_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="asr_backend") as excinfo:
+            load_config(env={"LOCAL_FLOW_ASR_BACKEND": "whisper.cpp"})
+        message = str(excinfo.value)
+        assert "whisper.cpp" in message
+        assert "faster-whisper" in message
+        assert "mock" in message
+
+    def test_invalid_asr_language_raises_naming_valid_values(self):
+        with pytest.raises(ConfigError, match="asr_language") as excinfo:
+            load_config(env={"LOCAL_FLOW_ASR_LANGUAGE": "english"})
+        message = str(excinfo.value)
+        assert "english" in message
+        assert "auto" in message
+        assert "ISO 639" in message
+
+    def test_uppercase_asr_language_is_rejected(self):
+        # Whisper language codes are lowercase; "EN" would be passed through
+        # to faster-whisper and fail at transcription time otherwise.
+        with pytest.raises(ConfigError, match="asr_language"):
+            load_config(env={"LOCAL_FLOW_ASR_LANGUAGE": "EN"})
+
+    def test_valid_values_still_load(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_MODE": "hands-free",
+                "LOCAL_FLOW_VAD_BACKEND": "webrtc",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_LANGUAGE": "auto",
+            }
+        )
+        assert config.mode == "hands-free"
+        assert config.vad_backend == "webrtc"
+        assert config.asr_backend == "mock"
+        assert config.asr_language == "auto"
+
+    def test_two_and_three_letter_language_codes_are_accepted(self):
+        # 2-letter ISO 639-1 ("fr") plus the 3-letter codes Whisper knows
+        # (e.g. "yue" Cantonese, "haw" Hawaiian).
+        assert load_config(env={"LOCAL_FLOW_ASR_LANGUAGE": "fr"}).asr_language == "fr"
+        assert load_config(env={"LOCAL_FLOW_ASR_LANGUAGE": "yue"}).asr_language == "yue"
+
+
 class TestTransformAndCommandHotkeyFields:
     """`transform_hotkey`/`transform_default`/`command_hotkey`/`auto_transform`
     (Phase 6 E8): see `local_flow.app._run_loop`/`_build_pipeline`.
@@ -420,6 +487,37 @@ class TestReadDotenvInlineComments:
             encoding="utf-8",
         )
         assert _read_dotenv(env_file)["LOCAL_FLOW_STYLE"] == "default"
+
+    def test_hash_inside_double_quotes_is_preserved(self, tmp_path):
+        # Review item 29: a ` #` inside a quoted value (e.g. a dir named
+        # "my #notes") is part of the value, not an inline comment.
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            'LOCAL_FLOW_DATA_DIR="/Users/me/my #notes"\n', encoding="utf-8"
+        )
+        assert _read_dotenv(env_file)["LOCAL_FLOW_DATA_DIR"] == "/Users/me/my #notes"
+
+    def test_hash_inside_single_quotes_is_preserved(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "LOCAL_FLOW_DATA_DIR='/Users/me/my #notes'\n", encoding="utf-8"
+        )
+        assert _read_dotenv(env_file)["LOCAL_FLOW_DATA_DIR"] == "/Users/me/my #notes"
+
+    def test_quoted_hash_value_with_trailing_comment_keeps_the_hash(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            'LOCAL_FLOW_DATA_DIR="/tmp/my #notes"   # where history lives\n',
+            encoding="utf-8",
+        )
+        assert _read_dotenv(env_file)["LOCAL_FLOW_DATA_DIR"] == "/tmp/my #notes"
+
+    def test_unterminated_quote_still_gets_comment_stripped(self, tmp_path):
+        # No closing quote: fall back to the unquoted-value behavior
+        # (comment stripped, stray quote removed), same as before.
+        env_file = tmp_path / ".env"
+        env_file.write_text('LOCAL_FLOW_HOTKEY="f9   # comment\n', encoding="utf-8")
+        assert _read_dotenv(env_file)["LOCAL_FLOW_HOTKEY"] == "f9"
 
 
 class TestEnvExampleFileIsValid:

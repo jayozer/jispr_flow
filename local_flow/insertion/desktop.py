@@ -6,6 +6,7 @@ of the app (and the tests) stay headless.
 
 from __future__ import annotations
 
+import codecs
 import platform
 import shutil
 import subprocess
@@ -39,14 +40,33 @@ def copy_to_clipboard(text: str) -> None:
         candidates = [["clip"]]
     else:
         candidates = [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]]
+    # clip.exe decodes its stdin as the OEM/ANSI code page unless the bytes
+    # start with a UTF-16LE BOM, so UTF-8 mojibakes any non-ASCII text there;
+    # every other tool reads UTF-8.
+    if system == "Windows":
+        payload = codecs.BOM_UTF16_LE + text.encode("utf-16-le")
+    else:
+        payload = text.encode("utf-8")
+
+    failures: list[str] = []
+    last_exc: Exception | None = None
     for cmd in candidates:
         if shutil.which(cmd[0]) is None:
             continue
         try:
-            subprocess.run(cmd, input=text.encode("utf-8"), check=True, timeout=5)
+            subprocess.run(cmd, input=payload, check=True, timeout=5)
             return
         except (subprocess.SubprocessError, OSError) as exc:
-            raise ClipboardError(f"Clipboard tool {cmd[0]!r} failed: {exc}") from exc
+            # An installed tool can still fail (e.g. wl-copy under X11):
+            # keep going down the chain instead of giving up here.
+            failures.append(f"{cmd[0]}: {exc}")
+            last_exc = exc
+    if failures:
+        raise ClipboardError(
+            "Every available clipboard tool failed: " + "; ".join(failures),
+            hint="On Linux install xclip or wl-clipboard; on servers there "
+            "may be no clipboard at all.",
+        ) from last_exc
     raise ClipboardError(
         "No clipboard mechanism found.",
         hint="Install desktop extras (uv sync --extra desktop) or a clipboard "

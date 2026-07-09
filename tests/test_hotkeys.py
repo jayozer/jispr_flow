@@ -201,6 +201,34 @@ class TestSpaceStateMachine:
     def test_up_while_idle_is_noop(self):
         assert SpaceStateMachine().space_up() == SpaceActions()
 
+    def test_other_key_during_pending_flushes_the_space(self):
+        # Fast rollover typing: "a<space>b" with the b down arriving before
+        # the space up. The swallowed space must be replayed on the b press
+        # (keeping "a b"), not re-ordered after it on the space release.
+        m = SpaceStateMachine()
+        m.space_down()
+        flush = m.other_key_down()
+        assert flush.replay_space and not flush.start and not flush.stop
+        # The physical space release afterwards is swallowed: the space was
+        # already typed by the flush.
+        assert m.space_up() == SpaceActions()
+        # A fresh press afterwards works again.
+        assert m.space_down().start_timer
+
+    def test_other_key_while_idle_or_recording_is_noop(self):
+        m = SpaceStateMachine()
+        assert m.other_key_down() == SpaceActions()
+        m.space_down()
+        m.hold_elapsed(m.generation)
+        assert m.other_key_down() == SpaceActions()  # dictating: no flush
+
+    def test_stale_timer_after_flush_does_not_start_recording(self):
+        m = SpaceStateMachine()
+        m.space_down()
+        stale_gen = m.generation
+        m.other_key_down()  # flushed; the hold timer is still in flight
+        assert m.hold_elapsed(stale_gen) == SpaceActions()
+
 
 class FakeKeyCode:
     @staticmethod
@@ -514,6 +542,57 @@ class TestSpacePushToTalkCancelGate:
         assert calls == ["cancel"]
 
 
+class TestSpacePushToTalkRollover:
+    """Fast rollover typing ("a<space>b" with the b down before the space
+    up): `_handle_press` must flush the swallowed space on the next key's
+    press so the replay keeps the typed order. Exercises `_handle_press`/
+    `_handle_release` directly, like `TestSpacePushToTalkCancelGate` above --
+    no real OS listener, and `_replay_space` is stubbed so nothing is typed.
+    """
+
+    def _listener(self, monkeypatch, replays, **kwargs):
+        monkeypatch.setattr(sys, "platform", "darwin")
+        from local_flow.hotkeys.space import SpacePushToTalk
+
+        # A huge hold_ms keeps the real threading.Timer inert for the test.
+        sp = SpacePushToTalk(hold_ms=60_000, **kwargs)
+        monkeypatch.setattr(sp, "_replay_space", lambda: replays.append("space"))
+        return sp
+
+    def test_rollover_press_flushes_the_space_before_the_release(self, monkeypatch):
+        replays = []
+        sp = self._listener(monkeypatch, replays)
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._handle_press(sp._keyboard.KeyCode.from_char("b"))
+        assert replays == ["space"]  # flushed on the b press, not on space up
+
+        sp._handle_release(sp._keyboard.Key.space)
+        assert replays == ["space"]  # the physical release does not replay again
+
+    def test_plain_tap_still_replays_on_release(self, monkeypatch):
+        replays = []
+        sp = self._listener(monkeypatch, replays)
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._handle_release(sp._keyboard.Key.space)
+
+        assert replays == ["space"]
+
+    def test_injected_key_press_does_not_flush(self, monkeypatch):
+        # A TypingSink-typed character (injected) while the space is pending
+        # must not flush -- only a real key press means the user is typing.
+        replays = []
+        sp = self._listener(monkeypatch, replays)
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._handle_press(sp._keyboard.KeyCode.from_char("b"), injected=True)
+        assert replays == []
+
+        sp._handle_release(sp._keyboard.Key.space)
+        assert replays == ["space"]  # the normal tap replay still happens
+
+
 def _config(**env):
     return load_config(env={f"LOCAL_FLOW_{k.upper()}": v for k, v in env.items()})
 
@@ -659,6 +738,15 @@ class TestQuartzFnListenerRunWiresCancelGate:
             def __init__(self, on_press, on_release, on_cancel, cancel_gate=None):
                 captured["cancel_gate"] = cancel_gate
 
+            def key_down(self):
+                captured.setdefault("events", []).append("press")
+
+            def key_up(self):
+                captured.setdefault("events", []).append("release")
+
+            def cancel_down(self):
+                captured.setdefault("events", []).append("cancel")
+
         monkeypatch.setattr(macos_fn, "PushToTalkCore", FakeCore)
         gate = lambda: True  # noqa: E731
         listener = macos_fn.QuartzFnListener(cancel_gate=gate)
@@ -668,18 +756,29 @@ class TestQuartzFnListenerRunWiresCancelGate:
             kCGEventTapDisabledByUserInput = 2
             kCGEventFlagsChanged = 3
             kCGEventKeyDown = 4
-            kCGEventTapOptionListenOnly = 5
+            kCGEventTapOptionDefault = 5
             kCGSessionEventTap = 6
             kCGHeadInsertEventTap = 7
             kCFRunLoopCommonModes = 8
+            kCGKeyboardEventKeycode = 9
+            kCGEventFlagMaskSecondaryFn = 1
 
             @staticmethod
             def CGEventMaskBit(_bit):
                 return 0
 
             @staticmethod
-            def CGEventTapCreate(*_a, **_k):
+            def CGEventTapCreate(*args, **_kwargs):
+                captured["tap_args"] = args
                 return object()
+
+            @staticmethod
+            def CGEventGetIntegerValueField(event, _field):
+                return event["keycode"]
+
+            @staticmethod
+            def CGEventGetFlags(event):
+                return event["flags"]
 
             @staticmethod
             def CFMachPortCreateRunLoopSource(*_a, **_k):
@@ -706,3 +805,20 @@ class TestQuartzFnListenerRunWiresCancelGate:
         listener.run(lambda: None, lambda: None, lambda: None)
 
         assert captured["cancel_gate"] is gate
+        assert captured["tap_args"][2] == FakeQuartz.kCGEventTapOptionDefault
+
+        callback = captured["tap_args"][4]
+        fn_down = {"keycode": 63, "flags": FakeQuartz.kCGEventFlagMaskSecondaryFn}
+        fn_up = {"keycode": 63, "flags": 0}
+        other_flags = {"keycode": 0, "flags": 0}
+
+        # Fn press/release drive local-flow but are consumed so another
+        # global Fn listener (including macOS Dictation) cannot duplicate the
+        # utterance. Unrelated flagsChanged events still pass through.
+        assert callback(None, FakeQuartz.kCGEventFlagsChanged, fn_down, None) is None
+        assert callback(None, FakeQuartz.kCGEventFlagsChanged, fn_up, None) is None
+        assert captured["events"] == ["press", "release"]
+        assert (
+            callback(None, FakeQuartz.kCGEventFlagsChanged, other_flags, None)
+            is other_flags
+        )

@@ -175,3 +175,64 @@ class TestConfigFields:
         assert "forever" in message
         assert "24h" in message
         assert "off" in message
+
+
+def _crash_mid_write_tempfile(monkeypatch):
+    """Make every ``tempfile.NamedTemporaryFile`` write half its payload and
+    then raise -- simulating a crash mid-write inside the atomic-write
+    helper's tmp file, before ``os.replace`` publishes anything."""
+    import tempfile
+
+    real = tempfile.NamedTemporaryFile
+
+    def exploding(*args, **kwargs):
+        tmp = real(*args, **kwargs)
+
+        class _Exploding:
+            name = tmp.name
+
+            @staticmethod
+            def write(text):
+                tmp.write(text[: len(text) // 2])
+                raise OSError("simulated crash mid-write")
+
+            @staticmethod
+            def close():
+                tmp.close()
+
+        return _Exploding()
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", exploding)
+
+
+class TestRewriteCrashSafety:
+    """`_rewrite` (rotation and 24h retention) must be atomic (review item 3):
+    it runs on every append for some configs, and a crash mid-write must never
+    destroy the existing history file. The rewrite goes through the shared
+    tmp-file + ``os.replace`` helper, so a simulated crash while writing the
+    tmp file has to leave ``history.jsonl`` untouched and fully parseable.
+    """
+
+    def test_crash_mid_rotation_rewrite_keeps_history_intact(self, tmp_path, monkeypatch):
+        store = HistoryStore(tmp_path, max_entries=2)
+        store.append(_record("one", "One."))
+        store.append(_record("two", "Two."))
+        _crash_mid_write_tempfile(monkeypatch)
+        with pytest.raises(OSError):
+            # the append itself lands (append-only "a"-mode write), then the
+            # over-cap rotation rewrite crashes mid-write
+            store.append(_record("three", "Three."))
+        # the pre-rewrite file is untouched: every record still parses
+        assert [r.rough for r in store.all()] == ["one", "two", "three"]
+        # and the crashed tmp file was cleaned up, not left to accumulate
+        assert list(tmp_path.iterdir()) == [store.path]
+
+    def test_crash_mid_24h_retention_rewrite_keeps_history_intact(self, tmp_path, monkeypatch):
+        now = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+        store = HistoryStore(tmp_path, retention="24h", now=lambda: now)
+        store.append(_record("one", "One.", timestamp="2026-07-06T11:00:00Z"))
+        _crash_mid_write_tempfile(monkeypatch)
+        with pytest.raises(OSError):
+            store.append(_record("two", "Two.", timestamp="2026-07-06T11:30:00Z"))
+        assert [r.rough for r in store.all()] == ["one", "two"]
+        assert list(tmp_path.iterdir()) == [store.path]

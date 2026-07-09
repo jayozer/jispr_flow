@@ -931,14 +931,17 @@ runs headlessly in CI. See [docs/architecture.md](docs/architecture.md).
   the clipboard insert method (`LOCAL_FLOW_INSERT_METHOD=clipboard`) and
   paste manually, or install `wl-clipboard`.
 - Push-to-talk keys: **Fn** (macOS only — other OSes never see the Fn key;
-  needs Input Monitoring permission), **Space** (hold to dictate, quick tap
-  still types a space; macOS/Windows — Linux/X11 cannot suppress the key, use
-  another key or hands-free mode there), or any single pynput key name
+  needs Accessibility and Input Monitoring permission; while local-flow is
+  running it consumes Fn press/release events so macOS Dictation or another
+  Fn-based listener cannot insert a duplicate), **Space** (hold to dictate,
+  quick tap still types a space; macOS/Windows — Linux/X11 cannot suppress
+  the key, use another key or hands-free mode there), or any single pynput key name
   (`f9`, `f8`, `scroll_lock`, …). Chord hotkeys are not supported yet.
   Press `esc` (configurable) to throw away a dictation mid-recording (with
   the `fn` hotkey only `esc` is supported as the cancel key).
-  Note: using Fn as a modifier (e.g. Fn+arrow) also triggers dictation
-  start/stop — pick another key if you use Fn combos heavily.
+  Note: using Fn as a modifier (e.g. Fn+arrow) also triggers dictation and
+  the Fn event is not forwarded to other apps — pick another key if you use
+  Fn combos heavily.
   When paste fails, Jispr Flow falls back to synthetic typing, then to
   clipboard-only with a message — the text is never lost.
 - Mouse push-to-talk (`LOCAL_FLOW_MOUSE_BUTTON`, see "Mouse push-to-talk"):

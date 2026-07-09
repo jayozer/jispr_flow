@@ -14,6 +14,7 @@ import local_flow.context.field_text as field_text
 from local_flow.config import load_config
 from local_flow.context.field_text import (
     MAX_BEFORE_CURSOR,
+    MAX_SELECTED,
     FieldContext,
     FieldTextProvider,
     MacAXFieldText,
@@ -257,6 +258,20 @@ class TestMacAXFieldText:
         assert len(ctx.before_cursor) == MAX_BEFORE_CURSOR
         assert ctx.before_cursor == long_value[-MAX_BEFORE_CURSOR:]
 
+    def test_selected_is_capped_on_a_select_all_of_a_huge_document(self, monkeypatch):
+        # Cmd+A in a big document: location 0 (empty before_cursor), the
+        # whole value selected. Uncapped, `selected` would embed the entire
+        # document in the polish prompt.
+        document = "x" * 50_000
+        monkeypatch.setitem(
+            sys.modules,
+            "ApplicationServices",
+            _FakeAX(value=document, range_=(0, len(document))),
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == ""
+        assert len(ctx.selected) == MAX_SELECTED
+
     def test_before_cursor_is_capped_at_1000_chars_with_range(self, monkeypatch):
         prefix = "a" * 2000
         value = prefix + "|SPLIT|" + "trailing text"
@@ -270,6 +285,49 @@ class TestMacAXFieldText:
         assert len(ctx.before_cursor) == MAX_BEFORE_CURSOR
         assert ctx.before_cursor == prefix[-MAX_BEFORE_CURSOR:]
         assert ctx.selected == "|SPLIT|"
+
+    def test_selection_range_is_utf16_units_not_code_points(self, monkeypatch):
+        # AX CFRanges count UTF-16 code units (NSString semantics): the
+        # microphone emoji is ONE Python char but TWO units, so "hello" here
+        # is (location=3, length=5), not (2, 5). Code-point slicing would
+        # yield before_cursor="\N{MICROPHONE} h" / selected="ello ".
+        value = "\N{MICROPHONE} hello world"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(3, 5))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "\N{MICROPHONE} "
+        assert ctx.selected == "hello"
+
+    def test_caret_after_emoji_keeps_before_cursor_uncorrupted(self, monkeypatch):
+        # Caret (empty selection) right after the emoji: "note " is 5 units,
+        # the memo emoji 2 more -> location 7 in UTF-16, index 6 in Python.
+        value = "note \N{MEMO} done"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(7, 0))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "note \N{MEMO}"
+        assert ctx.selected == ""
+
+    def test_offset_inside_a_surrogate_pair_never_splits_the_char(self, monkeypatch):
+        # A degenerate range starting inside the emoji's surrogate pair must
+        # round past it -- never raise, never emit half a character.
+        value = "\N{MICROPHONE}x"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(1, 1))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "\N{MICROPHONE}"
+        assert ctx.selected == ""
+
+    def test_range_past_the_end_clamps_to_the_value(self, monkeypatch):
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value="short", range_=(99, 5))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "short"
+        assert ctx.selected == ""
 
 
 # --------------------------------------------------------------------------
@@ -393,6 +451,22 @@ class TestFieldContextPromptBlock:
         expected = self._EXPECTED_TEMPLATE.format(tail=long_tail[-MAX_BEFORE_CURSOR:])
         assert expected in system
         assert long_tail not in system  # the full (uncapped) string must not appear
+
+    def test_selected_tail_capped_in_prompt(self):
+        # An oversized selection (e.g. handed back by a provider that skips
+        # the capture-time cap) must not balloon the prompt: only its capped
+        # tail appears, byte-identical to a selection that was already capped.
+        long_selection = "z" * 2500
+        ctx = FieldContext(selected=long_selection)
+        system = build_polish_messages("x", field_context=ctx)[0]["content"]
+        expected = self._EXPECTED_SELECTED_ONLY_TEMPLATE.format(
+            tail=long_selection[-MAX_SELECTED:]
+        )
+        assert expected in system
+        assert long_selection not in system  # the full (uncapped) string must not appear
+        capped_ctx = FieldContext(selected=long_selection[-MAX_SELECTED:])
+        capped = build_polish_messages("x", field_context=capped_ctx)[0]["content"]
+        assert system == capped
 
 
 # --------------------------------------------------------------------------

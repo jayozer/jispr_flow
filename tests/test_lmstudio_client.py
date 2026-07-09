@@ -112,6 +112,65 @@ class TestErrorHandling:
             make_client(handler).chat([{"role": "user", "content": "x"}])
 
 
+class TestStaleAutoPickedModel:
+    """After auto-picking, a model swap in LM Studio makes the cached id 404
+    on every chat call; the client must drop the stale id and re-list once
+    instead of silently failing until restart.
+    """
+
+    def test_model_swap_relists_and_recovers(self):
+        import json
+
+        state = {"loaded": "old-model", "models_calls": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/models"):
+                state["models_calls"] += 1
+                return httpx.Response(200, json={"data": [{"id": state["loaded"]}]})
+            model = json.loads(request.content)["model"]
+            if model != state["loaded"]:
+                return httpx.Response(404, json={"error": "model not found"})
+            return chat_response("ok")
+
+        client = make_client(handler, model="")
+        assert client.chat([{"role": "user", "content": "x"}]) == "ok"
+        assert client.model == "old-model"
+
+        state["loaded"] = "new-model"  # the user swaps models in LM Studio
+        assert client.chat([{"role": "user", "content": "x"}]) == "ok"
+        assert client.model == "new-model"
+        assert state["models_calls"] == 2
+
+    def test_404_after_relist_still_raises_model_error(self):
+        # The re-list happens once per chat call, never in a loop: if the
+        # freshly listed model still 404s, the caller gets the model error.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/models"):
+                return httpx.Response(200, json={"data": [{"id": "ghost-model"}]})
+            return httpx.Response(404, json={"error": "model not found"})
+
+        client = make_client(handler, model="")
+        with pytest.raises(LMStudioModelError, match="ghost-model"):
+            client.chat([{"role": "user", "content": "x"}])
+
+    def test_explicitly_configured_model_does_not_relist_on_404(self):
+        # A user-pinned model id is respected: a 404 raises with the actionable
+        # hint rather than silently substituting a different model.
+        models_calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/models"):
+                models_calls.append(1)
+                return httpx.Response(200, json={"data": [{"id": "other-model"}]})
+            return httpx.Response(404, json={"error": "model not found"})
+
+        with pytest.raises(LMStudioModelError, match="pinned-model"):
+            make_client(handler, model="pinned-model").chat(
+                [{"role": "user", "content": "x"}]
+            )
+        assert models_calls == []
+
+
 class TestLocalFirstGuard:
     @pytest.mark.parametrize(
         "url",

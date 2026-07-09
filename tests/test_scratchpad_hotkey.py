@@ -180,6 +180,55 @@ class TestRunLoopScratchpadHotkeyDisabledByDefault:
         assert any("no scratchpad sink" in w for w in warnings)
 
 
+class TestRunLoopScratchpadHotkeyUnsupportedKey:
+    """Review item 14 (scratchpad leg): a distinct-but-unsupported
+    `scratchpad_hotkey` value must disable just this hotkey with an
+    actionable warning instead of aborting the whole app -- see
+    tests/test_transform_command_hotkeys.py for the transform/command legs.
+    """
+
+    def test_unsupported_scratchpad_hotkey_warns_and_keeps_running(
+        self, tmp_path, monkeypatch
+    ):
+        sink = FakeTextSink()
+        pipeline = _pipeline(tmp_path, sink)
+        scratchpad_sink = ScratchpadSink(NoteStore(tmp_path / "data"))
+        config = _config(hotkey="f9", scratchpad_hotkey="fn")
+        reporter = FakeReporter()
+        main_listener_ran = threading.Event()
+
+        class RaisingTapListener:
+            def __init__(self, key_name):
+                raise HotkeyBackendMissingError(
+                    f"Unknown hotkey {key_name!r}.",
+                    hint="Use a pynput key name such as f9, f8, scroll_lock, "
+                    "or a single character.",
+                )
+
+        class FakeKeyboardListener:
+            def run(self, on_press, on_release, on_cancel):
+                main_listener_ran.set()
+
+        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", RaisingTapListener)
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeKeyboardListener(),
+        )
+
+        result = _run_loop(
+            config, "push-to-talk", reporter,
+            dependencies=RunDependencies(
+                pipeline, None, None, scratchpad_sink=scratchpad_sink
+            ),
+        )
+
+        assert result == 0  # the app did not abort
+        assert main_listener_ran.is_set()  # the main hotkey still ran
+        warnings = [d for s, d in reporter.events if s == "warning"]
+        assert any("scratchpad hotkey disabled" in w for w in warnings)
+        assert any("'fn'" in w for w in warnings)  # names the bad value
+
+
 class TestRunLoopScratchpadHotkeyToggle:
     """End-to-end: tapping the scratchpad hotkey toggles `pad_active`, which
     routes the NEXT utterance's insertion (and only that sink -- the normal

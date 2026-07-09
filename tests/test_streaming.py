@@ -86,6 +86,63 @@ class TestWindowedStreamCadence:
         assert stream.feed(b"x" * 1) == "should not be called"
 
 
+class TestWindowedStreamBounded:
+    """Group C item 16: the preview buffer is bounded. It keeps only a
+    trailing ``window_s`` of audio, and a re-transcription that comes back
+    blank (the window was silence) drops the buffer -- so an utterance that
+    never closes can't grow the buffer (and each synchronous re-run of
+    Whisper over it) without limit.
+    """
+
+    def _stream(self, transcriber, interval_ms=100, sample_rate=1000, window_s=0.5):
+        # interval_bytes = 200, window_bytes = 1000 * 0.5 * 2 = 1000.
+        return WindowedStream(
+            transcriber, sample_rate, interval_ms=interval_ms, window_s=window_s
+        )
+
+    def test_buffer_trimmed_to_trailing_window(self):
+        transcriber = MockTranscriber(["still talking"])  # never blank: no reset
+        stream = self._stream(transcriber)
+
+        for _ in range(10):  # 2000 bytes fed, twice the 1000-byte window
+            stream.feed(b"x" * 200)
+
+        assert all(pcm_len <= 1000 for pcm_len, _rate in transcriber.calls)
+        assert transcriber.calls[-1] == (1000, 1000)  # trailing window, not 2000
+
+    def test_repeated_silent_intervals_never_grow_the_buffer(self):
+        transcriber = MockTranscriber([""])  # scripted blank: pure silence
+        stream = self._stream(transcriber)
+
+        for _ in range(50):
+            assert stream.feed(b"x" * 200) == ""
+
+        # Every re-transcription saw exactly one interval's worth of audio:
+        # the blank result dropped the buffer each time.
+        assert transcriber.calls == [(200, 1000)] * 50
+        assert len(stream._buffer) == 0
+
+    def test_speech_after_silence_covers_only_post_silence_audio(self):
+        transcriber = MockTranscriber(["", "hello"])
+        stream = self._stream(transcriber)
+
+        assert stream.feed(b"x" * 200) == ""  # silence: buffer dropped
+        assert stream.feed(b"x" * 200) == "hello"
+
+        assert transcriber.calls == [(200, 1000), (200, 1000)]
+
+    def test_default_window_leaves_short_utterances_untrimmed(self):
+        # The class default (30 s) is far above these tests' few hundred
+        # bytes -- pinned here so the cadence tests above keep meaning "the
+        # full buffer so far".
+        transcriber = MockTranscriber(["partial"])
+        stream = WindowedStream(transcriber, 1000, interval_ms=100)
+
+        stream.feed(b"x" * 400)
+
+        assert transcriber.calls == [(400, 1000)]
+
+
 class TestMockStream:
     """`MockStream` scripts partials for tests without real audio/timing."""
 

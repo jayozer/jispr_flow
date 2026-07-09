@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from local_flow.atomicio import atomic_write_text
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -150,7 +152,12 @@ class HistoryStore:
             return
         self.data_dir.mkdir(parents=True, exist_ok=True)
         lines = (json.dumps(asdict(record), ensure_ascii=False) for record in records)
-        self.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # Atomic (tmp file + rename): this rewrite runs on every append under
+        # retention="24h" (and past the max_entries cap otherwise), so a
+        # crash mid-write must never destroy the whole history file. The
+        # file itself stays plain append-only JSONL; only this full-file
+        # rewrite goes through the tmp-file indirection.
+        atomic_write_text(self.path, "\n".join(lines) + "\n")
 
     def _prune_older_than_24h(self) -> None:
         cutoff = self._now() - timedelta(hours=24)

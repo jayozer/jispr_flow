@@ -58,6 +58,20 @@ class SpaceStateMachine:
             return SpaceActions(start=True)
         return SpaceActions()
 
+    def other_key_down(self) -> SpaceActions:
+        """Another (non-space) key was pressed. A tap's space is normally
+        replayed on its key-up, but a fast typist's next key-down can arrive
+        first ("a<space>b" would come out "ab "), so a pending space is
+        flushed now to keep the typed order. Parking in the cancelled state
+        makes the eventual physical space release a silent no-op, exactly
+        like a post-cancel release -- the space was already typed here.
+        """
+        if self.state == _PENDING:
+            self.state = _CANCELLED
+            self.generation += 1  # invalidate the in-flight hold timer
+            return SpaceActions(replay_space=True)
+        return SpaceActions()
+
     def cancel_down(self) -> SpaceActions:
         if self.state == _RECORDING:
             self.state = _CANCELLED  # stay parked until the physical space release
@@ -173,6 +187,17 @@ class SpacePushToTalk(HotkeyListener):
             if not actions.cancel and self._cancel_gate is not None and self._cancel_gate():
                 if self._on_cancel is not None:
                     self._on_cancel()
+        else:
+            # Rollover typing: a tap's pending space must be flushed on the
+            # next real key press so the replay keeps the typed order
+            # ("a<space>b" stays "a b", not "ab "); see
+            # SpaceStateMachine.other_key_down. Injected events (our replay
+            # tap, TypingSink keystrokes) are not the user typing.
+            if injected:
+                return
+            with self._lock:
+                actions = self._machine.other_key_down()
+                self._apply(actions, self._machine.generation)
 
     def _handle_release(self, key, injected=False) -> None:
         if key == self._keyboard.Key.space:
