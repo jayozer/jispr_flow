@@ -1,9 +1,11 @@
 """Personal insights: local-only aggregate stats over dictation history.
 
 Everything here is pure and injectable -- ``now`` is always passed in, never
-read from the wall clock -- so :func:`compute_stats`/:func:`render_heatmap`
-are deterministic under test. ``local_flow.app._cmd_stats`` is the only
-caller that ever supplies a real ``datetime.now(UTC)``.
+read from the wall clock, and calendar bucketing uses the injected ``tz``
+(default UTC) -- so :func:`compute_stats`/:func:`render_heatmap` are
+deterministic under test. ``local_flow.app._cmd_stats`` is the only caller
+that ever supplies a real ``datetime.now(UTC)``, and likewise the only one
+that passes ``tz=None`` (bucket by the machine's local zone).
 
 Timestamp tolerance and the "excluded everywhere" rule: this module
 re-implements the same tolerant ISO-8601 parse idiom as
@@ -29,7 +31,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 
 from local_flow.history.store import HistoryRecord
 
@@ -91,18 +93,29 @@ class Stats:
     replacements: int
     failed: int
     top_apps: list[tuple[str, int]]  # top 5 by dictation count; "" -> "(unknown)"
-    active_days: list[str]  # sorted, unique ISO dates (UTC) with >=1 dictation
+    active_days: list[str]  # sorted, unique ISO dates (in `tz`) with >=1 dictation
     current_streak: int
     longest_streak: int
 
 
-def compute_stats(records: Iterable[HistoryRecord], now: datetime) -> Stats:
+def compute_stats(
+    records: Iterable[HistoryRecord], now: datetime, tz: tzinfo | None = UTC
+) -> Stats:
     """Aggregate ``records`` into a :class:`Stats` snapshot as of ``now``.
 
     Records whose ``timestamp`` does not parse are excluded from every
     field (see module docstring). ``now`` should be UTC (as
     ``datetime.now(UTC)``); a naive ``now`` is treated as already-UTC,
     matching the tolerance this module applies to record timestamps.
+
+    ``tz`` is the zone whose calendar defines "a day" for ``active_days``
+    and both streaks. It defaults to UTC so this function stays fully
+    deterministic for direct callers and tests; pass ``None`` -- as
+    ``local_flow.app._cmd_stats`` does -- to bucket by the machine's local
+    zone (resolved per-instant via ``astimezone(None)``, so an evening
+    dictation west of UTC counts toward the user's local day and DST
+    transitions inside the record range still place each timestamp
+    correctly).
 
     Failed records (where LLM polish was skipped) still count toward
     ``total_dictations``, ``total_words``, and ``words_per_minute``, since
@@ -112,7 +125,7 @@ def compute_stats(records: Iterable[HistoryRecord], now: datetime) -> Stats:
     Streak semantics (documented once here, since both fields share it):
 
     - ``current_streak``: the length of the run of consecutive active days
-      ending at ``now``'s UTC date OR at that date minus one day -- i.e. a
+      ending at ``now``'s date in ``tz`` OR at that date minus one day -- i.e. a
       streak survives one full inactive "today" (you haven't dictated yet
       today, but did yesterday), and is broken only once a FULL calendar day
       passes with no activity at all (today AND yesterday both inactive).
@@ -145,10 +158,10 @@ def compute_stats(records: Iterable[HistoryRecord], now: datetime) -> Stats:
         app_counts[record.app or "(unknown)"] += 1
     top_apps = app_counts.most_common(5)
 
-    active_day_set = {ts.date().isoformat() for _, ts in usable}
+    active_day_set = {ts.astimezone(tz).date().isoformat() for _, ts in usable}
     active_days = sorted(active_day_set)
 
-    today = _ensure_utc(now).date()
+    today = _ensure_utc(now).astimezone(tz).date()
     current_streak = _current_streak(active_day_set, today)
     longest_streak = _longest_streak(active_day_set)
 
@@ -197,22 +210,27 @@ def _longest_streak(active_day_set: set[str]) -> int:
     return best
 
 
-def render_heatmap(active_days: list[str], now: datetime, weeks: int = 8) -> str:
+def render_heatmap(
+    active_days: list[str], now: datetime, weeks: int = 8, tz: tzinfo | None = UTC
+) -> str:
     """Render an ASCII activity heatmap: one row per weekday (Mon..Sun), one
     column per week, oldest week first and the current week last.
 
     ``#`` marks a day present in ``active_days``, ``.`` marks any other day.
     The grid's last column is always the Monday-Sunday week containing
-    ``now``'s UTC date, so a handful of trailing cells in that column may
-    represent dates still in the future relative to ``now`` (e.g. if
-    ``now`` falls on a Tuesday, Wed-Sun of that same week haven't happened
-    yet) -- those simply render as ``.`` like any other inactive day; no
-    special-casing is needed since a future date can never appear in
-    ``active_days``. Deterministic given ``(active_days, now, weeks)``: no
-    wall-clock reads.
+    ``now``'s date in ``tz`` (same semantics and default as
+    :func:`compute_stats`'s ``tz`` -- pass the SAME zone used to compute
+    ``active_days``, since the grid matches their ISO strings verbatim), so
+    a handful of trailing cells in that column may represent dates still in
+    the future relative to ``now`` (e.g. if ``now`` falls on a Tuesday,
+    Wed-Sun of that same week haven't happened yet) -- those simply render
+    as ``.`` like any other inactive day; no special-casing is needed since
+    a future date can never appear in ``active_days``. Deterministic given
+    ``(active_days, now, weeks, tz)`` for any non-``None`` ``tz``:
+    no wall-clock reads.
     """
     active = set(active_days)
-    today = _ensure_utc(now).date()
+    today = _ensure_utc(now).astimezone(tz).date()
     this_monday = today - timedelta(days=today.weekday())
     grid_start = this_monday - timedelta(weeks=weeks - 1)
 

@@ -1017,7 +1017,10 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
             print(f"note: {unparseable} record(s) skipped: unparseable timestamp")
         return 0
 
-    stats = compute_stats(windowed, now)
+    # tz=None: bucket active days/streaks/heatmap by the MACHINE's local
+    # calendar (an evening dictation west of UTC belongs to the user's local
+    # day, not the next UTC day). The --since cutoff above stays instant-based.
+    stats = compute_stats(windowed, now, tz=None)
 
     top_apps = (
         ", ".join(f"{app} ({count})" for app, count in stats.top_apps)
@@ -1053,7 +1056,7 @@ def _cmd_stats(args: argparse.Namespace, config: Config) -> int:
 
     print()
     print("last 8 weeks:")
-    print(render_heatmap(stats.active_days, now))
+    print(render_heatmap(stats.active_days, now, tz=None))  # same local-zone bucketing
     return 0
 
 

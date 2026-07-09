@@ -286,6 +286,49 @@ class TestMacAXFieldText:
         assert ctx.before_cursor == prefix[-MAX_BEFORE_CURSOR:]
         assert ctx.selected == "|SPLIT|"
 
+    def test_selection_range_is_utf16_units_not_code_points(self, monkeypatch):
+        # AX CFRanges count UTF-16 code units (NSString semantics): the
+        # microphone emoji is ONE Python char but TWO units, so "hello" here
+        # is (location=3, length=5), not (2, 5). Code-point slicing would
+        # yield before_cursor="\N{MICROPHONE} h" / selected="ello ".
+        value = "\N{MICROPHONE} hello world"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(3, 5))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "\N{MICROPHONE} "
+        assert ctx.selected == "hello"
+
+    def test_caret_after_emoji_keeps_before_cursor_uncorrupted(self, monkeypatch):
+        # Caret (empty selection) right after the emoji: "note " is 5 units,
+        # the memo emoji 2 more -> location 7 in UTF-16, index 6 in Python.
+        value = "note \N{MEMO} done"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(7, 0))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "note \N{MEMO}"
+        assert ctx.selected == ""
+
+    def test_offset_inside_a_surrogate_pair_never_splits_the_char(self, monkeypatch):
+        # A degenerate range starting inside the emoji's surrogate pair must
+        # round past it -- never raise, never emit half a character.
+        value = "\N{MICROPHONE}x"
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value=value, range_=(1, 1))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "\N{MICROPHONE}"
+        assert ctx.selected == ""
+
+    def test_range_past_the_end_clamps_to_the_value(self, monkeypatch):
+        monkeypatch.setitem(
+            sys.modules, "ApplicationServices", _FakeAX(value="short", range_=(99, 5))
+        )
+        ctx = MacAXFieldText().current()
+        assert ctx.before_cursor == "short"
+        assert ctx.selected == ""
+
 
 # --------------------------------------------------------------------------
 # Prompt block: presence/absence, content pin, ordering, 1000-char tail cap.
