@@ -81,11 +81,10 @@ class ScratchpadWindow:
     """A small always-on-top editor over one `NoteStore`'s active note.
 
     Widgets: an `OptionMenu` note switcher (populated from
-    `store.list_notes()` at construction time -- notes created by another
-    process *after* the window opens won't appear in the menu until the
-    window is restarted; a known, documented limitation given this is a
-    thin, manual-verify GUI glue layer, not a full editor) above a `Text`
-    widget showing the current note's content.
+    `store.list_notes()` at construction time and re-synced on every poll
+    tick by `_refresh_note_menu`, so notes created by another process show
+    up without restarting the window) above a `Text` widget showing the
+    current note's content.
 
     Two independent, deliberately asymmetric sync mechanisms:
     - Local edits -> disk: debounced 1s autosave (`_on_modified`/`_autosave`).
@@ -266,6 +265,14 @@ class ScratchpadWindow:
             self._note_var.set(self._current_note)
             return
         self._current_note = name
+        # Keep the OptionMenu's button label in sync explicitly: entries
+        # rebuilt by `_refresh_note_menu` are plain `add_command` items, not
+        # the `tkinter._setit` wrappers the constructor's OptionMenu wired,
+        # so nothing else updates `_note_var` when one of those is picked --
+        # without this the label stopped tracking the active note after the
+        # first poll tick. (For constructor-wired entries `_setit` already
+        # set the var to `name`; re-setting it is a harmless no-op.)
+        self._note_var.set(name)
         self.store.set_active(name)
         self.root.title(f"local-flow scratchpad — {name}")
         self._load_active(force=True)

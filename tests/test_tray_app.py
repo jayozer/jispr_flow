@@ -10,10 +10,12 @@ the platform dispatch in `_open_folder`.
 
 from __future__ import annotations
 
+import queue
 import threading
 
 import pytest
 
+from local_flow.status import State, StatusReporter
 from local_flow.tray.app import (
     MenuEntry,
     TrayApp,
@@ -261,12 +263,40 @@ class TestBuildMenuTrailingItems:
 
 
 class FakeIcon:
-    """Minimal stand-in for a `pystray.Icon`: records `.icon`/`.title`/`.notify(...)`."""
+    """Fake tray backend standing in for a `pystray.Icon`.
+
+    Beyond echoing `.icon`/`.title` back like the real thing, it records how
+    many times each was assigned and on WHICH thread -- the two facts the
+    review-item-15 tests assert on (updates marshaled to the main thread,
+    redraws skipped when the icon kind is unchanged).
+    """
 
     def __init__(self) -> None:
-        self.icon = None
-        self.title = None
+        self._icon = None
+        self._title = None
+        self.icon_update_count = 0
+        self.icon_update_threads: list[threading.Thread] = []
+        self.title_update_threads: list[threading.Thread] = []
         self.notifications: list[str] = []
+
+    @property
+    def icon(self):
+        return self._icon
+
+    @icon.setter
+    def icon(self, value) -> None:
+        self._icon = value
+        self.icon_update_count += 1
+        self.icon_update_threads.append(threading.current_thread())
+
+    @property
+    def title(self):
+        return self._title
+
+    @title.setter
+    def title(self, value) -> None:
+        self._title = value
+        self.title_update_threads.append(threading.current_thread())
 
     def notify(self, detail: str) -> None:
         self.notifications.append(detail)
@@ -350,6 +380,197 @@ class TestTrayReporter:
         reporter.notify("error", "boom")  # must not raise
 
 
+class TestTrayReporterMarshalsToMainThread:
+    """Review item 15: pystray's darwin backend drives AppKit when `.icon`/
+    `.title` are assigned, and AppKit is only safe to touch from the main
+    thread -- but `TrayReporter.notify` fires on the dictation-loop thread.
+    `notify` must therefore route EVERY icon mutation through its dispatch
+    seam instead of mutating inline; the fake backend records which thread
+    each update was applied on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_pillow(self):
+        pytest.importorskip("PIL")
+
+    def test_notify_from_a_worker_thread_defers_all_updates_to_the_dispatcher(self):
+        icon = FakeIcon()
+        pending: queue.Queue = queue.Queue()
+        reporter = TrayReporter(icon, TrayStateMachine(), dispatch=pending.put)
+
+        worker = threading.Thread(target=lambda: reporter.notify("recording"))
+        worker.start()
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+
+        # Nothing may have touched the icon from the worker thread...
+        assert icon.icon_update_count == 0
+        assert icon.title is None
+
+        # ...the queued closure applies everything on whichever thread runs
+        # the dispatcher -- here, the main thread.
+        while not pending.empty():
+            pending.get()()
+        assert icon.title == "local-flow — recording"
+        assert icon.icon_update_threads == [threading.main_thread()]
+        assert icon.title_update_threads == [threading.main_thread()]
+
+    def test_error_desktop_notification_is_also_dispatched_not_inline(self):
+        icon = FakeIcon()
+        pending: queue.Queue = queue.Queue()
+        reporter = TrayReporter(icon, TrayStateMachine(), dispatch=pending.put)
+
+        worker = threading.Thread(
+            target=lambda: reporter.notify("error", "LM Studio unreachable")
+        )
+        worker.start()
+        worker.join(timeout=2)
+
+        assert icon.notifications == []
+        while not pending.empty():
+            pending.get()()
+        assert icon.notifications == ["LM Studio unreachable"]
+
+    def test_default_dispatch_applies_inline_on_the_main_thread(self):
+        # Without an injected dispatcher, a notify already on the main
+        # thread must apply synchronously (no run loop to queue onto).
+        icon = FakeIcon()
+        reporter = TrayReporter(icon, TrayStateMachine())
+
+        reporter.notify("recording")
+
+        assert icon.title == "local-flow — recording"
+        assert icon.icon_update_threads == [threading.main_thread()]
+
+
+class TestTrayReporterSkipsUnchangedRedraws:
+    """Review item 15 (second half): re-rendering and re-assigning the icon
+    image is the expensive part (a Pillow draw plus a native redraw), so
+    `notify` must skip it when the mapped icon KIND is unchanged -- the
+    tooltip still updates. Streaming previews are the hot path: every
+    partial transcript maps to the same "processing" kind.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_pillow(self):
+        pytest.importorskip("PIL")
+
+    def test_same_icon_kind_updates_tooltip_without_redrawing(self):
+        icon = FakeIcon()
+        reporter = TrayReporter(icon, TrayStateMachine())
+
+        reporter.notify("processing")
+        reporter.notify("preview", "draft one")
+        reporter.notify("preview", "draft one two")
+
+        assert icon.icon_update_count == 1
+        assert icon.title == "… draft one two"
+
+    def test_each_icon_kind_change_redraws(self):
+        icon = FakeIcon()
+        reporter = TrayReporter(icon, TrayStateMachine())
+
+        reporter.notify("recording")
+        reporter.notify("processing")
+        reporter.notify("inserted", "hi")  # maps to the idle icon (flash)
+
+        assert icon.icon_update_count == 3
+
+    def test_failed_redraw_is_retried_on_the_next_notify(self):
+        # A swallowed redraw failure must not be recorded as "already
+        # showing this kind", or the icon would stay stale forever once the
+        # backend recovers.
+        class FlakyIcon:
+            def __init__(self) -> None:
+                self.failures_left = 1
+                self.applied: list[object] = []
+                self.title = None
+
+            @property
+            def icon(self):
+                return self.applied[-1] if self.applied else None
+
+            @icon.setter
+            def icon(self, value) -> None:
+                if self.failures_left:
+                    self.failures_left -= 1
+                    raise RuntimeError("transient backend failure")
+                self.applied.append(value)
+
+            def notify(self, detail: str) -> None:
+                pass
+
+        flaky = FlakyIcon()
+        reporter = TrayReporter(flaky, TrayStateMachine())
+
+        reporter.notify("recording")  # redraw raises; swallowed
+        reporter.notify("recording")  # same kind, but it never landed -> retry
+
+        assert len(flaky.applied) == 1
+
+
+def _bare_tray_app(mode: str = "hands-free") -> TrayApp:
+    """A `TrayApp` skeleton without running `__init__` (which needs the
+    `tray` extra and builds a real pipeline): only the attributes
+    `_start_loop`/`_stop_loop` touch, via `object.__new__`."""
+    app = object.__new__(TrayApp)
+    app.config = None
+    app.mode = mode
+    app.reporter = None
+    app.pipeline = app.source = app.vad = app.pending_store = None
+    app._deps = None
+    app._running = False
+    app._stop_event = threading.Event()
+    app._loop_thread = None
+    return app
+
+
+class RecordingReporter(StatusReporter):
+    """Records every `(state, detail)` notify, in order."""
+
+    def __init__(self) -> None:
+        self.states: list[tuple[State, str]] = []
+
+    def notify(self, state: State, detail: str = "") -> None:
+        self.states.append((state, detail))
+
+
+class TestStopLoopEmitsTerminalIdle:
+    """Review item 27: the loop thread exits silently once it notices the
+    stop event -- it never emits a final state, so stopping hands-free
+    dictation left the tray icon stuck on red "recording". `_stop_loop`
+    must emit a terminal "idle" so the tray's final state is idle.
+    """
+
+    def test_stop_emits_idle_as_the_terminal_state(self, monkeypatch):
+        app = _bare_tray_app()
+        reporter = RecordingReporter()
+        app.reporter = reporter
+        recording_seen = threading.Event()
+
+        def fake_run_loop(config, mode, rep, stop_event, dependencies):
+            rep.notify("recording")
+            recording_seen.set()
+            stop_event.wait(timeout=2)  # exits promptly once told to stop
+
+        monkeypatch.setattr("local_flow.app._run_loop", fake_run_loop)
+        app._start_loop()
+        assert recording_seen.wait(timeout=2)
+
+        app._stop_loop()
+
+        assert reporter.states[-1] == ("idle", "")
+
+    def test_stop_when_not_running_emits_nothing(self):
+        app = _bare_tray_app()
+        reporter = RecordingReporter()
+        app.reporter = reporter
+
+        app._stop_loop()  # early-returns: nothing was running
+
+        assert reporter.states == []
+
+
 class TestOpenFolder:
     def test_darwin_uses_open(self, monkeypatch, tmp_path):
         calls = []
@@ -405,23 +626,11 @@ class TestStartLoopGuardsAgainstDoubleStart:
     "still-alive" case doesn't slow the suite down.
     """
 
-    def _bare_app(self, mode: str = "hands-free") -> TrayApp:
-        app = object.__new__(TrayApp)
-        app.config = None
-        app.mode = mode
-        app.reporter = None
-        app.pipeline = app.source = app.vad = app.pending_store = None
-        app._deps = None
-        app._running = False
-        app._stop_event = threading.Event()
-        app._loop_thread = None
-        return app
-
     def test_second_start_is_a_noop_while_previous_thread_is_still_alive(
         self, monkeypatch
     ):
         monkeypatch.setattr("local_flow.tray.app._JOIN_TIMEOUT", 0.05)
-        app = self._bare_app()
+        app = _bare_tray_app()
         still_running = threading.Event()
 
         def fake_run_loop(config, mode, reporter, stop_event, dependencies):
@@ -447,7 +656,7 @@ class TestStartLoopGuardsAgainstDoubleStart:
         self, monkeypatch
     ):
         monkeypatch.setattr("local_flow.tray.app._JOIN_TIMEOUT", 2.0)
-        app = self._bare_app()
+        app = _bare_tray_app()
         run_count = []
 
         def fake_run_loop(config, mode, reporter, stop_event, dependencies):
@@ -472,7 +681,7 @@ class TestStartLoopGuardsAgainstDoubleStart:
         app._loop_thread.join(timeout=2)
 
     def test_start_is_a_noop_when_already_marked_running(self, monkeypatch):
-        app = self._bare_app()
+        app = _bare_tray_app()
         app._running = True
         app._loop_thread = None  # no thread object needed for this branch
 

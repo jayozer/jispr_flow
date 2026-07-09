@@ -625,11 +625,14 @@ def _install_fake_tkinter(monkeypatch):
             return self._value
 
     class _Menu:
-        def delete(self, first, last):
-            pass
+        def __init__(self):
+            self.entries = []  # (label, command) in menu order
 
-        def add_command(self, **kwargs):
-            pass
+        def delete(self, first, last):
+            self.entries = []
+
+        def add_command(self, label=None, command=None, **kwargs):
+            self.entries.append((label, command))
 
     class _OptionMenu(_Widget):
         def __init__(self, *args, **kwargs):
@@ -731,3 +734,58 @@ class TestScratchpadAutosaveToctou:
         content = note_path.read_text()
         assert "external dictation" in content
         assert "MORE" not in content
+
+
+class TestNoteDropdownTracksActiveNote:
+    """Review item 28: `_refresh_note_menu` rebuilds the `OptionMenu`'s
+    entries as plain `add_command` items -- NOT the `tkinter._setit` wrapper
+    the constructor originally wired -- so nothing set `_note_var` (the
+    dropdown's button label) when a rebuilt entry was picked: after the
+    first poll tick the label stopped tracking the active note.
+    `_on_note_selected` must keep `_note_var` in sync itself.
+    """
+
+    def _window_with_two_notes(self, tmp_path, monkeypatch):
+        _install_fake_tkinter(monkeypatch)
+        store = NoteStore(tmp_path)
+        store.write("inbox content", name="inbox")
+        store.create("ideas")
+        return ScratchpadWindow(store)
+
+    def _rebuilt_command_for(self, window, name):
+        """The `command` callback for `name` in the REBUILT menu entries."""
+        window._refresh_note_menu()  # what every poll tick does
+        menu = window._option_menu["menu"]
+        return next(command for label, command in menu.entries if label == name)
+
+    def test_selecting_from_a_rebuilt_menu_updates_the_dropdown_label(
+        self, tmp_path, monkeypatch
+    ):
+        window = self._window_with_two_notes(tmp_path, monkeypatch)
+        assert window._note_var.get() == "inbox"
+
+        self._rebuilt_command_for(window, "ideas")()
+
+        assert window._current_note == "ideas"
+        assert window.store.active_note() == "ideas"
+        assert window._note_var.get() == "ideas"
+
+    def test_conflict_aborted_switch_keeps_the_label_on_the_current_note(
+        self, tmp_path, monkeypatch
+    ):
+        window = self._window_with_two_notes(tmp_path, monkeypatch)
+
+        # Dirty buffer + an external write to the note file underneath it:
+        # the flush `_on_note_selected` attempts is conflict-refused, so the
+        # switch aborts -- and the dropdown label must stay on the old note.
+        window.text.delete("1.0", "end")
+        window.text.insert("1.0", "unsaved edits")
+        window._dirty = True
+        window.store.append("external dictation", name="inbox")
+        _bump_mtime(tmp_path / "notes" / "inbox.md")
+
+        self._rebuilt_command_for(window, "ideas")()
+
+        assert window._current_note == "inbox"
+        assert window._note_var.get() == "inbox"
+        assert "conflict" in window.root.title()
