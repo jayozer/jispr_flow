@@ -13,6 +13,7 @@ from pathlib import Path
 
 import local_flow.app as app_module
 from local_flow.app import main
+from local_flow.asr.mock import MockTranscriber
 from local_flow.llm.mock import MockChatClient
 
 
@@ -102,13 +103,21 @@ class TestTranscribePolish:
 
 
 class TestTranscribeCopy:
-    def test_copy_puts_last_files_text_on_clipboard(self, tmp_path, monkeypatch, capsys):
+    def test_copy_joins_every_files_transcript(self, tmp_path, monkeypatch, capsys):
+        """--copy over multiple files must put ALL the transcripts on the
+        clipboard (blank-line separated), not just the last file's."""
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
         wav_a = tmp_path / "a.wav"
         wav_b = tmp_path / "b.wav"
         _write_wav(wav_a)
         _write_wav(wav_b)
+
+        monkeypatch.setattr(
+            app_module,
+            "_build_transcriber",
+            lambda config: MockTranscriber(["first memo", "second memo"]),
+        )
 
         copied: list[str] = []
 
@@ -122,7 +131,7 @@ class TestTranscribeCopy:
 
         code = main(["transcribe", str(wav_a), str(wav_b), "--copy"])
         assert code == 0
-        assert copied == ["(mock transcription)"]
+        assert copied == ["first memo\n\nsecond memo"]
 
     def test_no_copy_flag_leaves_clipboard_untouched(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))

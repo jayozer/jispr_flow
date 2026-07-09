@@ -573,7 +573,7 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
     )
     transcriber = _build_transcriber(transcriber_config)
 
-    final_text = ""
+    transcripts = []
     for path in paths:
         print(f"transcribing {path.name}...", file=sys.stderr)
         text = transcriber.transcribe_path(path)
@@ -586,12 +586,14 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         if len(paths) > 1:
             print(f"== {path.name} ==")
         print(text)
-        final_text = text
+        transcripts.append(text)
 
     if args.copy:
         from local_flow.insertion.desktop import ClipboardOnlySink
 
-        ClipboardOnlySink().insert(final_text)
+        # Every file's transcript, not just the last one's; blank-line
+        # separated so multi-file output pastes as distinct paragraphs.
+        ClipboardOnlySink().insert("\n\n".join(transcripts))
 
     return 0
 

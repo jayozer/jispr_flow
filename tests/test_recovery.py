@@ -2,6 +2,9 @@
 `history --retry` -- the E11 reliability trio.
 """
 
+import os
+import wave
+
 import pytest
 
 from local_flow.app import _handle_utterance, main
@@ -19,6 +22,15 @@ from local_flow.status import StatusReporter
 
 def _pcm(n: int = 100) -> bytes:
     return b"\x00\x01" * n
+
+
+def _save_named(store: PendingAudioStore, name: str, mtime: float) -> None:
+    """Save one pending WAV, then force its filename and mtime so a test can
+    make name order and save-time order disagree deterministically."""
+    path = store.save(_pcm(), 16000)
+    target = path.with_name(name)
+    path.rename(target)
+    os.utime(target, (mtime, mtime))
 
 
 class FakeReporter(StatusReporter):
@@ -67,13 +79,24 @@ class TestPendingListingAndDelete:
         store = PendingAudioStore(tmp_path)
         assert store.pending() == []
 
-    def test_lists_sorted_by_name(self, tmp_path):
+    def test_lists_in_save_order_not_name_order(self, tmp_path):
+        """Crashed utterances must replay in the order they were spoken.
+        Filenames are uuid4 (no order), so `pending()` sorts by mtime --
+        here the names are deliberately reverse-sorted vs. save time.
+        """
         store = PendingAudioStore(tmp_path)
-        for _ in range(3):
-            store.save(_pcm(), 16000)
-        names = [p.name for p in store.pending()]
-        assert names == sorted(names)
-        assert len(names) == 3
+        save_order = ["zz-first.wav", "mm-second.wav", "aa-third.wav"]
+        for i, name in enumerate(save_order):
+            _save_named(store, name, mtime=1_700_000_000 + i)
+        assert [p.name for p in store.pending()] == save_order
+
+    def test_equal_mtimes_fall_back_to_name_order(self, tmp_path):
+        """Coarse filesystem timestamps can collide; ties break by name so
+        the order stays deterministic run to run."""
+        store = PendingAudioStore(tmp_path)
+        for name in ["bb.wav", "aa.wav", "cc.wav"]:
+            _save_named(store, name, mtime=1_700_000_000)
+        assert [p.name for p in store.pending()] == ["aa.wav", "bb.wav", "cc.wav"]
 
     def test_delete_removes_file(self, tmp_path):
         store = PendingAudioStore(tmp_path)
@@ -87,6 +110,16 @@ class TestPendingListingAndDelete:
         store.delete(store.pending_dir / "does-not-exist.wav")
 
 
+def _write_wav(path, *, channels: int, sampwidth: int) -> None:
+    """Write a small but *valid* WAV whose format differs from the 16-bit
+    mono PCM that `PendingAudioStore.save` produces."""
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(channels)
+        fh.setsampwidth(sampwidth)
+        fh.setframerate(16000)
+        fh.writeframes(b"\x00" * (channels * sampwidth * 50))
+
+
 class TestCorruptWav:
     def test_load_raises_value_error_on_garbage_bytes(self, tmp_path):
         store = PendingAudioStore(tmp_path)
@@ -94,6 +127,25 @@ class TestCorruptWav:
         bad = store.pending_dir / "garbage.wav"
         bad.write_bytes(b"not a wav file at all")
         with pytest.raises(ValueError):
+            store.load(bad)
+
+    def test_load_rejects_stereo_wav(self, tmp_path):
+        """Only `save`'s own 16-bit mono format is replayable; a stereo file
+        (e.g. dropped into pending/ by hand) would be misparsed as garbage
+        PCM, so `load` must refuse it instead."""
+        store = PendingAudioStore(tmp_path)
+        store.pending_dir.mkdir(parents=True)
+        bad = store.pending_dir / "stereo.wav"
+        _write_wav(bad, channels=2, sampwidth=2)
+        with pytest.raises(ValueError, match="16-bit mono"):
+            store.load(bad)
+
+    def test_load_rejects_8bit_wav(self, tmp_path):
+        store = PendingAudioStore(tmp_path)
+        store.pending_dir.mkdir(parents=True)
+        bad = store.pending_dir / "8bit.wav"
+        _write_wav(bad, channels=1, sampwidth=1)
+        with pytest.raises(ValueError, match="16-bit mono"):
             store.load(bad)
 
 
@@ -231,6 +283,29 @@ class TestRecoverCommand:
         assert len(store.pending()) == 1
         out = capsys.readouterr().out
         assert "skip" in out.lower()
+
+    def test_wrong_format_wav_is_skipped_with_a_notice_and_kept(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """A non-mono/non-16-bit WAV in pending/ is skipped (with a notice)
+        and left on disk -- never fed to the pipeline as garbage PCM, never
+        deleted."""
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        store = PendingAudioStore(tmp_path)
+        store.pending_dir.mkdir(parents=True)
+        _write_wav(store.pending_dir / "stereo.wav", channels=2, sampwidth=2)
+
+        pipeline = _make_pipeline(tmp_path, FakeTextSink())
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_text_pipeline", lambda config: pipeline)
+
+        code = main(["recover"])
+        assert code == 0
+        assert len(store.pending()) == 1
+        out = capsys.readouterr().out
+        assert "skip" in out.lower()
+        assert "0 recovered" in out
 
 
 class TestHistoryRetry:
