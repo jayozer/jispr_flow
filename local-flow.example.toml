@@ -6,8 +6,8 @@ lmstudio_base_url = "http://localhost:1234/v1"
 lmstudio_model = ""            # empty = auto-pick the first loaded model
 lmstudio_timeout = 60.0
 
-asr_backend = "faster-whisper" # faster-whisper | mock
-asr_model = "small.en"         # name or path to a CTranslate2 model dir
+asr_backend = "faster-whisper" # faster-whisper | mlx-whisper (Apple Silicon) | mock
+asr_model = "small.en"         # faster-whisper name/path; for MLX use an MLX repo/path
 asr_device = "auto"            # auto | cpu | cuda
 asr_compute_type = "int8"
 asr_language = "en"            # en | ISO 639-1 code | auto (detect); non-en needs multilingual

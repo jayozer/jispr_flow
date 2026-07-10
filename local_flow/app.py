@@ -6,6 +6,7 @@ Subcommands:
 - ``recover`` reprocess dictation audio left behind by a crash mid-utterance
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``transcribe`` transcribe audio file(s) through the local ASR (+ polish)
+- ``benchmark-asr`` repeatable local ASR latency/accuracy benchmark
 - ``command`` one-shot command mode: transform text per an instruction
 - ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
@@ -20,6 +21,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
 import threading
 import time
@@ -33,7 +35,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from local_flow import __version__
 from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
-from local_flow.config import Config, load_config
+from local_flow.config import VALID_ASR_BACKENDS, Config, load_config
 from local_flow.errors import ConfigError, HotkeyBackendMissingError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
@@ -117,8 +119,13 @@ def _build_selection_capture(config: Config):
     return SelectionCapture(PynputSelectionBackend())
 
 
+def _is_english_only_model(model: str) -> bool:
+    name = model.rstrip("/").rsplit("/", 1)[-1].lower()
+    return name.endswith(".en") or ".en-" in name
+
+
 def _build_transcriber(config: Config):
-    if config.asr_language != "en" and config.asr_model.endswith(".en"):
+    if config.asr_language != "en" and _is_english_only_model(config.asr_model):
         raise ConfigError(
             f"asr_language={config.asr_language!r} is not compatible with "
             f"English-only model {config.asr_model!r}.",
@@ -128,6 +135,19 @@ def _build_transcriber(config: Config):
         from local_flow.asr.mock import MockTranscriber
 
         return MockTranscriber(["(mock transcription)"], language=config.asr_language)
+    if config.asr_backend == "mlx-whisper":
+        if sys.platform != "darwin" or platform.machine() != "arm64":
+            raise ConfigError(
+                "The mlx-whisper backend requires an Apple-Silicon Mac.",
+                hint="Use faster-whisper on this platform, or set "
+                "LOCAL_FLOW_ASR_BACKEND=faster-whisper.",
+            )
+        from local_flow.asr.mlx_whisper_asr import MlxWhisperTranscriber
+
+        return MlxWhisperTranscriber(
+            model=config.asr_model,
+            language=config.asr_language,
+        )
     from local_flow.asr.faster_whisper_asr import FasterWhisperTranscriber
 
     return FasterWhisperTranscriber(
@@ -296,6 +316,11 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     from local_flow.polish.polisher import TranscriptPolisher
 
     store = PersonalizationStore(config.data_dir)
+    transcriber = transcriber if transcriber is not None else _build_transcriber(config)
+    # A bound method, not a snapshot: newly learned/spoken dictionary terms
+    # bias the very next ASR call without restarting the session. Backends
+    # that do not support vocabulary hints inherit Transcriber's no-op hook.
+    transcriber.set_vocabulary_provider(store.dictionary_terms)
     _, style_rules = store.style_rules(config.style)
     polisher = TranscriptPolisher(
         chat_client, store, style=config.style, level=config.cleanup_level
@@ -315,7 +340,7 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     history = _build_history_store(config) if config.history_enabled else None
     auto_transform_prompt = _resolve_auto_transform_prompt(config, store)
     return DictationPipeline(
-        transcriber=transcriber if transcriber is not None else _build_transcriber(config),
+        transcriber=transcriber,
         polisher=polisher,
         store=store,
         sink=sink,
@@ -572,6 +597,8 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         replace(config, asr_language=args.language) if args.language else config
     )
     transcriber = _build_transcriber(transcriber_config)
+    store = PersonalizationStore(config.data_dir)
+    transcriber.set_vocabulary_provider(store.dictionary_terms)
 
     transcripts = []
     for path in paths:
@@ -595,6 +622,61 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         # separated so multi-file output pastes as distinct paragraphs.
         ClipboardOnlySink().insert("\n\n".join(transcripts))
 
+    return 0
+
+
+def _cmd_benchmark_asr(args: argparse.Namespace, config: Config) -> int:
+    """Benchmark the configured/overridden ASR backend against local files."""
+    from local_flow.asr.benchmark import benchmark_files, render_report
+    from local_flow.atomicio import atomic_write_text
+
+    paths = _validate_audio_paths(args.files)
+    references = args.reference or [None] * len(paths)
+    if args.reference and len(args.reference) != len(paths):
+        raise LocalFlowError(
+            "ASR benchmark references must match the number of audio files.",
+            hint="Repeat `--reference TEXT` once per FILE, in the same order.",
+        )
+
+    overrides = {
+        name: value
+        for name, value in (
+            ("asr_backend", args.backend),
+            ("asr_model", args.model),
+            ("asr_device", args.device),
+            ("asr_compute_type", args.compute_type),
+            ("asr_language", args.language),
+        )
+        if value is not None
+    }
+    benchmark_config = replace(config, **overrides)
+    store = PersonalizationStore(benchmark_config.data_dir)
+
+    def build():
+        transcriber = _build_transcriber(benchmark_config)
+        transcriber.set_vocabulary_provider(store.dictionary_terms)
+        return transcriber
+
+    report = benchmark_files(
+        paths,
+        build,
+        backend=benchmark_config.asr_backend,
+        model=benchmark_config.asr_model,
+        device=benchmark_config.asr_device,
+        compute_type=benchmark_config.asr_compute_type,
+        references=references,
+        runs=args.runs,
+        warmup_runs=args.warmup,
+    )
+    print(render_report(report))
+    if args.json_output:
+        output_path = Path(args.json_output)
+        if not output_path.parent.is_dir():
+            raise LocalFlowError(
+                f"JSON output directory does not exist: {output_path.parent}"
+            )
+        atomic_write_text(output_path, report.to_json())
+        print(f"JSON report: {output_path}")
     return 0
 
 
@@ -668,6 +750,7 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
 
     for label, module, extra in (
         ("faster-whisper", "faster_whisper", "asr"),
+        ("mlx-whisper", "mlx_whisper", "mlx-asr"),
         ("sounddevice", "sounddevice", "audio"),
         ("webrtcvad", "webrtcvad", "audio"),
         ("pynput", "pynput", "desktop"),
@@ -2208,6 +2291,37 @@ def main(argv: list[str] | None = None) -> int:
         help="override the configured ASR language for this run (e.g. 'fr', 'auto')",
     )
 
+    benchmark_p = sub.add_parser(
+        "benchmark-asr",
+        help="benchmark local ASR latency, real-time factor, transcript, and optional WER",
+    )
+    benchmark_p.add_argument(
+        "files", nargs="+", metavar="FILE", help="one or more local audio files"
+    )
+    benchmark_p.add_argument(
+        "--reference",
+        action="append",
+        metavar="TEXT",
+        help="reference transcript; repeat once per FILE to calculate WER",
+    )
+    benchmark_p.add_argument("--runs", type=int, default=3, help="measured runs per file")
+    benchmark_p.add_argument("--warmup", type=int, default=1, help="unmeasured warmup runs")
+    benchmark_p.add_argument(
+        "--backend",
+        choices=VALID_ASR_BACKENDS,
+        help="override configured ASR backend",
+    )
+    benchmark_p.add_argument("--model", help="override configured ASR model")
+    benchmark_p.add_argument("--device", help="override configured ASR device")
+    benchmark_p.add_argument("--compute-type", help="override ASR compute type")
+    benchmark_p.add_argument("--language", help="override ASR language")
+    benchmark_p.add_argument(
+        "--json",
+        dest="json_output",
+        metavar="FILE",
+        help="also write the full machine-readable report to FILE",
+    )
+
     command_p = sub.add_parser("command", help="transform text with an instruction (command mode)")
     command_p.add_argument("instruction", help="what to do, e.g. 'make this more formal'")
     command_p.add_argument("--text", required=True, help="the target text to transform")
@@ -2377,6 +2491,7 @@ def main(argv: list[str] | None = None) -> int:
         "recover": _cmd_recover,
         "polish": _cmd_polish,
         "transcribe": _cmd_transcribe,
+        "benchmark-asr": _cmd_benchmark_asr,
         "command": _cmd_command,
         "transform": _cmd_transform,
         "check": _cmd_check,

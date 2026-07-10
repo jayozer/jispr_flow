@@ -227,6 +227,7 @@ class TestModeAndBackendValidation:
         message = str(excinfo.value)
         assert "whisper.cpp" in message
         assert "faster-whisper" in message
+        assert "mlx-whisper" in message
         assert "mock" in message
 
     def test_invalid_asr_language_raises_naming_valid_values(self):
@@ -256,6 +257,9 @@ class TestModeAndBackendValidation:
         assert config.vad_backend == "webrtc"
         assert config.asr_backend == "mock"
         assert config.asr_language == "auto"
+
+        mlx_config = load_config(env={"LOCAL_FLOW_ASR_BACKEND": "mlx-whisper"})
+        assert mlx_config.asr_backend == "mlx-whisper"
 
     def test_two_and_three_letter_language_codes_are_accepted(self):
         # 2-letter ISO 639-1 ("fr") plus the 3-letter codes Whisper knows

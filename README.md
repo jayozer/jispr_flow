@@ -51,6 +51,7 @@ hand instead? Add just the extras you need and skip the wizard:
 ```bash
 uv sync                      # core + dev deps; runs headless demo and tests
 uv sync --extra asr          # faster-whisper (local speech-to-text)
+uv sync --extra mlx-asr      # MLX Whisper (Apple-Silicon-native, opt-in)
 uv sync --extra audio        # sounddevice (mic) + webrtcvad
 uv sync --extra desktop      # pynput (hotkeys/paste) + pyperclip (clipboard)
 uv sync --extra tray         # pystray + pillow (menu-bar app)
@@ -73,7 +74,49 @@ Entry points: `uv run local-flow` or `uv run python -m local_flow`.
 LM Studio is used **only** for text polish and command mode — never for
 speech recognition. ASR is a separate local adapter.
 
-## Recommended ASR models (faster-whisper)
+## ASR backends and recommended models
+
+`faster-whisper` remains the repository default and most portable backend.
+On the evaluated M5 Max, `mlx-whisper` is the fastest tested option:
+
+| Backend / model | Aggregate median latency | Vocabulary-aware WER |
+|---|---:|---:|
+| MLX Whisper `whisper-small.en-mlx` | `0.093s` | `0.034` |
+| faster-whisper `small.en` | `0.862s` | `0.034` |
+
+MLX was about **89% faster** on that machine with identical controlled WER.
+This result is specific to the tested Apple Silicon hardware, models, and
+three-sample corpus; it is not a universal ranking across every computer or
+model. The live microphone test also completed without duplicate insertions
+and correctly recognized the boosted technical vocabulary.
+
+Install MLX support, then make it the local default in `.env`:
+
+```bash
+uv sync --extra mlx-asr
+```
+
+```dotenv
+LOCAL_FLOW_ASR_BACKEND=mlx-whisper
+LOCAL_FLOW_ASR_MODEL=mlx-community/whisper-small.en-mlx
+LOCAL_FLOW_ASR_LANGUAGE=en
+```
+
+Run with `uv run local-flow run`. To switch back, change only the backend and
+model:
+
+```dotenv
+LOCAL_FLOW_ASR_BACKEND=faster-whisper
+LOCAL_FLOW_ASR_MODEL=small.en
+```
+
+MLX model names are local directories or Hugging Face repos containing
+MLX-converted Whisper weights. `asr_device` and `asr_compute_type` describe
+the faster-whisper configuration; MLX model repositories encode their own
+precision/quantization. See [the MLX evaluation](docs/asr/MLX_EVALUATION.md)
+for the acceptance criteria and measured comparison.
+
+Recommended faster-whisper models:
 
 | Model            | Speed  | Quality | Notes                                    |
 |------------------|--------|---------|-------------------------------------------|
@@ -104,6 +147,7 @@ environment > config file > defaults. Highlights:
 |---|---|---|
 | LM Studio URL | `LOCAL_FLOW_LMSTUDIO_BASE_URL` | `http://localhost:1234/v1` |
 | LM Studio model | `LOCAL_FLOW_LMSTUDIO_MODEL` | *(auto-pick)* |
+| ASR backend | `LOCAL_FLOW_ASR_BACKEND` | `faster-whisper` |
 | ASR model | `LOCAL_FLOW_ASR_MODEL` | `small.en` |
 | ASR language | `LOCAL_FLOW_ASR_LANGUAGE` | `en` (or an ISO code, or `auto`) |
 | Tray languages | `LOCAL_FLOW_LANGUAGES` | *(empty; comma-separated codes)* |
@@ -128,6 +172,14 @@ environment > config file > defaults. Highlights:
 Personalization lives in the data dir as hand-editable JSON:
 `dictionary.json` (canonical terms), `snippets.json` (trigger → expansion),
 `styles.json` (named style rules + the active one).
+
+Dictionary terms also bias Whisper before decoding. Jispr Flow builds a
+bounded `initial_prompt` from the current priority order (starred terms,
+then frequently used terms), refreshes it before every live or file
+transcription, and collapses blank/duplicate entries. A term added through
+learning or the spoken dictionary command therefore reaches the next
+utterance without restarting. Post-transcription dictionary enforcement
+still runs as a second safety net for canonical casing.
 
 ## Per-app styles & insertion
 
@@ -578,9 +630,9 @@ uv run local-flow transcribe voice-memo.m4a --polish
 # discussed Q3 roadmap and agreed to ship the export feature first
 ```
 
-- Accepts any container the real ASR backend's bundled PyAV can decode --
-  wav, mp3, m4a, flac, and more -- at any sample rate; no manual conversion
-  needed. (The `mock` ASR backend used in tests/CI only reads plain WAV.)
+- Accepts containers supported by the selected real backend -- WAV, MP3,
+  M4A, FLAC, and more -- at any sample rate; no manual conversion needed.
+  (The `mock` ASR backend used in tests/CI only reads plain WAV.)
 - Multiple files may be given at once; each one's output is preceded by a
   `== filename ==` header once there's more than one file. Text goes to
   stdout; a `transcribing <name>...` progress line goes to stderr per file.
@@ -594,6 +646,31 @@ uv run local-flow transcribe voice-memo.m4a --polish
   default).
 - Nothing is inserted into any app and nothing is written to history --
   this is a pure text-out command.
+
+### Benchmark ASR backends
+
+`local-flow benchmark-asr` loads one backend/model, performs optional warmup
+runs, then repeatedly transcribes each local file. It prints model-load time,
+per-run and median/p95 latency, real-time factor (RTF), transcript, and WER
+when matching references are supplied. `--json` writes the same result with
+full per-run precision for comparisons or regression tracking.
+
+```bash
+uv run local-flow benchmark-asr short.wav jargon.wav \
+  --reference "expected short transcript" \
+  --reference "expected jargon transcript" \
+  --runs 3 --warmup 1 --json /tmp/asr-benchmark.json
+
+# Override the configured backend/model for a one-off comparison:
+uv run local-flow benchmark-asr sample.wav \
+  --backend mlx-whisper \
+  --model mlx-community/whisper-small.en-mlx \
+  --reference "expected transcript"
+```
+
+References are positional: repeat `--reference` once per audio file in the
+same order. Audio and generated JSON stay wherever you place them; the
+benchmark does not write history or copy source audio into the data dir.
 
 ### Text transforms
 
@@ -894,7 +971,7 @@ Menu:
  microphone ─► AudioSource (sounddevice | mock) ─► VAD (energy | webrtc | mock)
                                                         │  speech segments
                                                         ▼
-                                       ASR Transcriber (faster-whisper | mock)
+                          ASR Transcriber (faster-whisper | MLX Whisper | mock)
                                                         │  rough transcript
                                                         ▼
                     rule cleanup (fillers, backtracking)   [pure Python]

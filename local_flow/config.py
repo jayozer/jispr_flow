@@ -22,7 +22,7 @@ ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_MODES = ("push-to-talk", "hands-free")
 VALID_VAD_BACKENDS = ("energy", "webrtc", "mock")
-VALID_ASR_BACKENDS = ("faster-whisper", "mock")
+VALID_ASR_BACKENDS = ("faster-whisper", "mlx-whisper", "mock")
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
@@ -49,7 +49,7 @@ class Config:
     lmstudio_timeout: float = 60.0
 
     # ASR (local speech-to-text; never LM Studio)
-    asr_backend: str = "faster-whisper"  # faster-whisper | mock
+    asr_backend: str = "faster-whisper"  # faster-whisper | mlx-whisper | mock
     asr_model: str = "small.en"  # name or path to a local model directory
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"

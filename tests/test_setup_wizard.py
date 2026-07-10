@@ -61,7 +61,9 @@ class TestHappyPathDefaults:
         assert "asr_language" not in data  # english-only model skips the question
 
         # The file must also validate on its own via the real load_config.
-        loaded = load_config(config_file=target)
+        # This fixture verifies the file the wizard wrote. Keep a developer's
+        # repository-local .env from overriding that isolated config.
+        loaded = load_config(config_file=target, env={})
         assert loaded.hotkey == "fn"
 
     def test_non_macos_hotkey_default_is_f9(self, tmp_path, monkeypatch):
@@ -373,7 +375,9 @@ class TestOverwriteConfirmation:
         assert "asr_language" not in data
         assert data["vad_silence_ms"] == 900  # unrelated merge behavior remains
 
-        loaded = load_config(config_file=target)
+        # Validate the generated file itself, independent of a developer's
+        # repository-local .env.
+        loaded = load_config(config_file=target, env={})
         assert loaded.asr_model == expected_model
         assert loaded.asr_language == "en"
 
@@ -492,7 +496,14 @@ class TestProbeReporting:
             probe_lmstudio=probe_lmstudio,
         )
 
-        assert calls == ["faster_whisper", "sounddevice", "pynput", "pyperclip", "pystray"]
+        assert calls == [
+            "faster_whisper",
+            "mlx_whisper",
+            "sounddevice",
+            "pynput",
+            "pyperclip",
+            "pystray",
+        ]
         assert any("pystray" in m and "missing" in m and "tray" in m for m in messages)
         assert any("faster_whisper" in m and "installed" in m for m in messages)
         assert any("unreachable" in m and "connection refused" in m for m in messages)
