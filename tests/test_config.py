@@ -39,6 +39,56 @@ class TestEnvOverrides:
             load_config(env={"LOCAL_FLOW_LMSTUDIO_TIMEOUT": "soon"})
 
 
+class TestAsrProfiles:
+    def test_custom_preserves_explicit_backend_and_model(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_ASR_PROFILE": "custom",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "my-model",
+            }
+        )
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "my-model"
+
+    def test_fast_selects_mlx_small_english(self):
+        config = load_config(env={"LOCAL_FLOW_ASR_PROFILE": "fast"})
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
+    def test_accuracy_selects_mlx_large_v3_turbo(self):
+        config = load_config(env={"LOCAL_FLOW_ASR_PROFILE": "accuracy"})
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-large-v3-turbo"
+
+    def test_invalid_profile_is_rejected(self):
+        with pytest.raises(ConfigError, match="asr_profile") as excinfo:
+            load_config(env={"LOCAL_FLOW_ASR_PROFILE": "magic"})
+        assert "fast" in str(excinfo.value)
+        assert "accuracy" in str(excinfo.value)
+
+
+class TestPolishBackend:
+    def test_defaults_to_lmstudio(self):
+        assert load_config(env={}).polish_backend == "lmstudio"
+
+    def test_rules_and_custom_system_prompt_from_env(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_POLISH_BACKEND": "rules",
+                "LOCAL_FLOW_LMSTUDIO_SYSTEM_PROMPT": "Keep my tone concise.",
+            }
+        )
+        assert config.polish_backend == "rules"
+        assert config.lmstudio_system_prompt == "Keep my tone concise."
+
+    def test_invalid_backend_is_rejected(self):
+        with pytest.raises(ConfigError, match="polish_backend") as excinfo:
+            load_config(env={"LOCAL_FLOW_POLISH_BACKEND": "cloud"})
+        assert "lmstudio" in str(excinfo.value)
+        assert "rules" in str(excinfo.value)
+
+
 class TestConfigFile:
     def test_file_values_apply_but_env_wins(self, tmp_path):
         config_file = tmp_path / "local-flow.toml"
@@ -116,6 +166,37 @@ class TestHotkeyDefaults:
         config = load_config(env={})
         assert config.hotkey_space_hold_ms == 250
         assert config.cancel_hotkey == "esc"
+
+
+class TestFloatingPillField:
+    def test_defaults_on_for_macos(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert load_config(env={}).floating_pill is True
+
+    def test_defaults_off_elsewhere(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert load_config(env={}).floating_pill is False
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_FLOATING_PILL": "false"})
+        assert config.floating_pill is False
+
+    def test_compact_style_is_default(self):
+        assert load_config(env={}).pill_style == "compact"
+
+    def test_expanded_style_override(self):
+        config = load_config(env={"LOCAL_FLOW_PILL_STYLE": "expanded"})
+        assert config.pill_style == "expanded"
+
+    def test_invalid_style_is_rejected(self):
+        with pytest.raises(ConfigError, match="pill_style") as excinfo:
+            load_config(env={"LOCAL_FLOW_PILL_STYLE": "giant"})
+        assert "compact" in str(excinfo.value)
+        assert "expanded" in str(excinfo.value)
 
 
 class TestLanguagesField:

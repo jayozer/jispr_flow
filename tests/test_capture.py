@@ -211,3 +211,29 @@ class TestFramesLiveness:
 
         threading.Thread(target=deliver_late, daemon=True).start()
         assert next(frames) == b"late"
+
+    def test_frames_are_forwarded_to_optional_level_callback(
+        self, fake_sounddevice, monkeypatch
+    ):
+        source, _streams = self._source(
+            fake_sounddevice, monkeypatch, initial_frames=[b"f1", b"f2"]
+        )
+        observed = []
+        source.set_level_callback(observed.append)
+
+        frames = source.frames(30)
+        assert next(frames) == b"f1"
+        assert next(frames) == b"f2"
+        assert observed == [b"f1", b"f2"]
+
+    def test_broken_level_callback_does_not_interrupt_capture(
+        self, fake_sounddevice, monkeypatch
+    ):
+        source, _streams = self._source(
+            fake_sounddevice, monkeypatch, initial_frames=[b"audio"]
+        )
+        source.set_level_callback(
+            lambda _frame: (_ for _ in ()).throw(RuntimeError("broken pill"))
+        )
+
+        assert next(source.frames(30)) == b"audio"

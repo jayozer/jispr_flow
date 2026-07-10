@@ -105,13 +105,25 @@ class TestMlxWhisperTranscriber:
 
 def test_constructor_uses_installed_modules(monkeypatch):
     fake_module = FakeMlxWhisper()
+    locks = []
+
+    class FakeTqdm:
+        @staticmethod
+        def set_lock(lock):
+            locks.append(lock)
+
     monkeypatch.setitem(
         __import__("sys").modules,
         "mlx_whisper",
         SimpleNamespace(transcribe=fake_module.transcribe),
     )
     monkeypatch.setitem(__import__("sys").modules, "numpy", FakeNumpy())
+    monkeypatch.setitem(
+        __import__("sys").modules, "tqdm", SimpleNamespace(tqdm=FakeTqdm)
+    )
 
     transcriber = MlxWhisperTranscriber(model="local-model", language="en")
 
     assert transcriber.model_name == "local-model"
+    assert len(locks) == 1
+    assert type(locks[0]).__name__ == "RLock"

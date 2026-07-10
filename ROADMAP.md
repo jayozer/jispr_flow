@@ -88,6 +88,10 @@ verified progress, blockers, and remaining work.
       no aggregate WER regression), so `mlx-whisper` shipped as an opt-in
       adapter while faster-whisper remains the default. See
       [the evaluation](docs/asr/MLX_EVALUATION.md).
+- [x] ✅ **MLX accuracy profile** — `asr_profile = "fast"` selects MLX Small.en
+      and `"accuracy"` selects Large-v3-Turbo. A follow-up synthetic benchmark
+      cut WER from 0.190 to 0.048 for only 0.024 seconds more median latency;
+      real-user dictation remains the final default-model gate.
 - [x] ✅ **Streaming transcription** — shipped (E7): `streaming = "sentence"`
       inserts sentence chunks while you keep talking in hands-free mode;
       `"live-preview"` shows rough text as you speak; `"off"` stays
@@ -216,9 +220,11 @@ as a real desktop tool (not just a CLI) from early on.
 - [x] ✅ **Menu bar / tray app** — shipped (E6, pystray): recording states on
       the icon, style and language quick-switch menus, desktop
       notifications, `local-flow tray`.
-- [ ] 🟢 **Floating recording pill** — small always-on-top indicator with
-      mic level while recording. (The tray icon covers recording state; a
-      pill with live mic level is still open.)
+- [x] ✅ **Floating recording pill** — shipped as a native macOS bottom-center
+      AppKit panel for `local-flow run`: an Apple/Wispr-inspired compact idle
+      bar expands into recording/processing/success states, with the original
+      labeled pill available through `pill_style = "expanded"`; includes a live
+      mic meter, `--pill`/`--no-pill`, and graceful console fallback.
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses

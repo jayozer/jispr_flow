@@ -11,7 +11,7 @@ import platform
 import queue
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from local_flow.errors import (
     AudioBackendMissingError,
@@ -79,6 +79,15 @@ class AudioSource(ABC):
     def record_until(self, stop: threading.Event, frame_ms: int = 30) -> bytes:
         """Record PCM until ``stop`` is set (push-to-talk), return the buffer."""
 
+    def set_level_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        """Optionally observe captured PCM frames for a visual level meter.
+
+        Backends that do not support live metering keep this no-op. The hook
+        is non-abstract so existing fixtures and third-party audio adapters do
+        not need to change.
+        """
+        return None
+
 
 class MockAudioSource(AudioSource):
     """Serves a pre-built PCM buffer; used by tests and the headless demo."""
@@ -136,6 +145,7 @@ class SounddeviceSource(AudioSource):
         self._sd = sounddevice
         self.sample_rate = sample_rate
         self.preferred = list(preferred) if preferred else []
+        self._level_callback: Callable[[bytes], None] | None = None
 
         if device is not None:
             self.device = device
@@ -191,12 +201,28 @@ class SounddeviceSource(AudioSource):
                 hint=_mic_hint(),
             ) from exc
 
+    def set_level_callback(self, callback: Callable[[bytes], None] | None) -> None:
+        self._level_callback = callback
+
+    def _publish_level_frame(self, frame: bytes) -> None:
+        callback = self._level_callback
+        if callback is None:
+            return
+        try:
+            callback(frame)
+        except Exception:
+            # Metering is display-only; a broken UI callback must never
+            # interrupt or corrupt microphone capture.
+            pass
+
     def frames(self, frame_ms: int = 30) -> Iterator[bytes]:
         frame_bytes = int(self.sample_rate * frame_ms / 1000) * 2
         frame_queue: queue.Queue[bytes] = queue.Queue()
 
         def callback(indata, _frames, _time, _status) -> None:
-            frame_queue.put(bytes(indata))
+            frame = bytes(indata)
+            self._publish_level_frame(frame)
+            frame_queue.put(frame)
 
         stream = self._open_stream(frame_bytes, callback)
         with stream:
@@ -219,7 +245,9 @@ class SounddeviceSource(AudioSource):
         chunks: list[bytes] = []
 
         def callback(indata, _frames, _time, _status) -> None:
-            chunks.append(bytes(indata))
+            frame = bytes(indata)
+            self._publish_level_frame(frame)
+            chunks.append(frame)
 
         stream = self._open_stream(frame_bytes, callback)
         with stream:

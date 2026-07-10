@@ -35,7 +35,13 @@ from typing import TYPE_CHECKING, NamedTuple
 from local_flow import __version__
 from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
-from local_flow.config import VALID_ASR_BACKENDS, Config, load_config
+from local_flow.config import (
+    VALID_ASR_BACKENDS,
+    VALID_ASR_PROFILES,
+    Config,
+    load_config,
+    resolve_asr_profile,
+)
 from local_flow.errors import ConfigError, HotkeyBackendMissingError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
@@ -101,6 +107,13 @@ def _build_chat_client(config: Config):
         model=config.lmstudio_model,
         timeout=config.lmstudio_timeout,
     )
+
+
+def _build_polish_chat_client(config: Config):
+    """Return LM Studio for polish, or ``None`` for deterministic rules."""
+    if config.polish_backend == "rules":
+        return None
+    return _build_chat_client(config)
 
 
 def _build_selection_capture(config: Config):
@@ -323,7 +336,11 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     transcriber.set_vocabulary_provider(store.dictionary_terms)
     _, style_rules = store.style_rules(config.style)
     polisher = TranscriptPolisher(
-        chat_client, store, style=config.style, level=config.cleanup_level
+        chat_client,
+        store,
+        style=config.style,
+        level=config.cleanup_level,
+        system_prompt=config.lmstudio_system_prompt,
     )
     command_mode = (
         CommandMode(
@@ -362,7 +379,7 @@ def _build_text_pipeline(config: Config, *, transcriber: Transcriber | None = No
     transcribes saved WAVs, so it takes the default (real) transcriber;
     ``history --retry`` passes a :class:`_NullTranscriber`.
     """
-    chat_client = _build_chat_client(config)
+    chat_client = _build_polish_chat_client(config)
     sink = _build_sink(config)
     return _build_pipeline(config, chat_client, sink, transcriber=transcriber)
 
@@ -430,9 +447,13 @@ def _polish_text(
     )
 
     store = PersonalizationStore(config.data_dir)
-    chat_client = None if no_llm else _build_chat_client(config)
+    chat_client = None if no_llm else _build_polish_chat_client(config)
     polisher = TranscriptPolisher(
-        chat_client, store, style=config.style, level=config.cleanup_level
+        chat_client,
+        store,
+        style=config.style,
+        level=config.cleanup_level,
+        system_prompt=config.lmstudio_system_prompt,
     )
     result = polisher.polish(text)
     final, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
@@ -638,9 +659,16 @@ def _cmd_benchmark_asr(args: argparse.Namespace, config: Config) -> int:
             hint="Repeat `--reference TEXT` once per FILE, in the same order.",
         )
 
+    if args.profile is not None and (args.backend is not None or args.model is not None):
+        raise LocalFlowError(
+            "ASR benchmark --profile cannot be combined with --backend or --model.",
+            hint="Use a named profile by itself, or use --backend/--model for a custom run.",
+        )
+
     overrides = {
         name: value
         for name, value in (
+            ("asr_profile", args.profile),
             ("asr_backend", args.backend),
             ("asr_model", args.model),
             ("asr_device", args.device),
@@ -649,7 +677,11 @@ def _cmd_benchmark_asr(args: argparse.Namespace, config: Config) -> int:
         )
         if value is not None
     }
+    if args.profile is None and (args.backend is not None or args.model is not None):
+        overrides["asr_profile"] = "custom"
     benchmark_config = replace(config, **overrides)
+    if args.profile is not None:
+        benchmark_config = resolve_asr_profile(benchmark_config)
     store = PersonalizationStore(benchmark_config.data_dir)
 
     def build():
@@ -708,6 +740,8 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"local-flow {__version__} environment check")
     print(f"  data dir      : {config.data_dir}")
     print(f"  ASR model     : {config.asr_model} (language: {config.asr_language})")
+    print(f"  ASR profile   : {config.asr_profile}")
+    print(f"  polish backend: {config.polish_backend}")
 
     if config.context_styles:
         from local_flow.context.frontmost import create_frontmost_provider
@@ -720,15 +754,20 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
 
     from local_flow.errors import LMStudioError
 
-    try:
-        client = _build_chat_client(config)
-        models = client.list_models()
-        print(f"  LM Studio     : OK at {config.lmstudio_base_url}, "
-              f"models: {', '.join(models) or '(none loaded!)'}")
-    except (LMStudioError, LocalFlowError) as exc:
-        print(f"  LM Studio     : UNAVAILABLE - {exc.message}")
-        if exc.hint:
-            print(f"                  hint: {exc.hint}")
+    if config.polish_backend == "rules":
+        print("  LM Studio     : disabled for live polish")
+    else:
+        try:
+            client = _build_chat_client(config)
+            models = client.list_models()
+            print(
+                f"  LM Studio     : OK at {config.lmstudio_base_url}, "
+                f"models: {', '.join(models) or '(none loaded!)'}"
+            )
+        except (LMStudioError, LocalFlowError) as exc:
+            print(f"  LM Studio     : UNAVAILABLE - {exc.message}")
+            if exc.hint:
+                print(f"                  hint: {exc.hint}")
 
     print("  input devices :")
     try:
@@ -1383,7 +1422,7 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.scratchpad.sink import ScratchpadSink
 
-    chat_client = _build_chat_client(config)
+    chat_client = _build_polish_chat_client(config)
     sink = _build_sink(config)
     pipeline = _build_pipeline(config, chat_client, sink)
     source = SounddeviceSource(
@@ -1644,6 +1683,12 @@ def _run_loop(
     pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink = (
         deps
     )
+    if reporter.wants_audio_level:
+        set_level_callback = getattr(source, "set_level_callback", None)
+        if callable(set_level_callback):
+            from local_flow.audio.level import pcm_level
+
+            set_level_callback(lambda frame: reporter.audio_level(pcm_level(frame)))
     # Toggled by the scratchpad dictate-to-pad hotkey (push-to-talk mode
     # only, wired below alongside transform_hotkey/command_hotkey); a boxed
     # list (not a bare bool) so the hotkey's callback closure can flip it in
@@ -2152,6 +2197,23 @@ def _run_loop(
                         daemon=True,
                     ).start()
 
+            if stop_event is not None:
+                # AppKit (floating pill) and tray mode own the main thread,
+                # so their Quit action reaches this blocking native listener
+                # through an Event. Wake the backend explicitly; otherwise
+                # the daemon worker survives until interpreter teardown and
+                # MLX can report leaked multiprocessing resources.
+                def stop_listener_when_requested() -> None:
+                    stop_event.wait()
+                    stop_listener = getattr(listener, "stop", None)
+                    if callable(stop_listener):
+                        stop_listener()
+
+                threading.Thread(
+                    target=stop_listener_when_requested,
+                    daemon=True,
+                ).start()
+
             listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
     except KeyboardInterrupt:
         print("\nbye")
@@ -2163,7 +2225,27 @@ def _run_loop(
 
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     mode = args.mode or config.mode
-    return _run_loop(config, mode, ConsoleReporter())
+    pill_enabled = config.floating_pill if args.pill is None else args.pill
+    console = ConsoleReporter()
+    if not pill_enabled:
+        return _run_loop(config, mode, console)
+
+    try:
+        from local_flow.pill.macos import MacPillApplication
+
+        pill = MacPillApplication(config.hotkey, style=config.pill_style)
+    except LocalFlowError as exc:
+        print(f"warning: floating pill unavailable: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+        return _run_loop(config, mode, console)
+
+    return pill.run(
+        lambda reporter, stop_event: _run_loop(
+            config, mode, reporter, stop_event=stop_event
+        ),
+        console,
+    )
 
 
 def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
@@ -2254,6 +2336,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=["push-to-talk", "hands-free"],
         help="override the configured capture mode",
     )
+    run_p.add_argument(
+        "--pill",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="show the macOS floating recording pill (or disable with --no-pill)",
+    )
 
     sub.add_parser(
         "recover",
@@ -2306,6 +2394,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     benchmark_p.add_argument("--runs", type=int, default=3, help="measured runs per file")
     benchmark_p.add_argument("--warmup", type=int, default=1, help="unmeasured warmup runs")
+    benchmark_p.add_argument(
+        "--profile",
+        choices=VALID_ASR_PROFILES,
+        help="override ASR profile (custom, fast MLX small.en, accuracy MLX Turbo)",
+    )
     benchmark_p.add_argument(
         "--backend",
         choices=VALID_ASR_BACKENDS,

@@ -13,7 +13,7 @@ import os
 import sys
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 from local_flow.errors import ConfigError
@@ -23,12 +23,19 @@ DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_MODES = ("push-to-talk", "hands-free")
 VALID_VAD_BACKENDS = ("energy", "webrtc", "mock")
 VALID_ASR_BACKENDS = ("faster-whisper", "mlx-whisper", "mock")
+VALID_ASR_PROFILES = ("custom", "fast", "accuracy")
+ASR_PROFILE_MODELS = {
+    "fast": "mlx-community/whisper-small.en-mlx",
+    "accuracy": "mlx-community/whisper-large-v3-turbo",
+}
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
 VALID_VAD_PRESETS = ("normal", "whisper")
 VALID_MOUSE_BUTTONS = ("", "middle", "x1", "x2")
 VALID_MOUSE_MODES = ("hold", "toggle")
+VALID_PILL_STYLES = ("compact", "expanded")
+VALID_POLISH_BACKENDS = ("lmstudio", "rules")
 
 
 def _default_data_dir() -> Path:
@@ -41,12 +48,20 @@ def _default_hotkey() -> str:
     return "fn" if sys.platform == "darwin" else "f9"
 
 
+def _default_floating_pill() -> bool:
+    return sys.platform == "darwin"
+
+
 @dataclass(frozen=True)
 class Config:
     # LM Studio (OpenAI-compatible local server)
     lmstudio_base_url: str = DEFAULT_LMSTUDIO_BASE_URL
     lmstudio_model: str = ""  # empty = auto-pick the first loaded model
     lmstudio_timeout: float = 60.0
+    # lmstudio = rules then local LLM; rules = deterministic cleanup only.
+    polish_backend: str = "lmstudio"
+    # Optional user instructions appended to JiSpr's protected polish prompt.
+    lmstudio_system_prompt: str = ""
 
     # ASR (local speech-to-text; never LM Studio)
     asr_backend: str = "faster-whisper"  # faster-whisper | mlx-whisper | mock
@@ -54,6 +69,8 @@ class Config:
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"
     asr_language: str = "en"  # ISO 639-1 code (e.g. "fr"), or "auto" to detect
+    # custom honors asr_backend/model; fast/accuracy select known MLX models.
+    asr_profile: str = "custom"
 
     # Comma-separated ISO 639-1 codes for the tray app's Language quick-switch
     # menu (e.g. "en,de,fr"); empty hides the menu. Parsed by
@@ -80,6 +97,14 @@ class Config:
     hotkey: str = field(default_factory=_default_hotkey)  # fn | space | pynput key name
     hotkey_space_hold_ms: int = 250  # hold-vs-tap threshold for hotkey="space"
     cancel_hotkey: str = "esc"  # discards the in-flight dictation
+
+    # Native, always-on-top recording state + live mic level. Enabled by
+    # default on macOS; other platforms keep the console/tray surfaces until
+    # they gain a native pill backend.
+    floating_pill: bool = field(default_factory=_default_floating_pill)
+    # compact = Apple/Wispr-inspired persistent line; expanded = the original
+    # labeled 280x56 status pill.
+    pill_style: str = "compact"
 
     # Comma-separated, priority-ordered microphone name substrings (case-
     # insensitive), e.g. "AirPods, USB". The first input device whose name
@@ -185,6 +210,18 @@ class Config:
     scratchpad_hotkey: str = ""
 
 
+def resolve_asr_profile(config: Config) -> Config:
+    """Resolve a friendly profile into the concrete ASR backend/model.
+
+    ``custom`` preserves every existing setting. The named profiles are a
+    single, UI-ready switch for the two MLX checkpoints JiSpr evaluates.
+    """
+    model = ASR_PROFILE_MODELS.get(config.asr_profile)
+    if model is None:
+        return config
+    return replace(config, asr_backend="mlx-whisper", asr_model=model)
+
+
 def _read_dotenv(path: Path) -> dict[str, str]:
     """Parse a minimal ``.env``-style file into a ``{KEY: value}`` dict.
 
@@ -282,6 +319,7 @@ def load_config(
         "data_dir": Path,
         "sample_rate": int,
         "hotkey_space_hold_ms": int,
+        "floating_pill": bool,
         "history_enabled": bool,
         "history_max_entries": int,
         "context_styles": bool,
@@ -337,6 +375,12 @@ def load_config(
             hint=f"Valid values: {', '.join(VALID_ASR_BACKENDS)}.",
         )
 
+    if config.asr_profile not in VALID_ASR_PROFILES:
+        raise ConfigError(
+            f"Invalid asr_profile: {config.asr_profile!r}",
+            hint=f"Valid values: {', '.join(VALID_ASR_PROFILES)}.",
+        )
+
     # Whisper language codes are 2-3 lowercase ASCII letters (ISO 639-1 plus
     # a few 639-3 codes like "yue"/"haw"); "auto" means detect per utterance.
     lang = config.asr_language
@@ -367,10 +411,22 @@ def load_config(
             hint=f"Valid values: {', '.join(VALID_CLEANUP_LEVELS)}.",
         )
 
+    if config.polish_backend not in VALID_POLISH_BACKENDS:
+        raise ConfigError(
+            f"Invalid polish_backend: {config.polish_backend!r}",
+            hint=f"Valid values: {', '.join(VALID_POLISH_BACKENDS)}.",
+        )
+
     if config.vad_preset not in VALID_VAD_PRESETS:
         raise ConfigError(
             f"Invalid vad_preset: {config.vad_preset!r}",
             hint=f"Valid values: {', '.join(VALID_VAD_PRESETS)}.",
+        )
+
+    if config.pill_style not in VALID_PILL_STYLES:
+        raise ConfigError(
+            f"Invalid pill_style: {config.pill_style!r}",
+            hint=f"Valid values: {', '.join(VALID_PILL_STYLES)}.",
         )
 
     _mouse_hint = (
@@ -435,4 +491,4 @@ def load_config(
             )
         seen_hotkeys[key] = field_name
 
-    return config
+    return resolve_asr_profile(config)

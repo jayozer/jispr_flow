@@ -68,6 +68,77 @@ class TestInsertionFallback:
             InsertionManager([])
 
 
+class _FakeQuartz:
+    kCGHIDEventTap = 1
+    kCGEventFlagMaskCommand = 1 << 20
+
+    def __init__(self):
+        self.created = []
+        self.flagged = []
+        self.posted = []
+
+    def CGEventCreateKeyboardEvent(self, source, keycode, down):
+        event = {"source": source, "keycode": keycode, "down": down}
+        self.created.append(event)
+        return event
+
+    def CGEventSetFlags(self, event, flags):
+        self.flagged.append((event, flags))
+
+    def CGEventPost(self, tap, event):
+        self.posted.append((tap, event))
+
+
+class TestMacQuartzInsertion:
+    """macOS fixed shortcuts avoid pynput's thread-unsafe layout lookup."""
+
+    @staticmethod
+    def _setup(monkeypatch):
+        quartz = _FakeQuartz()
+        monkeypatch.setitem(sys.modules, "Quartz", quartz)
+        monkeypatch.setattr(platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(desktop, "copy_to_clipboard", lambda _text: None)
+        monkeypatch.setattr(
+            desktop,
+            "_keyboard",
+            lambda: pytest.fail("macOS insertion must not construct a pynput controller"),
+        )
+        return quartz
+
+    def test_paste_posts_command_v_with_quartz(self, monkeypatch):
+        quartz = self._setup(monkeypatch)
+
+        desktop.ClipboardPasteSink().insert("hello")
+
+        assert [(event["keycode"], event["down"]) for event in quartz.created] == [
+            (9, True),
+            (9, False),
+        ]
+        assert [flags for _event, flags in quartz.flagged] == [
+            quartz.kCGEventFlagMaskCommand,
+            quartz.kCGEventFlagMaskCommand,
+        ]
+        assert [event for _tap, event in quartz.posted] == quartz.created
+
+    @pytest.mark.parametrize(("key", "keycode"), [("enter", 36), ("tab", 48)])
+    def test_key_actions_use_quartz(self, monkeypatch, key, keycode):
+        quartz = self._setup(monkeypatch)
+
+        desktop.ClipboardPasteSink().press_key(key)
+
+        assert [(event["keycode"], event["down"]) for event in quartz.created] == [
+            (keycode, True),
+            (keycode, False),
+        ]
+        assert quartz.flagged == []
+
+    def test_unknown_key_action_is_rejected(self, monkeypatch):
+        self._setup(monkeypatch)
+
+        with pytest.raises(PasteError, match="Unknown key action"):
+            desktop.ClipboardPasteSink().press_key("escape")
+
+
 class _FakeRun:
     """Stands in for ``subprocess.run``: records calls, fails chosen tools."""
 

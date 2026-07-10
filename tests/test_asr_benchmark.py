@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import local_flow.app as app_module
 from local_flow.app import main
 from local_flow.asr.benchmark import (
     audio_duration_s,
@@ -165,6 +166,57 @@ class TestBenchmarkCli:
 
         assert code == 1
         assert "references must match" in capsys.readouterr().err
+
+    def test_accuracy_profile_selects_mlx_turbo(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("LOCAL_FLOW_ASR_PROFILE", "custom")
+        wav = tmp_path / "sample.wav"
+        _write_wav(wav, duration_s=1.0)
+        captured = []
+
+        def build(config):
+            captured.append(config)
+            return MockTranscriber(["profile transcript"])
+
+        monkeypatch.setattr(app_module, "_build_transcriber", build)
+
+        code = main(
+            [
+                "benchmark-asr",
+                str(wav),
+                "--profile",
+                "accuracy",
+                "--runs",
+                "1",
+                "--warmup",
+                "0",
+            ]
+        )
+
+        assert code == 0
+        assert captured[0].asr_backend == "mlx-whisper"
+        assert captured[0].asr_model == "mlx-community/whisper-large-v3-turbo"
+        assert "whisper-large-v3-turbo" in capsys.readouterr().out
+
+    def test_profile_rejects_concrete_model_override(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_ASR_PROFILE", "custom")
+        wav = tmp_path / "sample.wav"
+        _write_wav(wav)
+
+        code = main(
+            [
+                "benchmark-asr",
+                str(wav),
+                "--profile",
+                "fast",
+                "--model",
+                "another-model",
+            ]
+        )
+
+        assert code == 1
+        assert "cannot be combined" in capsys.readouterr().err
 
 
 def test_audio_duration_reads_wav_without_optional_dependencies(tmp_path):

@@ -33,3 +33,12 @@ class TestBuildPolishMessages:
         messages = build_polish_messages("x", style_name="casual", style_rules="Relaxed tone.")
         assert "Relaxed tone." in messages[0]["content"]
         assert "casual" in messages[0]["content"]
+
+    def test_additional_system_prompt_keeps_core_protections(self):
+        messages = build_polish_messages(
+            "x", additional_system_prompt="Prefer short, direct sentences."
+        )
+        system = messages[0]["content"]
+        assert "Prefer short, direct sentences." in system
+        assert "press enter" in system
+        assert "ONLY the cleaned text" in system

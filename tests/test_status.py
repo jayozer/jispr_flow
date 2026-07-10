@@ -856,6 +856,44 @@ class TestPushToTalkStreamingNotice:
         ]
 
 
+class TestPushToTalkStopEvent:
+    def test_stop_event_wakes_blocking_hotkey_listener(
+        self, tmp_path, monkeypatch
+    ):
+        store = PersonalizationStore(tmp_path / "data")
+        pipeline = _make_pipeline(store, MockChatClient(["unused"]), FakeTextSink())
+        stopped = threading.Event()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+        class BlockingListener:
+            def run(self, on_press, on_release, on_cancel):
+                assert stopped.wait(timeout=2), "stop() was never called"
+
+            def stop(self):
+                stopped.set()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: BlockingListener(),
+        )
+        stop_event = threading.Event()
+        stop_event.set()
+
+        result = _run_loop(
+            load_config(env={}),
+            "push-to-talk",
+            FakeReporter(),
+            stop_event=stop_event,
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert result == 0
+        assert stopped.is_set()
+
+
 class TestLivePreviewRunLoop:
     """End-to-end: hands-free `_run_loop` with `streaming="live-preview"`,
     injecting a `MockStream` by monkeypatching `local_flow.app.

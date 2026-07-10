@@ -5,7 +5,11 @@
 lmstudio_base_url = "http://localhost:1234/v1"
 lmstudio_model = ""            # empty = auto-pick the first loaded model
 lmstudio_timeout = 60.0
+polish_backend = "lmstudio"    # lmstudio (rules + LLM) | rules (no LLM)
+# Extra instructions appended to JiSpr's protected built-in polish prompt.
+lmstudio_system_prompt = ""
 
+asr_profile = "custom"        # custom | fast (MLX small.en) | accuracy (MLX Turbo)
 asr_backend = "faster-whisper" # faster-whisper | mlx-whisper (Apple Silicon) | mock
 asr_model = "small.en"         # faster-whisper name/path; for MLX use an MLX repo/path
 asr_device = "auto"            # auto | cpu | cuda
@@ -29,6 +33,11 @@ mode = "push-to-talk"          # push-to-talk | hands-free
 # hotkey = "fn"
 hotkey_space_hold_ms = 250     # space only: tap-vs-hold threshold in ms
 cancel_hotkey = "esc"          # discards the in-flight dictation
+# Native bottom-center recording pill + live mic level. Defaults true on
+# macOS and false elsewhere; --no-pill overrides this for one run.
+floating_pill = true
+# compact = persistent minimal bar; expanded = original labeled 280x56 pill
+pill_style = "compact"
 # Priority-ordered, comma-separated microphone name substrings (case-
 # insensitive), e.g. "AirPods, USB"; empty (default) means system default.
 mic_priority = ""

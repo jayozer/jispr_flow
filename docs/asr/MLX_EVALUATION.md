@@ -100,6 +100,35 @@ LOCAL_FLOW_DATA_DIR=/tmp/jispr-asr-eval/data \
 | faster-whisper `small.en` | 0.877 s | 0.793 s / 0.216 / 0.000 | 0.862 s / 0.155 / 0.000 | 1.073 s / 0.064 / 0.050 | 0.862 s / 0.034 |
 | MLX `whisper-small.en-mlx` | 0.805 s | 0.068 s / 0.019 / 0.000 | 0.093 s / 0.017 / 0.000 | 0.158 s / 0.009 / 0.050 | 0.093 s / 0.034 |
 
+## Large-v3-turbo follow-up (2026-07-10)
+
+A second controlled run compared the new `fast` and `accuracy` profiles on
+the same 11.339-second synthetic technical-dictation sample. Both used three
+measured runs, one warmup, the same vocabulary store, and the intended written
+reference (including `V3`).
+
+| Profile / model | Cached load | Median latency | RTF | WER |
+|---|---:|---:|---:|---:|
+| `fast` / `whisper-small.en-mlx` | 0.785 s | 0.129 s | 0.011 | 0.190 |
+| `accuracy` / `whisper-large-v3-turbo` | 2.385 s | 0.153 s | 0.014 | 0.048 |
+
+Turbo reduced WER by 0.142 absolute (75% relative) while adding 0.024 seconds
+to median transcription latency (18.6%). Its first run took 19.353 seconds
+including the one-time model download; subsequent fresh-process loads took
+2.4-3.1 seconds. On this hardware, Turbo is therefore a strong accuracy-mode
+default, but this one synthetic voice is not enough to replace `fast` as the
+portable repository default. A real-user microphone corpus remains the final
+decision gate.
+
+Reproduce either side with the same file and reference:
+
+```bash
+uv run --extra mlx-asr local-flow benchmark-asr sample.wav \
+  --profile fast --reference "expected transcript" --runs 3 --warmup 1
+uv run --extra mlx-asr local-flow benchmark-asr sample.wav \
+  --profile accuracy --reference "expected transcript" --runs 3 --warmup 1
+```
+
 An exploratory run with an empty dictionary produced aggregate WER 0.085 for
 faster-whisper and 0.119 for MLX: a 3.4-point MLX regression that would fail
 the accuracy gate. The controlled run above then enabled the same product

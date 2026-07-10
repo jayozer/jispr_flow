@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
@@ -38,6 +39,17 @@ class MlxWhisperTranscriber(Transcriber):
             ) from exc
         self._mlx_whisper = mlx_whisper
         self._np = np
+        # mlx-whisper wraps inference in tqdm. tqdm's default write lock is a
+        # multiprocessing.RLock, which creates a named semaphore even though
+        # JiSpr is thread-only; Python then reports that semaphore as leaked
+        # when AppKit shuts down. A process-local thread lock provides exactly
+        # the synchronization JiSpr needs without allocating an OS semaphore.
+        try:
+            import tqdm
+        except ImportError:  # pragma: no cover - mlx-whisper depends on tqdm
+            pass
+        else:
+            tqdm.tqdm.set_lock(threading.RLock())
         self.model_name = model
         self._language = language
         self._vocabulary_provider = vocabulary_provider or (lambda: ())

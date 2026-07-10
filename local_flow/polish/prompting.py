@@ -187,8 +187,14 @@ def build_polish_messages(
     style_rules: str = "",
     level: str = "medium",
     field_context: FieldContext | None = None,
+    additional_system_prompt: str = "",
 ) -> list[Message]:
     system = _system_prompt_for_level(level)
+    if additional_system_prompt.strip():
+        system += (
+            "\nAdditional user-provided polish instructions: "
+            + additional_system_prompt.strip()
+        )
     terms = [t for t in dictionary_terms if t.strip()]
     if terms:
         system += "\nSpell these terms exactly as given: " + ", ".join(terms) + "."

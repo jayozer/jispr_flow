@@ -36,12 +36,14 @@ class TranscriptPolisher:
         style: str = "default",
         level: str = "medium",
         fallback_to_rules: bool = True,
+        system_prompt: str = "",
     ) -> None:
         self.chat_client = chat_client
         self.store = store
         self._style = style
         self._level = level
         self.fallback_to_rules = fallback_to_rules
+        self.system_prompt = system_prompt
 
     @property
     def style(self) -> str:
@@ -121,6 +123,7 @@ class TranscriptPolisher:
             style_rules=style_rules,
             level=self._level,
             field_context=field_context,
+            additional_system_prompt=self.system_prompt,
         )
         try:
             polished = self.chat_client.chat(messages)

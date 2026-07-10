@@ -397,6 +397,25 @@ class TestCallbackDispatcher:
         assert [name for name, _ in results] == ["first", "second"]
         assert all(t is not threading.main_thread() for _, t in results)
 
+    def test_releases_completed_callback_while_waiting_for_next_task(self):
+        dispatcher = CallbackDispatcher()
+        ran = threading.Event()
+        released = threading.Event()
+
+        class Task:
+            def __call__(self):
+                ran.set()
+
+            def __del__(self):
+                released.set()
+
+        task = Task()
+        dispatcher.submit(task)
+        del task
+
+        assert ran.wait(timeout=1)
+        assert released.wait(timeout=1)
+
     def test_worker_survives_a_failing_callback(self, capsys):
         dispatcher = CallbackDispatcher()
         done = threading.Event()
@@ -691,6 +710,9 @@ class _FakeListenerContextManager:
     def join(self):
         return None
 
+    def stop(self):
+        return None
+
 
 class TestPynputPushToTalkRunWiresCancelGate:
     """`run()` builds the shared `PushToTalkCore` itself (not `__init__`),
@@ -799,6 +821,14 @@ class TestQuartzFnListenerRunWiresCancelGate:
             @staticmethod
             def CFRunLoopRun():
                 return None  # fake: returns immediately instead of blocking forever
+
+            @staticmethod
+            def CFRunLoopStop(_run_loop):
+                return None
+
+            @staticmethod
+            def CFRunLoopWakeUp(_run_loop):
+                return None
 
         listener._quartz = FakeQuartz
 

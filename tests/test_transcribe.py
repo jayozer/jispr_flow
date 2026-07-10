@@ -204,7 +204,9 @@ class TestTranscribeLanguageOverride:
     ):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
-        # default asr_model is "small.en" (English-only)
+        # Declare the English-only fixture explicitly: a developer's local
+        # `.env` may intentionally use multilingual MLX Turbo.
+        monkeypatch.setenv("LOCAL_FLOW_ASR_MODEL", "small.en")
         wav = tmp_path / "a.wav"
         _write_wav(wav)
 

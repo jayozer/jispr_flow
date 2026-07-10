@@ -29,6 +29,15 @@ class HotkeyListener(ABC):
     ) -> None:
         """Block, invoking callbacks when the hotkey is held/released/cancelled."""
 
+    def stop(self) -> None:
+        """Ask a blocking listener to return.
+
+        Backends that can wake their native event loop override this method.
+        Keeping the default as a no-op preserves compatibility with third-party
+        and test listeners that only implement :meth:`run`.
+        """
+        return None
+
 
 class PushToTalkCore:
     """Held-state bookkeeping shared by every push-to-talk listener.
@@ -110,6 +119,13 @@ class CallbackDispatcher:
                 fn()
             except Exception as exc:  # a failing callback must not kill dispatch
                 print(f"hotkey callback failed: {exc}", file=sys.stderr)
+            finally:
+                # A completed closure can capture the entire dictation
+                # pipeline, including an MLX model and its multiprocessing
+                # resources. Do not retain that last callback while this
+                # daemon thread blocks on the next queue item; doing so makes
+                # interpreter shutdown report a leaked semaphore.
+                del fn
 
     def submit(self, fn: Callable[[], None]) -> None:
         """Enqueue one callback -- for one-off closures bound at call time
@@ -166,6 +182,8 @@ class PynputPushToTalk(HotkeyListener):
         self._target = self._resolve_key(key_name)
         self._cancel = self._resolve_key(cancel_key) if cancel_key else None
         self._cancel_gate = cancel_gate
+        self._listener = None
+        self._stop_requested = threading.Event()
 
     def _resolve_key(self, key_name: str):
         return resolve_key(self._keyboard, key_name)
@@ -200,6 +218,9 @@ class PynputPushToTalk(HotkeyListener):
             with keyboard.Listener(
                 on_press=handle_press, on_release=handle_release
             ) as listener:
+                self._listener = listener
+                if self._stop_requested.is_set():
+                    listener.stop()
                 listener.join()
         except Exception as exc:
             raise HotkeyBackendMissingError(
@@ -209,6 +230,14 @@ class PynputPushToTalk(HotkeyListener):
                 "by the compositor - use hands-free mode "
                 "(LOCAL_FLOW_MODE=hands-free) instead.",
             ) from exc
+        finally:
+            self._listener = None
+
+    def stop(self) -> None:
+        self._stop_requested.set()
+        listener = self._listener
+        if listener is not None:
+            listener.stop()
 
 
 class TapListener:

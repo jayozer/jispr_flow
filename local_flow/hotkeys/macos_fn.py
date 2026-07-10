@@ -11,6 +11,7 @@ fake events; only ``QuartzFnListener.run`` touches Quartz.
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable
 
 from local_flow.errors import HotkeyBackendMissingError
@@ -71,6 +72,8 @@ class QuartzFnListener(HotkeyListener):
         self._quartz = Quartz
         self._cancel_keycode = _CANCEL_KEYCODES[cancel_key.lower()] if cancel_key else None
         self._cancel_gate = cancel_gate
+        self._run_loop = None
+        self._stop_requested = threading.Event()
 
     def run(
         self,
@@ -121,6 +124,21 @@ class QuartzFnListener(HotkeyListener):
             )
         tap_holder.append(tap)
         source = q.CFMachPortCreateRunLoopSource(None, tap, 0)
-        q.CFRunLoopAddSource(q.CFRunLoopGetCurrent(), source, q.kCFRunLoopCommonModes)
+        run_loop = q.CFRunLoopGetCurrent()
+        self._run_loop = run_loop
+        q.CFRunLoopAddSource(run_loop, source, q.kCFRunLoopCommonModes)
         q.CGEventTapEnable(tap, True)
-        q.CFRunLoopRun()
+        try:
+            if self._stop_requested.is_set():
+                q.CFRunLoopStop(run_loop)
+            q.CFRunLoopRun()
+        finally:
+            self._run_loop = None
+
+    def stop(self) -> None:
+        """Wake and stop the Quartz loop from another thread."""
+        self._stop_requested.set()
+        run_loop = self._run_loop
+        if run_loop is not None:
+            self._quartz.CFRunLoopStop(run_loop)
+            self._quartz.CFRunLoopWakeUp(run_loop)
