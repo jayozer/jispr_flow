@@ -120,6 +120,8 @@ class SpacePushToTalk(HotkeyListener):
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
         self._controller = keyboard.Controller()
+        self._listener = None
+        self._stop_requested = threading.Event()
         self._on_press: Callable[[], None] | None = None
         self._on_release: Callable[[], None] | None = None
         self._on_cancel: Callable[[], None] | None = None
@@ -278,6 +280,9 @@ class SpacePushToTalk(HotkeyListener):
             )
             listener_box.append(listener)
             with listener:
+                self._listener = listener
+                if self._stop_requested.is_set():
+                    listener.stop()
                 listener.join()
         except Exception as exc:
             raise HotkeyBackendMissingError(
@@ -286,5 +291,12 @@ class SpacePushToTalk(HotkeyListener):
                 "to your terminal, then restart it.",
             ) from exc
         finally:
+            self._listener = None
             if self._timer is not None:
                 self._timer.cancel()
+
+    def stop(self) -> None:
+        self._stop_requested.set()
+        listener = self._listener
+        if listener is not None:
+            listener.stop()

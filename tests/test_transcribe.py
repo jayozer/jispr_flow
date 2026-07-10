@@ -49,6 +49,33 @@ class TestTranscribeSingleFile:
         err = capsys.readouterr().err
         assert "transcribing memo.wav..." in err
 
+    def test_file_transcription_receives_live_dictionary_provider(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from local_flow.personalization.store import PersonalizationStore
+
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        wav = tmp_path / "memo.wav"
+        _write_wav(wav)
+        PersonalizationStore(tmp_path).add_dictionary_term("JiSpr Flow")
+
+        class VocabularyCapturingMock(MockTranscriber):
+            def set_vocabulary_provider(self, provider):
+                self.provider = provider
+
+            def transcribe_path(self, path):
+                assert self.provider() == ["JiSpr Flow"]
+                return "boosted transcript"
+
+        monkeypatch.setattr(
+            app_module,
+            "_build_transcriber",
+            lambda config: VocabularyCapturingMock(["unused"]),
+        )
+
+        assert main(["transcribe", str(wav)]) == 0
+        assert "boosted transcript" in capsys.readouterr().out
+
 
 class TestTranscribeMultiFile:
     def test_headers_shown_only_when_multiple_files(self, tmp_path, monkeypatch, capsys):
@@ -177,7 +204,9 @@ class TestTranscribeLanguageOverride:
     ):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
-        # default asr_model is "small.en" (English-only)
+        # Declare the English-only fixture explicitly: a developer's local
+        # `.env` may intentionally use multilingual MLX Turbo.
+        monkeypatch.setenv("LOCAL_FLOW_ASR_MODEL", "small.en")
         wav = tmp_path / "a.wav"
         _write_wav(wav)
 

@@ -6,6 +6,7 @@ Subcommands:
 - ``recover`` reprocess dictation audio left behind by a crash mid-utterance
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``transcribe`` transcribe audio file(s) through the local ASR (+ polish)
+- ``benchmark-asr`` repeatable local ASR latency/accuracy benchmark
 - ``command`` one-shot command mode: transform text per an instruction
 - ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
@@ -20,6 +21,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
 import threading
 import time
@@ -33,7 +35,13 @@ from typing import TYPE_CHECKING, NamedTuple
 from local_flow import __version__
 from local_flow.asr.base import Transcriber
 from local_flow.asr.streaming import TranscriberStream
-from local_flow.config import Config, load_config
+from local_flow.config import (
+    VALID_ASR_BACKENDS,
+    VALID_ASR_PROFILES,
+    Config,
+    load_config,
+    resolve_asr_profile,
+)
 from local_flow.errors import ConfigError, HotkeyBackendMissingError, LocalFlowError
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.status import ConsoleReporter, StatusReporter
@@ -101,6 +109,13 @@ def _build_chat_client(config: Config):
     )
 
 
+def _build_polish_chat_client(config: Config):
+    """Return LM Studio for polish, or ``None`` for deterministic rules."""
+    if config.polish_backend == "rules":
+        return None
+    return _build_chat_client(config)
+
+
 def _build_selection_capture(config: Config):
     """Build the real (pynput/pyperclip-backed) :class:`SelectionCapture`.
 
@@ -117,8 +132,13 @@ def _build_selection_capture(config: Config):
     return SelectionCapture(PynputSelectionBackend())
 
 
+def _is_english_only_model(model: str) -> bool:
+    name = model.rstrip("/").rsplit("/", 1)[-1].lower()
+    return name.endswith(".en") or ".en-" in name
+
+
 def _build_transcriber(config: Config):
-    if config.asr_language != "en" and config.asr_model.endswith(".en"):
+    if config.asr_language != "en" and _is_english_only_model(config.asr_model):
         raise ConfigError(
             f"asr_language={config.asr_language!r} is not compatible with "
             f"English-only model {config.asr_model!r}.",
@@ -128,6 +148,19 @@ def _build_transcriber(config: Config):
         from local_flow.asr.mock import MockTranscriber
 
         return MockTranscriber(["(mock transcription)"], language=config.asr_language)
+    if config.asr_backend == "mlx-whisper":
+        if sys.platform != "darwin" or platform.machine() != "arm64":
+            raise ConfigError(
+                "The mlx-whisper backend requires an Apple-Silicon Mac.",
+                hint="Use faster-whisper on this platform, or set "
+                "LOCAL_FLOW_ASR_BACKEND=faster-whisper.",
+            )
+        from local_flow.asr.mlx_whisper_asr import MlxWhisperTranscriber
+
+        return MlxWhisperTranscriber(
+            model=config.asr_model,
+            language=config.asr_language,
+        )
     from local_flow.asr.faster_whisper_asr import FasterWhisperTranscriber
 
     return FasterWhisperTranscriber(
@@ -296,9 +329,18 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     from local_flow.polish.polisher import TranscriptPolisher
 
     store = PersonalizationStore(config.data_dir)
+    transcriber = transcriber if transcriber is not None else _build_transcriber(config)
+    # A bound method, not a snapshot: newly learned/spoken dictionary terms
+    # bias the very next ASR call without restarting the session. Backends
+    # that do not support vocabulary hints inherit Transcriber's no-op hook.
+    transcriber.set_vocabulary_provider(store.dictionary_terms)
     _, style_rules = store.style_rules(config.style)
     polisher = TranscriptPolisher(
-        chat_client, store, style=config.style, level=config.cleanup_level
+        chat_client,
+        store,
+        style=config.style,
+        level=config.cleanup_level,
+        system_prompt=config.lmstudio_system_prompt,
     )
     command_mode = (
         CommandMode(
@@ -315,7 +357,7 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     history = _build_history_store(config) if config.history_enabled else None
     auto_transform_prompt = _resolve_auto_transform_prompt(config, store)
     return DictationPipeline(
-        transcriber=transcriber if transcriber is not None else _build_transcriber(config),
+        transcriber=transcriber,
         polisher=polisher,
         store=store,
         sink=sink,
@@ -337,7 +379,7 @@ def _build_text_pipeline(config: Config, *, transcriber: Transcriber | None = No
     transcribes saved WAVs, so it takes the default (real) transcriber;
     ``history --retry`` passes a :class:`_NullTranscriber`.
     """
-    chat_client = _build_chat_client(config)
+    chat_client = _build_polish_chat_client(config)
     sink = _build_sink(config)
     return _build_pipeline(config, chat_client, sink, transcriber=transcriber)
 
@@ -405,9 +447,13 @@ def _polish_text(
     )
 
     store = PersonalizationStore(config.data_dir)
-    chat_client = None if no_llm else _build_chat_client(config)
+    chat_client = None if no_llm else _build_polish_chat_client(config)
     polisher = TranscriptPolisher(
-        chat_client, store, style=config.style, level=config.cleanup_level
+        chat_client,
+        store,
+        style=config.style,
+        level=config.cleanup_level,
+        system_prompt=config.lmstudio_system_prompt,
     )
     result = polisher.polish(text)
     final, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
@@ -572,6 +618,8 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         replace(config, asr_language=args.language) if args.language else config
     )
     transcriber = _build_transcriber(transcriber_config)
+    store = PersonalizationStore(config.data_dir)
+    transcriber.set_vocabulary_provider(store.dictionary_terms)
 
     transcripts = []
     for path in paths:
@@ -595,6 +643,72 @@ def _cmd_transcribe(args: argparse.Namespace, config: Config) -> int:
         # separated so multi-file output pastes as distinct paragraphs.
         ClipboardOnlySink().insert("\n\n".join(transcripts))
 
+    return 0
+
+
+def _cmd_benchmark_asr(args: argparse.Namespace, config: Config) -> int:
+    """Benchmark the configured/overridden ASR backend against local files."""
+    from local_flow.asr.benchmark import benchmark_files, render_report
+    from local_flow.atomicio import atomic_write_text
+
+    paths = _validate_audio_paths(args.files)
+    references = args.reference or [None] * len(paths)
+    if args.reference and len(args.reference) != len(paths):
+        raise LocalFlowError(
+            "ASR benchmark references must match the number of audio files.",
+            hint="Repeat `--reference TEXT` once per FILE, in the same order.",
+        )
+
+    if args.profile is not None and (args.backend is not None or args.model is not None):
+        raise LocalFlowError(
+            "ASR benchmark --profile cannot be combined with --backend or --model.",
+            hint="Use a named profile by itself, or use --backend/--model for a custom run.",
+        )
+
+    overrides = {
+        name: value
+        for name, value in (
+            ("asr_profile", args.profile),
+            ("asr_backend", args.backend),
+            ("asr_model", args.model),
+            ("asr_device", args.device),
+            ("asr_compute_type", args.compute_type),
+            ("asr_language", args.language),
+        )
+        if value is not None
+    }
+    if args.profile is None and (args.backend is not None or args.model is not None):
+        overrides["asr_profile"] = "custom"
+    benchmark_config = replace(config, **overrides)
+    if args.profile is not None:
+        benchmark_config = resolve_asr_profile(benchmark_config)
+    store = PersonalizationStore(benchmark_config.data_dir)
+
+    def build():
+        transcriber = _build_transcriber(benchmark_config)
+        transcriber.set_vocabulary_provider(store.dictionary_terms)
+        return transcriber
+
+    report = benchmark_files(
+        paths,
+        build,
+        backend=benchmark_config.asr_backend,
+        model=benchmark_config.asr_model,
+        device=benchmark_config.asr_device,
+        compute_type=benchmark_config.asr_compute_type,
+        references=references,
+        runs=args.runs,
+        warmup_runs=args.warmup,
+    )
+    print(render_report(report))
+    if args.json_output:
+        output_path = Path(args.json_output)
+        if not output_path.parent.is_dir():
+            raise LocalFlowError(
+                f"JSON output directory does not exist: {output_path.parent}"
+            )
+        atomic_write_text(output_path, report.to_json())
+        print(f"JSON report: {output_path}")
     return 0
 
 
@@ -626,6 +740,8 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     print(f"local-flow {__version__} environment check")
     print(f"  data dir      : {config.data_dir}")
     print(f"  ASR model     : {config.asr_model} (language: {config.asr_language})")
+    print(f"  ASR profile   : {config.asr_profile}")
+    print(f"  polish backend: {config.polish_backend}")
 
     if config.context_styles:
         from local_flow.context.frontmost import create_frontmost_provider
@@ -638,15 +754,20 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
 
     from local_flow.errors import LMStudioError
 
-    try:
-        client = _build_chat_client(config)
-        models = client.list_models()
-        print(f"  LM Studio     : OK at {config.lmstudio_base_url}, "
-              f"models: {', '.join(models) or '(none loaded!)'}")
-    except (LMStudioError, LocalFlowError) as exc:
-        print(f"  LM Studio     : UNAVAILABLE - {exc.message}")
-        if exc.hint:
-            print(f"                  hint: {exc.hint}")
+    if config.polish_backend == "rules":
+        print("  LM Studio     : disabled for live polish")
+    else:
+        try:
+            client = _build_chat_client(config)
+            models = client.list_models()
+            print(
+                f"  LM Studio     : OK at {config.lmstudio_base_url}, "
+                f"models: {', '.join(models) or '(none loaded!)'}"
+            )
+        except (LMStudioError, LocalFlowError) as exc:
+            print(f"  LM Studio     : UNAVAILABLE - {exc.message}")
+            if exc.hint:
+                print(f"                  hint: {exc.hint}")
 
     print("  input devices :")
     try:
@@ -668,6 +789,7 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
 
     for label, module, extra in (
         ("faster-whisper", "faster_whisper", "asr"),
+        ("mlx-whisper", "mlx_whisper", "mlx-asr"),
         ("sounddevice", "sounddevice", "audio"),
         ("webrtcvad", "webrtcvad", "audio"),
         ("pynput", "pynput", "desktop"),
@@ -1300,7 +1422,7 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.scratchpad.sink import ScratchpadSink
 
-    chat_client = _build_chat_client(config)
+    chat_client = _build_polish_chat_client(config)
     sink = _build_sink(config)
     pipeline = _build_pipeline(config, chat_client, sink)
     source = SounddeviceSource(
@@ -1561,6 +1683,12 @@ def _run_loop(
     pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink = (
         deps
     )
+    if reporter.wants_audio_level:
+        set_level_callback = getattr(source, "set_level_callback", None)
+        if callable(set_level_callback):
+            from local_flow.audio.level import pcm_level
+
+            set_level_callback(lambda frame: reporter.audio_level(pcm_level(frame)))
     # Toggled by the scratchpad dictate-to-pad hotkey (push-to-talk mode
     # only, wired below alongside transform_hotkey/command_hotkey); a boxed
     # list (not a bare bool) so the hotkey's callback closure can flip it in
@@ -2069,6 +2197,23 @@ def _run_loop(
                         daemon=True,
                     ).start()
 
+            if stop_event is not None:
+                # AppKit (floating pill) and tray mode own the main thread,
+                # so their Quit action reaches this blocking native listener
+                # through an Event. Wake the backend explicitly; otherwise
+                # the daemon worker survives until interpreter teardown and
+                # MLX can report leaked multiprocessing resources.
+                def stop_listener_when_requested() -> None:
+                    stop_event.wait()
+                    stop_listener = getattr(listener, "stop", None)
+                    if callable(stop_listener):
+                        stop_listener()
+
+                threading.Thread(
+                    target=stop_listener_when_requested,
+                    daemon=True,
+                ).start()
+
             listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
     except KeyboardInterrupt:
         print("\nbye")
@@ -2080,7 +2225,27 @@ def _run_loop(
 
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
     mode = args.mode or config.mode
-    return _run_loop(config, mode, ConsoleReporter())
+    pill_enabled = config.floating_pill if args.pill is None else args.pill
+    console = ConsoleReporter()
+    if not pill_enabled:
+        return _run_loop(config, mode, console)
+
+    try:
+        from local_flow.pill.macos import MacPillApplication
+
+        pill = MacPillApplication(config.hotkey, style=config.pill_style)
+    except LocalFlowError as exc:
+        print(f"warning: floating pill unavailable: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+        return _run_loop(config, mode, console)
+
+    return pill.run(
+        lambda reporter, stop_event: _run_loop(
+            config, mode, reporter, stop_event=stop_event
+        ),
+        console,
+    )
 
 
 def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
@@ -2171,6 +2336,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=["push-to-talk", "hands-free"],
         help="override the configured capture mode",
     )
+    run_p.add_argument(
+        "--pill",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="show the macOS floating recording pill (or disable with --no-pill)",
+    )
 
     sub.add_parser(
         "recover",
@@ -2206,6 +2377,42 @@ def main(argv: list[str] | None = None) -> int:
         "--language",
         metavar="XX",
         help="override the configured ASR language for this run (e.g. 'fr', 'auto')",
+    )
+
+    benchmark_p = sub.add_parser(
+        "benchmark-asr",
+        help="benchmark local ASR latency, real-time factor, transcript, and optional WER",
+    )
+    benchmark_p.add_argument(
+        "files", nargs="+", metavar="FILE", help="one or more local audio files"
+    )
+    benchmark_p.add_argument(
+        "--reference",
+        action="append",
+        metavar="TEXT",
+        help="reference transcript; repeat once per FILE to calculate WER",
+    )
+    benchmark_p.add_argument("--runs", type=int, default=3, help="measured runs per file")
+    benchmark_p.add_argument("--warmup", type=int, default=1, help="unmeasured warmup runs")
+    benchmark_p.add_argument(
+        "--profile",
+        choices=VALID_ASR_PROFILES,
+        help="override ASR profile (custom, fast MLX small.en, accuracy MLX Turbo)",
+    )
+    benchmark_p.add_argument(
+        "--backend",
+        choices=VALID_ASR_BACKENDS,
+        help="override configured ASR backend",
+    )
+    benchmark_p.add_argument("--model", help="override configured ASR model")
+    benchmark_p.add_argument("--device", help="override configured ASR device")
+    benchmark_p.add_argument("--compute-type", help="override ASR compute type")
+    benchmark_p.add_argument("--language", help="override ASR language")
+    benchmark_p.add_argument(
+        "--json",
+        dest="json_output",
+        metavar="FILE",
+        help="also write the full machine-readable report to FILE",
     )
 
     command_p = sub.add_parser("command", help="transform text with an instruction (command mode)")
@@ -2377,6 +2584,7 @@ def main(argv: list[str] | None = None) -> int:
         "recover": _cmd_recover,
         "polish": _cmd_polish,
         "transcribe": _cmd_transcribe,
+        "benchmark-asr": _cmd_benchmark_asr,
         "command": _cmd_command,
         "transform": _cmd_transform,
         "check": _cmd_check,

@@ -35,6 +35,7 @@ _MAX_ATTEMPTS = 3
 # (module name, extra name) probed for `local-flow setup`'s dependency report.
 _PROBED_MODULES: tuple[tuple[str, str], ...] = (
     ("faster_whisper", "asr"),
+    ("mlx_whisper", "mlx-asr"),
     ("sounddevice", "audio"),
     ("pynput", "desktop"),
     ("pyperclip", "desktop"),

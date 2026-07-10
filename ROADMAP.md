@@ -44,16 +44,54 @@ Legend: 🟢 near-term (high value, fits current architecture) ·
 
 ## 2. ASR (Transcriber adapters)
 
+### Completed goal — Near-term ASR milestone (2026-07-09)
+
+```text
+/goal Deliver the near-term ASR milestone on branch `asr-work`: add dynamic
+custom-vocabulary boosting to faster-whisper, build a repeatable ASR benchmark
+harness, and evaluate MLX Whisper on Apple Silicon, shipping an opt-in MLX
+adapter only if the evidence justifies it. Done only when current dictionary
+terms (including terms added without restarting) reach live and file
+transcription through a bounded `initial_prompt`; the benchmark reports model
+load time, per-run latency, median/p95 latency, real-time factor, transcript,
+and WER when references are supplied in both human-readable and JSON forms;
+and `docs/asr/MLX_EVALUATION.md` records reproducible commands, environment,
+at least three representative local audio samples, results, and a clear
+ship/defer decision. Ship MLX only if it improves median transcription latency
+by at least 20% without worsening aggregate WER by more than 2 absolute points;
+otherwise keep the evaluation and explicitly defer the adapter. Prove completion
+by showing the real benchmark output plus `uv run pytest`,
+`uv run ruff check .`, `uv run local-flow demo`, and `git diff --check` all
+passing in the conversation. Constraints: preserve faster-whisper as the
+default; keep every backend optional, lazy-imported, local-only, and mockable;
+keep headless tests free of models, microphones, displays, and network; do not
+implement the deferred Future ASR items or product-surface work; do not commit
+user audio, secrets, model caches, or generated benchmark files; do not push,
+merge, or deploy; make reasonable choices and record assumptions instead of
+asking clarifying questions. Stop after 40 goal turns if not met and report
+verified progress, blockers, and remaining work.
+```
+
 - [x] ✅ **Multilingual models** — shipped (E3): non-`.en` models with
       `asr_language` pinning or `"auto"` detection, config validation with
       actionable hints, and a tray Language quick-switch menu (`languages`).
-- [ ] 🟢 **Custom vocab boosting** — feed dictionary terms into Whisper's
-      `initial_prompt` so canonical terms are recognized, not just enforced
-      after the fact.
-- [ ] 🟢 **whisper.cpp adapter** — alternative backend for machines where
-      CTranslate2 is awkward; one new `Transcriber` class.
-- [ ] 🟡 **MLX Whisper adapter** — Apple-Silicon-native backend (the primary
-      dev machine is an M-series Mac; LM Studio there already runs MLX).
+- [x] ✅ **Custom vocab boosting** — current prioritized dictionary terms feed
+      a bounded Whisper `initial_prompt` before every live or file call, so
+      additions take effect without restarting; canonical enforcement remains
+      as a post-transcription safety net.
+- [x] ✅ **ASR benchmark harness** — `local-flow benchmark-asr` runs repeatable
+      local corpora with model-load time, per-run and median/p95 latency,
+      real-time factor, transcripts, optional reference/WER scoring, and
+      human-readable plus JSON output.
+- [x] ✅ **MLX Whisper evaluation** — the Apple-Silicon comparison cleared the
+      controlled vocabulary-aware gate (89.3% lower aggregate median latency,
+      no aggregate WER regression), so `mlx-whisper` shipped as an opt-in
+      adapter while faster-whisper remains the default. See
+      [the evaluation](docs/asr/MLX_EVALUATION.md).
+- [x] ✅ **MLX accuracy profile** — `asr_profile = "fast"` selects MLX Small.en
+      and `"accuracy"` selects Large-v3-Turbo. A follow-up synthetic benchmark
+      cut WER from 0.190 to 0.048 for only 0.024 seconds more median latency;
+      real-user dictation remains the final default-model gate.
 - [x] ✅ **Streaming transcription** — shipped (E7): `streaming = "sentence"`
       inserts sentence chunks while you keep talking in hands-free mode;
       `"live-preview"` shows rough text as you speak; `"off"` stays
@@ -61,10 +99,6 @@ Legend: 🟢 near-term (high value, fits current architecture) ·
 - [x] ✅ **File transcription** *(beyond the original roadmap, E15)* —
       `local-flow transcribe memo.m4a --polish`: run existing audio files
       (WAV/MP3/M4A/FLAC) through the same local pipeline.
-- [ ] 🟡 **Parakeet / NVIDIA NeMo adapter** — faster-than-Whisper local ASR
-      option on GPU machines.
-- [ ] 🔵 **Local translation dictation** — speak one language, insert another
-      (Whisper translate task or LM Studio translation step).
 
 ## 3. VAD & audio
 
@@ -186,9 +220,11 @@ as a real desktop tool (not just a CLI) from early on.
 - [x] ✅ **Menu bar / tray app** — shipped (E6, pystray): recording states on
       the icon, style and language quick-switch menus, desktop
       notifications, `local-flow tray`.
-- [ ] 🟢 **Floating recording pill** — small always-on-top indicator with
-      mic level while recording. (The tray icon covers recording state; a
-      pill with live mic level is still open.)
+- [x] ✅ **Floating recording pill** — shipped as a native macOS bottom-center
+      AppKit panel for `local-flow run`: an Apple/Wispr-inspired compact idle
+      bar expands into recording/processing/success states, with the original
+      labeled pill available through `pill_style = "expanded"`; includes a live
+      mic meter, `--pill`/`--no-pill`, and graceful console fallback.
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses
@@ -217,25 +253,37 @@ as a real desktop tool (not just a CLI) from early on.
       README documents pointing `asr_model` at a local CTranslate2 model
       dir for offline installs; HF_TOKEN flows are undocumented.)*
 - [ ] 🟡 **Latency benchmark suite** — track per-stage regressions across
-      model/backend choices.
+      model/backend choices. *(Partly shipped: `benchmark-asr` compares ASR
+      backends; end-to-end pipeline stage timing remains open.)*
 - [ ] 🟡 **Platform CI matrix** — macOS/Linux/Windows smoke tests for the
       import-level platform isolation guarantees. (No hosted CI is
       configured yet at all — the suite runs locally via `uv run pytest`.)
 - [ ] 🔵 **Plugin system** — third-party adapters (Transcriber/VAD/Sink)
       discoverable via entry points.
 
+## Future
+
+Deferred ASR expansion stays out of the near-term milestone until benchmark
+evidence or supported-platform demand justifies the added maintenance surface.
+
+- [ ] **whisper.cpp adapter** — portable CPU/quantized alternative for
+      machines where CTranslate2 or MLX is a poor fit.
+- [ ] **Parakeet / NVIDIA NeMo adapter** — high-throughput local ASR for
+      supported NVIDIA GPU systems.
+- [ ] **Local translation dictation** — speak one language and insert another
+      through a local Whisper translation task or LM Studio translation step.
+
 ## Suggested sequencing
 
-1. **Now** — chord hotkeys (the one remaining headline gap), LM Studio
-   model presets, vocab boosting via `initial_prompt`, clipboard
+1. **Now** — chord hotkeys (the one remaining headline gap), LM Studio model
+   presets, clipboard
    preservation around the dictation paste sink, CLI personalization
    commands, Silero VAD, spoken punctuation for `cleanup_level = none`,
    keyboard toggle mode.
-2. **Next** — settings UI, packaged distribution, MLX Whisper adapter,
-   Ollama docs, latency breakdown + benchmark suite, import/export,
-   dynamic snippet variables, audio cues, floating recording pill,
-   synthetic-speech e2e test.
+2. **Next** — settings UI, packaged distribution, Ollama docs, per-dictation
+   latency breakdown, import/export, dynamic snippet variables, audio cues,
+   floating recording pill, synthetic-speech e2e test.
 3. **Later** — macOS AX / Wayland / Windows UIA sinks and the
-   cursor/selection commands they unlock, wake word, translation
-   dictation, Parakeet/NeMo, spelling mode, app-control commands,
-   platform CI matrix, plugin system.
+   cursor/selection commands they unlock, wake word, spelling mode,
+   app-control commands, platform CI matrix, plugin system, and Future items
+   when their gates are met.

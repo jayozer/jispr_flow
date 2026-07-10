@@ -8,6 +8,7 @@ in README).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 from local_flow.errors import HotkeyBackendMissingError
@@ -102,6 +103,8 @@ class MousePushToTalk(HotkeyListener):
         self._on_press: Callable[[], None] | None = None
         self._on_release: Callable[[], None] | None = None
         self._core: PushToTalkCore | None = None
+        self._listener = None
+        self._stop_requested = threading.Event()
 
     def handle_click(self, x, y, button, pressed, injected: bool = False) -> None:
         """Process one mouse click event.
@@ -166,6 +169,9 @@ class MousePushToTalk(HotkeyListener):
         mouse = self._mouse
         try:
             with mouse.Listener(on_click=self.handle_click) as listener:
+                self._listener = listener
+                if self._stop_requested.is_set():
+                    listener.stop()
                 listener.join()
         except Exception as exc:
             raise HotkeyBackendMissingError(
@@ -173,3 +179,11 @@ class MousePushToTalk(HotkeyListener):
                 hint="macOS: grant Accessibility AND Input Monitoring permission "
                 "to your terminal.",
             ) from exc
+        finally:
+            self._listener = None
+
+    def stop(self) -> None:
+        self._stop_requested.set()
+        listener = self._listener
+        if listener is not None:
+            listener.stop()

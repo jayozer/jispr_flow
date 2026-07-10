@@ -85,6 +85,35 @@ def _keyboard():
     return keyboard
 
 
+def _macos_quartz_key_tap(keycode: int, flags: int = 0) -> None:
+    """Post one macOS key tap without consulting the current input source.
+
+    ``pynput.keyboard.Controller`` resolves the active keyboard layout through
+    Carbon's Text Services Manager. On current macOS releases that lookup must
+    run on a particular dispatch queue; constructing/using a controller on the
+    dictation processor thread can therefore terminate the whole process with
+    ``SIGTRAP``. Quartz key events are safe to post from that worker and are
+    all we need for fixed shortcuts such as Cmd+V, Return, and Tab.
+    """
+    try:
+        import Quartz
+    except ImportError as exc:
+        raise HotkeyBackendMissingError(
+            "The macOS Quartz bindings are not installed.",
+            hint="Install desktop extras: uv sync --extra desktop.",
+        ) from exc
+
+    down = Quartz.CGEventCreateKeyboardEvent(None, keycode, True)
+    up = Quartz.CGEventCreateKeyboardEvent(None, keycode, False)
+    if down is None or up is None:
+        raise PasteError("Creating a macOS keyboard event failed.")
+    if flags:
+        Quartz.CGEventSetFlags(down, flags)
+        Quartz.CGEventSetFlags(up, flags)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
 class ClipboardPasteSink(TextSink):
     """Copy to the clipboard, then send the platform paste keystroke."""
 
@@ -95,13 +124,21 @@ class ClipboardPasteSink(TextSink):
             copy_to_clipboard(text)
         except ClipboardError as exc:
             raise PasteError(exc.message, hint=exc.hint) from exc
-        keyboard = _keyboard()
-        controller = keyboard.Controller()
-        modifier = keyboard.Key.cmd if platform.system() == "Darwin" else keyboard.Key.ctrl
         try:
-            with controller.pressed(modifier):
-                controller.press("v")
-                controller.release("v")
+            if platform.system() == "Darwin":
+                import Quartz
+
+                # ANSI V is virtual keycode 9. A fixed keycode avoids
+                # pynput's background-thread keyboard-layout lookup.
+                _macos_quartz_key_tap(9, Quartz.kCGEventFlagMaskCommand)
+            else:
+                keyboard = _keyboard()
+                controller = keyboard.Controller()
+                with controller.pressed(keyboard.Key.ctrl):
+                    controller.press("v")
+                    controller.release("v")
+        except HotkeyBackendMissingError:
+            raise
         except Exception as exc:
             raise PasteError(
                 f"Sending the paste keystroke failed: {exc}",
@@ -111,6 +148,19 @@ class ClipboardPasteSink(TextSink):
             ) from exc
 
     def press_key(self, key: str) -> None:
+        if platform.system() == "Darwin":
+            # Return=36, Tab=48 in the stable macOS virtual-key table.
+            keycode = {"enter": 36, "tab": 48}.get(key)
+            if keycode is None:
+                raise PasteError(f"Unknown key action {key!r}.")
+            try:
+                _macos_quartz_key_tap(keycode)
+            except HotkeyBackendMissingError:
+                raise
+            except Exception as exc:
+                raise PasteError(f"Pressing {key} failed: {exc}") from exc
+            return
+
         keyboard = _keyboard()
         controller = keyboard.Controller()
         key_obj = getattr(keyboard.Key, key, None)

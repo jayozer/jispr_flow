@@ -39,6 +39,117 @@ class TestEnvOverrides:
             load_config(env={"LOCAL_FLOW_LMSTUDIO_TIMEOUT": "soon"})
 
 
+class TestAsrProfiles:
+    def test_custom_preserves_explicit_backend_and_model(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_ASR_PROFILE": "custom",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "my-model",
+            }
+        )
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "my-model"
+
+    def test_fast_selects_mlx_small_english(self):
+        config = load_config(env={"LOCAL_FLOW_ASR_PROFILE": "fast"})
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
+    def test_accuracy_selects_mlx_large_v3_turbo(self):
+        config = load_config(env={"LOCAL_FLOW_ASR_PROFILE": "accuracy"})
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-large-v3-turbo"
+
+    def test_env_concrete_fields_win_over_config_file_profile(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text('asr_profile = "accuracy"\n', encoding="utf-8")
+
+        config = load_config(
+            config_file=config_file,
+            env={
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "runtime-model",
+            },
+        )
+
+        assert config.asr_profile == "accuracy"
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "runtime-model"
+
+    def test_process_env_concrete_fields_win_over_dotenv_profile(
+        self, tmp_path, monkeypatch
+    ):
+        config_file = tmp_path / "empty.toml"
+        config_file.write_text("", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "LOCAL_FLOW_ASR_PROFILE=accuracy\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LOCAL_FLOW_ASR_PROFILE", raising=False)
+        monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
+        monkeypatch.setenv("LOCAL_FLOW_ASR_MODEL", "runtime-model")
+
+        config = load_config(config_file=config_file)
+
+        assert config.asr_profile == "accuracy"
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "runtime-model"
+
+    def test_higher_priority_env_profile_wins_over_file_concrete_fields(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text(
+            'asr_backend = "mock"\nasr_model = "file-model"\n', encoding="utf-8"
+        )
+
+        config = load_config(
+            config_file=config_file,
+            env={"LOCAL_FLOW_ASR_PROFILE": "fast"},
+        )
+
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
+    def test_same_source_named_profile_wins_over_concrete_fields(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_ASR_PROFILE": "fast",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "same-layer-model",
+            }
+        )
+
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
+    def test_invalid_profile_is_rejected(self):
+        with pytest.raises(ConfigError, match="asr_profile") as excinfo:
+            load_config(env={"LOCAL_FLOW_ASR_PROFILE": "magic"})
+        assert "fast" in str(excinfo.value)
+        assert "accuracy" in str(excinfo.value)
+
+
+class TestPolishBackend:
+    def test_defaults_to_lmstudio(self):
+        assert load_config(env={}).polish_backend == "lmstudio"
+
+    def test_rules_and_custom_system_prompt_from_env(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_POLISH_BACKEND": "rules",
+                "LOCAL_FLOW_LMSTUDIO_SYSTEM_PROMPT": "Keep my tone concise.",
+            }
+        )
+        assert config.polish_backend == "rules"
+        assert config.lmstudio_system_prompt == "Keep my tone concise."
+
+    def test_invalid_backend_is_rejected(self):
+        with pytest.raises(ConfigError, match="polish_backend") as excinfo:
+            load_config(env={"LOCAL_FLOW_POLISH_BACKEND": "cloud"})
+        assert "lmstudio" in str(excinfo.value)
+        assert "rules" in str(excinfo.value)
+
+
 class TestConfigFile:
     def test_file_values_apply_but_env_wins(self, tmp_path):
         config_file = tmp_path / "local-flow.toml"
@@ -116,6 +227,37 @@ class TestHotkeyDefaults:
         config = load_config(env={})
         assert config.hotkey_space_hold_ms == 250
         assert config.cancel_hotkey == "esc"
+
+
+class TestFloatingPillField:
+    def test_defaults_on_for_macos(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "darwin")
+        assert load_config(env={}).floating_pill is True
+
+    def test_defaults_off_elsewhere(self, monkeypatch):
+        import sys
+
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert load_config(env={}).floating_pill is False
+
+    def test_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_FLOATING_PILL": "false"})
+        assert config.floating_pill is False
+
+    def test_compact_style_is_default(self):
+        assert load_config(env={}).pill_style == "compact"
+
+    def test_expanded_style_override(self):
+        config = load_config(env={"LOCAL_FLOW_PILL_STYLE": "expanded"})
+        assert config.pill_style == "expanded"
+
+    def test_invalid_style_is_rejected(self):
+        with pytest.raises(ConfigError, match="pill_style") as excinfo:
+            load_config(env={"LOCAL_FLOW_PILL_STYLE": "giant"})
+        assert "compact" in str(excinfo.value)
+        assert "expanded" in str(excinfo.value)
 
 
 class TestLanguagesField:
@@ -227,6 +369,7 @@ class TestModeAndBackendValidation:
         message = str(excinfo.value)
         assert "whisper.cpp" in message
         assert "faster-whisper" in message
+        assert "mlx-whisper" in message
         assert "mock" in message
 
     def test_invalid_asr_language_raises_naming_valid_values(self):
@@ -256,6 +399,9 @@ class TestModeAndBackendValidation:
         assert config.vad_backend == "webrtc"
         assert config.asr_backend == "mock"
         assert config.asr_language == "auto"
+
+        mlx_config = load_config(env={"LOCAL_FLOW_ASR_BACKEND": "mlx-whisper"})
+        assert mlx_config.asr_backend == "mlx-whisper"
 
     def test_two_and_three_letter_language_codes_are_accepted(self):
         # 2-letter ISO 639-1 ("fr") plus the 3-letter codes Whisper knows

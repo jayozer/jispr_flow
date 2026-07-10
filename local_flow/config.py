@@ -13,7 +13,7 @@ import os
 import sys
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 from local_flow.errors import ConfigError
@@ -22,13 +22,20 @@ ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_MODES = ("push-to-talk", "hands-free")
 VALID_VAD_BACKENDS = ("energy", "webrtc", "mock")
-VALID_ASR_BACKENDS = ("faster-whisper", "mock")
+VALID_ASR_BACKENDS = ("faster-whisper", "mlx-whisper", "mock")
+VALID_ASR_PROFILES = ("custom", "fast", "accuracy")
+ASR_PROFILE_MODELS = {
+    "fast": "mlx-community/whisper-small.en-mlx",
+    "accuracy": "mlx-community/whisper-large-v3-turbo",
+}
 VALID_HISTORY_RETENTIONS = ("forever", "24h", "off")
 VALID_STREAMING_MODES = ("off", "sentence", "live-preview")
 VALID_CLEANUP_LEVELS = ("none", "light", "medium", "high")
 VALID_VAD_PRESETS = ("normal", "whisper")
 VALID_MOUSE_BUTTONS = ("", "middle", "x1", "x2")
 VALID_MOUSE_MODES = ("hold", "toggle")
+VALID_PILL_STYLES = ("compact", "expanded")
+VALID_POLISH_BACKENDS = ("lmstudio", "rules")
 
 
 def _default_data_dir() -> Path:
@@ -41,19 +48,29 @@ def _default_hotkey() -> str:
     return "fn" if sys.platform == "darwin" else "f9"
 
 
+def _default_floating_pill() -> bool:
+    return sys.platform == "darwin"
+
+
 @dataclass(frozen=True)
 class Config:
     # LM Studio (OpenAI-compatible local server)
     lmstudio_base_url: str = DEFAULT_LMSTUDIO_BASE_URL
     lmstudio_model: str = ""  # empty = auto-pick the first loaded model
     lmstudio_timeout: float = 60.0
+    # lmstudio = rules then local LLM; rules = deterministic cleanup only.
+    polish_backend: str = "lmstudio"
+    # Optional user instructions appended to JiSpr's protected polish prompt.
+    lmstudio_system_prompt: str = ""
 
     # ASR (local speech-to-text; never LM Studio)
-    asr_backend: str = "faster-whisper"  # faster-whisper | mock
+    asr_backend: str = "faster-whisper"  # faster-whisper | mlx-whisper | mock
     asr_model: str = "small.en"  # name or path to a local model directory
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"
     asr_language: str = "en"  # ISO 639-1 code (e.g. "fr"), or "auto" to detect
+    # custom honors asr_backend/model; fast/accuracy select known MLX models.
+    asr_profile: str = "custom"
 
     # Comma-separated ISO 639-1 codes for the tray app's Language quick-switch
     # menu (e.g. "en,de,fr"); empty hides the menu. Parsed by
@@ -80,6 +97,14 @@ class Config:
     hotkey: str = field(default_factory=_default_hotkey)  # fn | space | pynput key name
     hotkey_space_hold_ms: int = 250  # hold-vs-tap threshold for hotkey="space"
     cancel_hotkey: str = "esc"  # discards the in-flight dictation
+
+    # Native, always-on-top recording state + live mic level. Enabled by
+    # default on macOS; other platforms keep the console/tray surfaces until
+    # they gain a native pill backend.
+    floating_pill: bool = field(default_factory=_default_floating_pill)
+    # compact = Apple/Wispr-inspired persistent line; expanded = the original
+    # labeled 280x56 status pill.
+    pill_style: str = "compact"
 
     # Comma-separated, priority-ordered microphone name substrings (case-
     # insensitive), e.g. "AirPods, USB". The first input device whose name
@@ -185,6 +210,35 @@ class Config:
     scratchpad_hotkey: str = ""
 
 
+def resolve_asr_profile(
+    config: Config,
+    *,
+    profile_priority: int = 0,
+    backend_priority: int = 0,
+    model_priority: int = 0,
+) -> Config:
+    """Resolve a friendly profile into the concrete ASR backend/model.
+
+    ``custom`` preserves every existing setting. The named profiles are a
+    single, UI-ready switch for the two MLX checkpoints JiSpr evaluates.
+
+    Priorities describe the source that supplied each field (defaults, TOML,
+    ``.env``, or the process environment). A named profile only fills a
+    concrete field when the profile came from the same or a higher-precedence
+    source. The default equal priorities preserve the standalone helper's
+    original behavior for callers such as the benchmark CLI.
+    """
+    model = ASR_PROFILE_MODELS.get(config.asr_profile)
+    if model is None:
+        return config
+    overrides: dict[str, str] = {}
+    if profile_priority >= backend_priority:
+        overrides["asr_backend"] = "mlx-whisper"
+    if profile_priority >= model_priority:
+        overrides["asr_model"] = model
+    return replace(config, **overrides) if overrides else config
+
+
 def _read_dotenv(path: Path) -> dict[str, str]:
     """Parse a minimal ``.env``-style file into a ``{KEY: value}`` dict.
 
@@ -268,10 +322,21 @@ def load_config(
     ``env`` may be passed explicitly for tests; when ``None`` the process
     environment is used, augmented with values from a local ``.env`` file.
     """
+    # Keep `.env` and the real process environment as separate layers. A
+    # flattened mapping preserves values but loses their provenance, which
+    # matters when a lower-precedence named ASR profile would otherwise
+    # overwrite a higher-precedence concrete backend/model override.
     if env is None:
-        merged = _read_dotenv(Path.cwd() / ".env")
-        merged.update(os.environ)
-        env = merged
+        dotenv_env: Mapping[str, str] = _read_dotenv(Path.cwd() / ".env")
+        process_env: Mapping[str, str] = os.environ
+        discovery_env = dict(dotenv_env)
+        discovery_env.update(process_env)
+        env_layers = ((2, dotenv_env), (3, process_env))
+    else:
+        discovery_env = env
+        # An explicitly supplied mapping is the environment layer used by
+        # tests and programmatic callers.
+        env_layers = ((3, env),)
 
     field_types: dict[str, type] = {
         "lmstudio_timeout": float,
@@ -282,6 +347,7 @@ def load_config(
         "data_dir": Path,
         "sample_rate": int,
         "hotkey_space_hold_ms": int,
+        "floating_pill": bool,
         "history_enabled": bool,
         "history_max_entries": int,
         "context_styles": bool,
@@ -292,9 +358,10 @@ def load_config(
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
+    source_priorities: dict[str, int] = {}
 
     if config_file is None:
-        config_file = _discover_config_file(env)
+        config_file = _discover_config_file(discovery_env)
     if config_file is not None:
         try:
             data = tomllib.loads(Path(config_file).read_text(encoding="utf-8"))
@@ -311,13 +378,22 @@ def load_config(
             )
         for key, raw in data.items():
             values[key] = _coerce(key, raw, field_types.get(key, str))
+            source_priorities[key] = 1
 
-    for name in names:
-        raw = env.get(ENV_PREFIX + name.upper())
-        if raw is not None and raw != "":
-            values[name] = _coerce(name, raw, field_types.get(name, str))
+    for priority, env_layer in env_layers:
+        for name in names:
+            raw = env_layer.get(ENV_PREFIX + name.upper())
+            if raw is not None and raw != "":
+                values[name] = _coerce(name, raw, field_types.get(name, str))
+                source_priorities[name] = priority
 
     config = Config(**values)  # type: ignore[arg-type]
+    config = resolve_asr_profile(
+        config,
+        profile_priority=source_priorities.get("asr_profile", 0),
+        backend_priority=source_priorities.get("asr_backend", 0),
+        model_priority=source_priorities.get("asr_model", 0),
+    )
 
     if config.mode not in VALID_MODES:
         raise ConfigError(
@@ -335,6 +411,12 @@ def load_config(
         raise ConfigError(
             f"Invalid asr_backend: {config.asr_backend!r}",
             hint=f"Valid values: {', '.join(VALID_ASR_BACKENDS)}.",
+        )
+
+    if config.asr_profile not in VALID_ASR_PROFILES:
+        raise ConfigError(
+            f"Invalid asr_profile: {config.asr_profile!r}",
+            hint=f"Valid values: {', '.join(VALID_ASR_PROFILES)}.",
         )
 
     # Whisper language codes are 2-3 lowercase ASCII letters (ISO 639-1 plus
@@ -367,10 +449,22 @@ def load_config(
             hint=f"Valid values: {', '.join(VALID_CLEANUP_LEVELS)}.",
         )
 
+    if config.polish_backend not in VALID_POLISH_BACKENDS:
+        raise ConfigError(
+            f"Invalid polish_backend: {config.polish_backend!r}",
+            hint=f"Valid values: {', '.join(VALID_POLISH_BACKENDS)}.",
+        )
+
     if config.vad_preset not in VALID_VAD_PRESETS:
         raise ConfigError(
             f"Invalid vad_preset: {config.vad_preset!r}",
             hint=f"Valid values: {', '.join(VALID_VAD_PRESETS)}.",
+        )
+
+    if config.pill_style not in VALID_PILL_STYLES:
+        raise ConfigError(
+            f"Invalid pill_style: {config.pill_style!r}",
+            hint=f"Valid values: {', '.join(VALID_PILL_STYLES)}.",
         )
 
     _mouse_hint = (

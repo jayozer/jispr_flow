@@ -5,6 +5,8 @@ See docs/superpowers/plans/2026-07-06-phase5-quick-wins.md, Task 1 (E9).
 
 import pytest
 
+import local_flow.app as app_module
+from local_flow.app import _polish_text
 from local_flow.config import VALID_CLEANUP_LEVELS, load_config
 from local_flow.errors import ConfigError
 from local_flow.llm.mock import MockChatClient
@@ -149,6 +151,46 @@ class TestPolisherLevelNone:
         assert result.polished == "um hello"
 
 
+class TestPolishBackendSwitch:
+    def test_rules_backend_skips_lmstudio_but_keeps_rule_cleanup(
+        self, tmp_path, monkeypatch
+    ):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_DATA_DIR": str(tmp_path),
+                "LOCAL_FLOW_POLISH_BACKEND": "rules",
+            }
+        )
+
+        def should_not_build(_config):
+            raise AssertionError("LM Studio should be disabled")
+
+        monkeypatch.setattr(app_module, "_build_chat_client", should_not_build)
+
+        text, _actions, _warnings = _polish_text(config, "um hello there")
+
+        assert "um" not in text.split()
+
+    def test_lmstudio_backend_forwards_configured_system_prompt(
+        self, tmp_path, monkeypatch
+    ):
+        prompt = "Prefer short sentences while preserving product names."
+        config = load_config(
+            env={
+                "LOCAL_FLOW_DATA_DIR": str(tmp_path),
+                "LOCAL_FLOW_POLISH_BACKEND": "lmstudio",
+                "LOCAL_FLOW_LMSTUDIO_SYSTEM_PROMPT": prompt,
+            }
+        )
+        llm = MockChatClient(["Hello there."])
+        monkeypatch.setattr(app_module, "_build_chat_client", lambda _config: llm)
+
+        text, _actions, _warnings = _polish_text(config, "um hello there")
+
+        assert text == "Hello there."
+        assert prompt in llm.requests[0][0]["content"]
+
+
 class TestPolisherLevelProperty:
     """`level` is a settable property, mirroring `style`."""
 
@@ -193,6 +235,21 @@ class TestPolisherLevelProperty:
 
         system = llm.requests[0][0]["content"]
         assert "do not rephrase" in system.lower()
+
+    def test_configured_system_prompt_reaches_lmstudio_request(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        llm = MockChatClient(["ok"])
+        polisher = TranscriptPolisher(
+            llm,
+            store,
+            system_prompt="Keep sentences concise and preserve proper nouns.",
+        )
+
+        polisher.polish("hello world")
+
+        system = llm.requests[0][0]["content"]
+        assert "Keep sentences concise and preserve proper nouns." in system
+        assert "press enter" in system
 
 
 class TestPipelinePersonalizationStillAppliesAtLevelNone:

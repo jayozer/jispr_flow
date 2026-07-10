@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Sequence
 
 
 class Transcriber(ABC):
@@ -17,3 +18,19 @@ class Transcriber(ABC):
     @abstractmethod
     def transcribe(self, pcm: bytes, sample_rate: int) -> str:
         """Transcribe 16-bit mono PCM to text (may be empty for silence)."""
+
+    def set_vocabulary_provider(
+        self, provider: Callable[[], Sequence[str]]
+    ) -> None:
+        """Supply prioritized vocabulary dynamically before each ASR call.
+
+        Backends without a vocabulary-bias feature intentionally ignore the
+        provider. Keeping this hook non-abstract preserves third-party/test
+        adapters while letting capable engines observe dictionary additions
+        without being rebuilt or coupled to the personalization store.
+        """
+        return None
+
+    def prepare(self) -> None:
+        """Eagerly initialize a lazy backend for accurate load benchmarks."""
+        return None
