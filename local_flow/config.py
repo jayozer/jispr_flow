@@ -210,16 +210,33 @@ class Config:
     scratchpad_hotkey: str = ""
 
 
-def resolve_asr_profile(config: Config) -> Config:
+def resolve_asr_profile(
+    config: Config,
+    *,
+    profile_priority: int = 0,
+    backend_priority: int = 0,
+    model_priority: int = 0,
+) -> Config:
     """Resolve a friendly profile into the concrete ASR backend/model.
 
     ``custom`` preserves every existing setting. The named profiles are a
     single, UI-ready switch for the two MLX checkpoints JiSpr evaluates.
+
+    Priorities describe the source that supplied each field (defaults, TOML,
+    ``.env``, or the process environment). A named profile only fills a
+    concrete field when the profile came from the same or a higher-precedence
+    source. The default equal priorities preserve the standalone helper's
+    original behavior for callers such as the benchmark CLI.
     """
     model = ASR_PROFILE_MODELS.get(config.asr_profile)
     if model is None:
         return config
-    return replace(config, asr_backend="mlx-whisper", asr_model=model)
+    overrides: dict[str, str] = {}
+    if profile_priority >= backend_priority:
+        overrides["asr_backend"] = "mlx-whisper"
+    if profile_priority >= model_priority:
+        overrides["asr_model"] = model
+    return replace(config, **overrides) if overrides else config
 
 
 def _read_dotenv(path: Path) -> dict[str, str]:
@@ -305,10 +322,21 @@ def load_config(
     ``env`` may be passed explicitly for tests; when ``None`` the process
     environment is used, augmented with values from a local ``.env`` file.
     """
+    # Keep `.env` and the real process environment as separate layers. A
+    # flattened mapping preserves values but loses their provenance, which
+    # matters when a lower-precedence named ASR profile would otherwise
+    # overwrite a higher-precedence concrete backend/model override.
     if env is None:
-        merged = _read_dotenv(Path.cwd() / ".env")
-        merged.update(os.environ)
-        env = merged
+        dotenv_env: Mapping[str, str] = _read_dotenv(Path.cwd() / ".env")
+        process_env: Mapping[str, str] = os.environ
+        discovery_env = dict(dotenv_env)
+        discovery_env.update(process_env)
+        env_layers = ((2, dotenv_env), (3, process_env))
+    else:
+        discovery_env = env
+        # An explicitly supplied mapping is the environment layer used by
+        # tests and programmatic callers.
+        env_layers = ((3, env),)
 
     field_types: dict[str, type] = {
         "lmstudio_timeout": float,
@@ -330,9 +358,10 @@ def load_config(
     }
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
+    source_priorities: dict[str, int] = {}
 
     if config_file is None:
-        config_file = _discover_config_file(env)
+        config_file = _discover_config_file(discovery_env)
     if config_file is not None:
         try:
             data = tomllib.loads(Path(config_file).read_text(encoding="utf-8"))
@@ -349,13 +378,22 @@ def load_config(
             )
         for key, raw in data.items():
             values[key] = _coerce(key, raw, field_types.get(key, str))
+            source_priorities[key] = 1
 
-    for name in names:
-        raw = env.get(ENV_PREFIX + name.upper())
-        if raw is not None and raw != "":
-            values[name] = _coerce(name, raw, field_types.get(name, str))
+    for priority, env_layer in env_layers:
+        for name in names:
+            raw = env_layer.get(ENV_PREFIX + name.upper())
+            if raw is not None and raw != "":
+                values[name] = _coerce(name, raw, field_types.get(name, str))
+                source_priorities[name] = priority
 
     config = Config(**values)  # type: ignore[arg-type]
+    config = resolve_asr_profile(
+        config,
+        profile_priority=source_priorities.get("asr_profile", 0),
+        backend_priority=source_priorities.get("asr_backend", 0),
+        model_priority=source_priorities.get("asr_model", 0),
+    )
 
     if config.mode not in VALID_MODES:
         raise ConfigError(
@@ -491,4 +529,4 @@ def load_config(
             )
         seen_hotkeys[key] = field_name
 
-    return resolve_asr_profile(config)
+    return config

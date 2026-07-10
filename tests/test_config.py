@@ -61,6 +61,67 @@ class TestAsrProfiles:
         assert config.asr_backend == "mlx-whisper"
         assert config.asr_model == "mlx-community/whisper-large-v3-turbo"
 
+    def test_env_concrete_fields_win_over_config_file_profile(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text('asr_profile = "accuracy"\n', encoding="utf-8")
+
+        config = load_config(
+            config_file=config_file,
+            env={
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "runtime-model",
+            },
+        )
+
+        assert config.asr_profile == "accuracy"
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "runtime-model"
+
+    def test_process_env_concrete_fields_win_over_dotenv_profile(
+        self, tmp_path, monkeypatch
+    ):
+        config_file = tmp_path / "empty.toml"
+        config_file.write_text("", encoding="utf-8")
+        (tmp_path / ".env").write_text(
+            "LOCAL_FLOW_ASR_PROFILE=accuracy\n", encoding="utf-8"
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("LOCAL_FLOW_ASR_PROFILE", raising=False)
+        monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
+        monkeypatch.setenv("LOCAL_FLOW_ASR_MODEL", "runtime-model")
+
+        config = load_config(config_file=config_file)
+
+        assert config.asr_profile == "accuracy"
+        assert config.asr_backend == "mock"
+        assert config.asr_model == "runtime-model"
+
+    def test_higher_priority_env_profile_wins_over_file_concrete_fields(self, tmp_path):
+        config_file = tmp_path / "local-flow.toml"
+        config_file.write_text(
+            'asr_backend = "mock"\nasr_model = "file-model"\n', encoding="utf-8"
+        )
+
+        config = load_config(
+            config_file=config_file,
+            env={"LOCAL_FLOW_ASR_PROFILE": "fast"},
+        )
+
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
+    def test_same_source_named_profile_wins_over_concrete_fields(self):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_ASR_PROFILE": "fast",
+                "LOCAL_FLOW_ASR_BACKEND": "mock",
+                "LOCAL_FLOW_ASR_MODEL": "same-layer-model",
+            }
+        )
+
+        assert config.asr_backend == "mlx-whisper"
+        assert config.asr_model == "mlx-community/whisper-small.en-mlx"
+
     def test_invalid_profile_is_rejected(self):
         with pytest.raises(ConfigError, match="asr_profile") as excinfo:
             load_config(env={"LOCAL_FLOW_ASR_PROFILE": "magic"})
