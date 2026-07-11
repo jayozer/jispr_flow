@@ -23,6 +23,10 @@ asr = [
 mlx-asr = [
     "mlx-whisper>=0.4.3; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
+# Latest multilingual Parakeet, loaded directly in-process on Apple Silicon.
+parakeet-asr = [
+    "parakeet-mlx>=0.5.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
 # Global hotkeys, keystroke paste/typing, clipboard.
 desktop = [
     "pynput>=1.8.0",
@@ -37,7 +41,7 @@ tray = [
     "pillow>=10.0",
 ]
 all = [
-    "local-flow[audio,asr,desktop,mlx-asr,tray]",
+    "local-flow[audio,asr,desktop,mlx-asr,parakeet-asr,tray]",
 ]
 
 [project.scripts]

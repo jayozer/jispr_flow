@@ -22,7 +22,7 @@ ENV_PREFIX = "LOCAL_FLOW_"
 DEFAULT_LMSTUDIO_BASE_URL = "http://localhost:1234/v1"
 VALID_MODES = ("push-to-talk", "hands-free")
 VALID_VAD_BACKENDS = ("energy", "webrtc", "mock")
-VALID_ASR_BACKENDS = ("faster-whisper", "mlx-whisper", "mock")
+VALID_ASR_BACKENDS = ("faster-whisper", "mlx-whisper", "mlx-parakeet", "mock")
 VALID_ASR_PROFILES = ("custom", "fast", "accuracy")
 ASR_PROFILE_MODELS = {
     "fast": "mlx-community/whisper-small.en-mlx",
@@ -64,7 +64,7 @@ class Config:
     lmstudio_system_prompt: str = ""
 
     # ASR (local speech-to-text; never LM Studio)
-    asr_backend: str = "faster-whisper"  # faster-whisper | mlx-whisper | mock
+    asr_backend: str = "faster-whisper"  # faster-whisper | mlx-whisper | mlx-parakeet | mock
     asr_model: str = "small.en"  # name or path to a local model directory
     asr_device: str = "auto"  # auto | cpu | cuda
     asr_compute_type: str = "int8"
@@ -210,6 +210,15 @@ class Config:
     scratchpad_hotkey: str = ""
 
 
+@dataclass(frozen=True)
+class ConfigSnapshot:
+    """Effective config plus the file/layer that supplied each field."""
+
+    config: Config
+    config_path: Path | None
+    sources: dict[str, str]
+
+
 def resolve_asr_profile(
     config: Config,
     *,
@@ -313,11 +322,13 @@ def _coerce(name: str, raw: object, target_type: type) -> object:
         ) from exc
 
 
-def load_config(
+def load_config_snapshot(
     config_file: Path | None = None,
     env: Mapping[str, str] | None = None,
-) -> Config:
-    """Build a :class:`Config` from the config file and environment.
+    *,
+    discover_config: bool = True,
+) -> ConfigSnapshot:
+    """Build effective config and provenance from file/environment layers.
 
     ``env`` may be passed explicitly for tests; when ``None`` the process
     environment is used, augmented with values from a local ``.env`` file.
@@ -359,8 +370,10 @@ def load_config(
     names = [f.name for f in fields(Config)]
     values: dict[str, object] = {}
     source_priorities: dict[str, int] = {}
+    sources = {name: "default" for name in names}
 
-    if config_file is None:
+    should_discover = env is None or ENV_PREFIX + "CONFIG" in discovery_env
+    if config_file is None and discover_config and should_discover:
         config_file = _discover_config_file(discovery_env)
     if config_file is not None:
         try:
@@ -379,21 +392,33 @@ def load_config(
         for key, raw in data.items():
             values[key] = _coerce(key, raw, field_types.get(key, str))
             source_priorities[key] = 1
+            sources[key] = "toml"
 
     for priority, env_layer in env_layers:
+        source_name = "dotenv" if priority == 2 else "environment"
         for name in names:
             raw = env_layer.get(ENV_PREFIX + name.upper())
             if raw is not None and raw != "":
                 values[name] = _coerce(name, raw, field_types.get(name, str))
                 source_priorities[name] = priority
+                sources[name] = source_name
 
     config = Config(**values)  # type: ignore[arg-type]
+    profile_source = sources["asr_profile"]
+    profile_priority = source_priorities.get("asr_profile", 0)
+    backend_priority = source_priorities.get("asr_backend", 0)
+    model_priority = source_priorities.get("asr_model", 0)
     config = resolve_asr_profile(
         config,
-        profile_priority=source_priorities.get("asr_profile", 0),
-        backend_priority=source_priorities.get("asr_backend", 0),
-        model_priority=source_priorities.get("asr_model", 0),
+        profile_priority=profile_priority,
+        backend_priority=backend_priority,
+        model_priority=model_priority,
     )
+    if config.asr_profile in ASR_PROFILE_MODELS:
+        if profile_priority >= backend_priority:
+            sources["asr_backend"] = f"profile:{profile_source}"
+        if profile_priority >= model_priority:
+            sources["asr_model"] = f"profile:{profile_source}"
 
     if config.mode not in VALID_MODES:
         raise ConfigError(
@@ -529,4 +554,16 @@ def load_config(
             )
         seen_hotkeys[key] = field_name
 
-    return config
+    return ConfigSnapshot(
+        config=config,
+        config_path=Path(config_file) if config_file else None,
+        sources=sources,
+    )
+
+
+def load_config(
+    config_file: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Config:
+    """Backward-compatible effective-config loader."""
+    return load_config_snapshot(config_file=config_file, env=env).config

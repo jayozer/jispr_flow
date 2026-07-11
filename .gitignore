@@ -12,6 +12,8 @@ build/
 .env
 local-flow.toml
 .local-flow/
+# Real voices, transcripts, reviews, and raw benchmark output.
+benchmarks/private/
 
 # Tooling artifacts
 .understand-anything/

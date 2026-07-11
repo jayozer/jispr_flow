@@ -7,7 +7,11 @@ LM Studio is used for text polish and command mode only — never for ASR.
 
 from __future__ import annotations
 
+import json
 import logging
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
@@ -38,6 +42,15 @@ _CONNECT_HINT = (
     "(Developer tab -> Start Server). The default address is "
     f"{DEFAULT_LMSTUDIO_BASE_URL}; override with LOCAL_FLOW_LMSTUDIO_BASE_URL."
 )
+
+
+@dataclass(frozen=True)
+class StreamResult:
+    """One streamed completion plus timing measured at the HTTP boundary."""
+
+    text: str
+    first_token_s: float
+    total_s: float
 
 
 class LMStudioClient(ChatClient):
@@ -147,6 +160,96 @@ class LMStudioClient(ChatClient):
                 hint="Make sure a chat-capable (instruct) model is loaded.",
             )
         return content.strip()
+
+    def chat_stream(
+        self,
+        messages: list[Message],
+        *,
+        temperature: float = 0.2,
+        max_tokens: int | None = None,
+        clock: Callable[[], float] = time.perf_counter,
+    ) -> StreamResult:
+        """Stream a local completion and report first-token/total latency.
+
+        The production polisher intentionally continues to use :meth:`chat`
+        and inserts only complete responses. This method exists for the model
+        benchmark and consumes OpenAI-compatible ``data:`` SSE events.
+        """
+        payload: dict[str, object] = {
+            "model": self.resolve_model(),
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        started = clock()
+        try:
+            request = self._client.build_request(
+                "POST", self._url("chat/completions"), json=payload
+            )
+            response = self._client.send(request, stream=True)
+        except httpx.TimeoutException as exc:
+            raise LMStudioConnectionError(
+                f"Timed out waiting for LM Studio at {self.base_url} "
+                f"(model {self.model!r}).",
+                hint=_CONNECT_HINT,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LMStudioConnectionError(
+                f"Could not reach LM Studio at {self.base_url}: {exc}", hint=_CONNECT_HINT
+            ) from exc
+
+        try:
+            if response.status_code == 404:
+                raise LMStudioModelError(
+                    f"LM Studio does not know the model {self.model!r} "
+                    f"(HTTP 404 from {self.base_url}).",
+                    hint="Load the exact benchmark model in LM Studio or update its model id.",
+                )
+            if response.status_code >= 400:
+                response.read()
+                raise LMStudioResponseError(
+                    f"LM Studio returned HTTP {response.status_code}: {_error_detail(response)}",
+                    hint="Check the LM Studio server logs (Developer tab) for details.",
+                )
+
+            chunks: list[str] = []
+            first_token_s: float | None = None
+            for line in response.iter_lines():
+                line = line.strip()
+                if not line or line.startswith(":"):
+                    continue
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if raw == "[DONE]":
+                    break
+                try:
+                    event = json.loads(raw)
+                except ValueError as exc:
+                    raise LMStudioResponseError(
+                        "LM Studio returned malformed streaming JSON."
+                    ) from exc
+                choices = event.get("choices") if isinstance(event, dict) else None
+                choice = choices[0] if isinstance(choices, list) and choices else None
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                content = delta.get("content") if isinstance(delta, dict) else None
+                if isinstance(content, str) and content:
+                    if first_token_s is None:
+                        first_token_s = clock() - started
+                    chunks.append(content)
+            total_s = clock() - started
+        finally:
+            response.close()
+
+        text = "".join(chunks).strip()
+        if first_token_s is None:
+            raise LMStudioResponseError(
+                "LM Studio streaming response contained no text tokens."
+            )
+        return StreamResult(text=text, first_token_s=first_token_s, total_s=total_s)
 
     def _post_chat(
         self,

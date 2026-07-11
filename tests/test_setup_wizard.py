@@ -499,6 +499,7 @@ class TestProbeReporting:
         assert calls == [
             "faster_whisper",
             "mlx_whisper",
+            "parakeet_mlx",
             "sounddevice",
             "pynput",
             "pyperclip",

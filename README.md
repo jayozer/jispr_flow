@@ -62,7 +62,7 @@ uv run --extra mlx-asr --extra audio --extra desktop local-flow run --pill
 ```mermaid
 flowchart LR
     Idle[Idle bar] -->|hold Fn| Record[Record audio]
-    Record -->|release Fn| ASR[MLX Whisper]
+    Record -->|release Fn| ASR[Local ASR]
     ASR --> Rules[Cleanup rules]
     Rules --> Polish[LM Studio or rules-only]
     Polish --> Personalize[Dictionary + aliases + snippets]
@@ -78,6 +78,25 @@ returns to idle. Use `--no-pill` to hide it or set
 LM Studio does **not** run Whisper. JiSpr runs MLX/faster-whisper directly for
 speech recognition and uses LM Studio only for optional text cleanup and
 transforms.
+
+Parakeet v3 is also loaded directly by JiSpr; LM Studio never receives audio.
+Install its adapter and FFmpeg, then select it as a custom backend:
+
+```bash
+brew install ffmpeg
+uv sync --extra parakeet-asr
+```
+
+```dotenv
+LOCAL_FLOW_ASR_PROFILE=custom
+LOCAL_FLOW_ASR_BACKEND=mlx-parakeet
+LOCAL_FLOW_ASR_MODEL=mlx-community/parakeet-tdt-0.6b-v3
+LOCAL_FLOW_ASR_LANGUAGE=auto
+```
+
+Parakeet v3 manages multilingual recognition itself. It does not currently
+accept JiSpr's Whisper vocabulary prompt; dictionary terms are still supplied
+to local polish and deterministically enforced on the final text.
 
 ## Recognition profiles
 
@@ -105,6 +124,27 @@ uv run local-flow benchmark-asr sample.wav --profile accuracy \
 ```
 
 See [MLX evaluation](docs/asr/MLX_EVALUATION.md) for the complete methodology.
+
+## Model benchmark
+
+`benchmark-models` freezes one ASR transcript per recording, then sends that
+byte-identical text through each requested LM Studio model. Raw audio,
+transcripts, and review sheets belong under the ignored `benchmarks/private/`
+directory.
+
+```bash
+uv run local-flow benchmark-models benchmarks/private/corpus.jsonl \
+  --output benchmarks/private/parakeet-v3 \
+  --polisher gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
+  --polisher Qwen3.5-35B-A3B-Q4_K_M.gguf \
+  --polisher Qwen3.5-9B-Q4_K_M.gguf
+```
+
+Complete the generated blind review sheet before applying `--reviews`; JiSpr
+never emits a recommendation before every output has a safety decision. To
+compare Whisper Turbo with the winner, rerun the same manifest with
+`--asr-backend mlx-whisper --asr-model mlx-community/whisper-large-v3-turbo`.
+See [the benchmark guide](benchmarks/README.md) for the full procedure.
 
 ## Names, vocabulary, and corrections
 
@@ -161,6 +201,8 @@ uv run local-flow learn --add 1 2
 | `uv run local-flow pad --window` | open the local Markdown scratchpad |
 | `uv run local-flow stats` | show local words, streaks, and app statistics |
 | `uv run local-flow tray` | start the menu-bar app |
+| `uv run local-flow settings` | open native macOS Settings & Personalization |
+| `uv run local-flow benchmark-models …` | freeze ASR and compare local polishers |
 
 Run `uv run local-flow --help` or `<command> --help` for every option.
 

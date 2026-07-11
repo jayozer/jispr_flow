@@ -10,8 +10,8 @@ polish_backend = "lmstudio"    # lmstudio (rules + LLM) | rules (no LLM)
 lmstudio_system_prompt = ""
 
 asr_profile = "custom"        # custom | fast (MLX small.en) | accuracy (MLX Turbo)
-asr_backend = "faster-whisper" # faster-whisper | mlx-whisper (Apple Silicon) | mock
-asr_model = "small.en"         # faster-whisper name/path; for MLX use an MLX repo/path
+asr_backend = "faster-whisper" # faster-whisper | mlx-whisper | mlx-parakeet | mock
+asr_model = "small.en"         # Parakeet v3: mlx-community/parakeet-tdt-0.6b-v3
 asr_device = "auto"            # auto | cpu | cuda
 asr_compute_type = "int8"
 asr_language = "en"            # en | ISO 639-1 code | auto (detect); non-en needs multilingual

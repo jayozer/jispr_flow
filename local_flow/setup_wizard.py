@@ -36,6 +36,7 @@ _MAX_ATTEMPTS = 3
 _PROBED_MODULES: tuple[tuple[str, str], ...] = (
     ("faster_whisper", "asr"),
     ("mlx_whisper", "mlx-asr"),
+    ("parakeet_mlx", "parakeet-asr"),
     ("sounddevice", "audio"),
     ("pynput", "desktop"),
     ("pyperclip", "desktop"),
