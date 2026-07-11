@@ -234,6 +234,10 @@ class PersonalizationStore:
         ordered = sorted(enumerate(entries), key=sort_key)
         return [entry["term"] for _, entry in ordered]
 
+    def dictionary_entries(self) -> list[dict]:
+        """Return rich dictionary rows for Settings without exposing internals."""
+        return [dict(entry) for entry in self._read_dictionary_entries()]
+
     def add_dictionary_term(self, term: str) -> bool:
         """Add a new term; ``False`` when it (or an apostrophe variant) exists."""
         term = term.strip()
@@ -245,6 +249,39 @@ class PersonalizationStore:
             return False
         entries.append({"term": term})
         self._write_dictionary_entries(entries)
+        return True
+
+    def update_dictionary_term(
+        self, original: str, term: str, *, starred: bool | None = None
+    ) -> bool:
+        """Rename/update one term while retaining usage and unknown metadata."""
+        term = term.strip()
+        if not term:
+            return False
+        entries = self._read_dictionary_entries()
+        original_folded = fold_term(original)
+        target = next(
+            (entry for entry in entries if fold_term(entry["term"]) == original_folded),
+            None,
+        )
+        if target is None:
+            return False
+        new_folded = fold_term(term)
+        if any(entry is not target and fold_term(entry["term"]) == new_folded for entry in entries):
+            return False
+        target["term"] = term
+        if starred is not None:
+            target["starred"] = bool(starred)
+        self._write_dictionary_entries(entries)
+        return True
+
+    def remove_dictionary_term(self, term: str) -> bool:
+        entries = self._read_dictionary_entries()
+        folded = fold_term(term)
+        kept = [entry for entry in entries if fold_term(entry["term"]) != folded]
+        if len(kept) == len(entries):
+            return False
+        self._write_dictionary_entries(kept)
         return True
 
     def record_term_uses(self, counts: dict[str, int]) -> None:
@@ -273,6 +310,29 @@ class PersonalizationStore:
         snippets = self.snippets()
         snippets[trigger.strip()] = expansion
         self._atomic_write(self._snippets_path, {"snippets": snippets})
+
+    def update_snippet(self, original: str, trigger: str, expansion: str) -> bool:
+        snippets = self.snippets()
+        trigger = trigger.strip()
+        if original not in snippets or not trigger:
+            return False
+        if trigger != original and trigger in snippets:
+            return False
+        items = list(snippets.items())
+        updated = {
+            (trigger if key == original else key): (expansion if key == original else value)
+            for key, value in items
+        }
+        self._atomic_write(self._snippets_path, {"snippets": updated})
+        return True
+
+    def remove_snippet(self, trigger: str) -> bool:
+        snippets = self.snippets()
+        if trigger not in snippets:
+            return False
+        del snippets[trigger]
+        self._atomic_write(self._snippets_path, {"snippets": snippets})
+        return True
 
     # --- styles ----------------------------------------------------------
     def styles(self) -> dict[str, str]:

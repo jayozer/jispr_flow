@@ -208,9 +208,10 @@ conveniences and must never dilute the LM Studio experience.
 - [x] ✅ **Stats** — shipped (E14): `local-flow stats` reports words,
       words/min, cleanup delta, smart replacements, top apps, and a streak
       heatmap.
-- [ ] 🟡 **Latency breakdown** — per-stage timing (record → ASR → polish →
-      insert) surfaced after each dictation in verbose mode; doubles as a
-      benchmark harness.
+- [x] ✅ **Model benchmark timing** — `benchmark-models` freezes ASR, measures
+      ASR / first polish token / polish completion / capture-to-insertion,
+      scores accuracy and protected tokens, and gates recommendations on a
+      blind safety review. Per-dictation verbose timing remains optional.
 
 ## 9. Product surface
 
@@ -234,8 +235,11 @@ as a real desktop tool (not just a CLI) from early on.
       always-on-top markdown notepad (`local-flow pad --window`), plain
       files under the data dir, and a `scratchpad_hotkey` that routes live
       dictation into the active note.
-- [ ] 🟡 **Settings UI** — edit config/dictionary/snippets/styles visually
-      (local web page served on localhost, or native).
+- [x] ✅ **Settings UI** — native macOS `local-flow settings` control center
+      for clear ASR presets/custom models, rules-only polish, cleanup/style,
+      pill appearance, dictionary terms, and correction aliases. Config
+      provenance prevents environment overrides from producing fake saves;
+      TOML writes validate then replace atomically.
 - [ ] 🟡 **Packaged distribution** — signed .app / Homebrew formula /
       PyInstaller binaries; auto-start at login.
 
@@ -252,9 +256,9 @@ as a real desktop tool (not just a CLI) from early on.
       and fully offline model installation paths. *(Partly shipped: the
       README documents pointing `asr_model` at a local CTranslate2 model
       dir for offline installs; HF_TOKEN flows are undocumented.)*
-- [ ] 🟡 **Latency benchmark suite** — track per-stage regressions across
-      model/backend choices. *(Partly shipped: `benchmark-asr` compares ASR
-      backends; end-to-end pipeline stage timing remains open.)*
+- [x] ✅ **Latency benchmark suite** — `benchmark-asr` compares ASR backends;
+      `benchmark-models` adds frozen-input polisher comparison, streaming TTFT,
+      end-to-end timing, redacted aggregation, and blind safety adjudication.
 - [ ] 🟡 **Platform CI matrix** — macOS/Linux/Windows smoke tests for the
       import-level platform isolation guarantees. (No hosted CI is
       configured yet at all — the suite runs locally via `uv run pytest`.)
@@ -268,22 +272,17 @@ evidence or supported-platform demand justifies the added maintenance surface.
 
 - [ ] **whisper.cpp adapter** — portable CPU/quantized alternative for
       machines where CTranslate2 or MLX is a poor fit.
-- [ ] **Parakeet / NVIDIA NeMo adapter** — high-throughput local ASR for
-      supported NVIDIA GPU systems.
+- [x] **Parakeet v3 MLX adapter** — Apple-Silicon multilingual Parakeet loads
+      directly inside JiSpr through `parakeet-mlx`; v3 is the sole Parakeet target.
 - [ ] **Local translation dictation** — speak one language and insert another
       through a local Whisper translation task or LM Studio translation step.
 
 ## Suggested sequencing
 
-1. **Now** — chord hotkeys (the one remaining headline gap), LM Studio model
-   presets, clipboard
-   preservation around the dictation paste sink, CLI personalization
-   commands, Silero VAD, spoken punctuation for `cleanup_level = none`,
-   keyboard toggle mode.
-2. **Next** — settings UI, packaged distribution, Ollama docs, per-dictation
-   latency breakdown, import/export, dynamic snippet variables, audio cues,
-   floating recording pill, synthetic-speech e2e test.
-3. **Later** — macOS AX / Wayland / Windows UIA sinks and the
-   cursor/selection commands they unlock, wake word, spelling mode,
-   app-control commands, platform CI matrix, plugin system, and Future items
-   when their gates are met.
+1. **Now — macOS beta hardening** — clipboard preservation, private real-voice
+   Parakeet/Whisper and GGUF evaluation, synthetic-speech e2e coverage,
+   first-run model progress, import/export, then signed packaging/login launch.
+2. **Next — evidence-backed ergonomics** — chord hotkeys, spelling mode,
+   measured model preset labels, and optional audio cues.
+3. **Conditional** — non-macOS packaging/CI/sinks and other speculative
+   adapters only when a supported release target or user evidence requires them.

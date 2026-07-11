@@ -7,6 +7,7 @@ Subcommands:
 - ``polish``  one-shot: clean/polish a rough transcript from the CLI
 - ``transcribe`` transcribe audio file(s) through the local ASR (+ polish)
 - ``benchmark-asr`` repeatable local ASR latency/accuracy benchmark
+- ``benchmark-models`` frozen-ASR local polisher quality/latency benchmark
 - ``command`` one-shot command mode: transform text per an instruction
 - ``transform`` apply a named AI rewrite to ``--text`` or the current selection
 - ``check``   diagnose the environment (LM Studio, ASR, audio, clipboard)
@@ -16,6 +17,7 @@ Subcommands:
 - ``stats``   local-only personal insights: words, streaks, top apps
 - ``tray``    menu-bar app with live states + style/language quick-switch
 - ``setup``   interactive onboarding wizard that writes a validated config
+- ``settings`` native macOS Settings & Personalization control center
 """
 
 from __future__ import annotations
@@ -158,6 +160,19 @@ def _build_transcriber(config: Config):
         from local_flow.asr.mlx_whisper_asr import MlxWhisperTranscriber
 
         return MlxWhisperTranscriber(
+            model=config.asr_model,
+            language=config.asr_language,
+        )
+    if config.asr_backend == "mlx-parakeet":
+        if sys.platform != "darwin" or platform.machine() != "arm64":
+            raise ConfigError(
+                "The mlx-parakeet backend requires an Apple-Silicon Mac.",
+                hint="Use faster-whisper on this platform, or set "
+                "LOCAL_FLOW_ASR_BACKEND=faster-whisper.",
+            )
+        from local_flow.asr.mlx_parakeet_asr import MlxParakeetTranscriber
+
+        return MlxParakeetTranscriber(
             model=config.asr_model,
             language=config.asr_language,
         )
@@ -712,6 +727,129 @@ def _cmd_benchmark_asr(args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_benchmark_models(args: argparse.Namespace, config: Config) -> int:
+    """Freeze one ASR pass, then compare local LM Studio polishers."""
+    import json
+
+    from local_flow.atomicio import atomic_write_text
+    from local_flow.benchmark_models import (
+        apply_reviews,
+        benchmark_polishers,
+        freeze_asr,
+        load_benchmark_report,
+        load_corpus,
+        load_frozen,
+        write_jsonl,
+    )
+    from local_flow.llm.lmstudio import LMStudioClient
+
+    manifest = Path(args.manifest)
+    cases = load_corpus(manifest)
+    output_dir = Path(args.output).expanduser()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    frozen_path = output_dir / "frozen-asr.jsonl"
+
+    if args.reviews:
+        review_input = Path(args.reviews).expanduser()
+        source_report = (
+            Path(args.benchmark_report).expanduser()
+            if args.benchmark_report
+            else review_input.with_name("model-benchmark.json")
+        )
+        report = load_benchmark_report(source_report)
+        report_case_ids = {str(row.get("case_id")) for row in report["results"]}
+        if report_case_ids != {case.id for case in cases}:
+            raise LocalFlowError(
+                "Saved benchmark report case ids do not match the benchmark manifest."
+            )
+        if args.polisher and list(args.polisher) != report["models"]:
+            raise LocalFlowError(
+                "--polisher values must match the saved benchmark report when applying reviews."
+            )
+        try:
+            reviews = [
+                json.loads(line)
+                for line in review_input.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, ValueError) as exc:
+            raise LocalFlowError(f"Could not read completed reviews: {exc}") from exc
+        report = apply_reviews(report, reviews)
+        report_path = output_dir / "model-benchmark.json"
+        atomic_write_text(report_path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        print(f"Reviewed saved benchmark: {source_report}")
+        print(f"Model benchmark: {report_path}")
+        if report["recommendation"]:
+            print(f"Recommended polisher: {report['recommendation']}")
+        else:
+            print("No polisher passed the safety gates.")
+        return 0
+    if args.benchmark_report:
+        raise LocalFlowError("--benchmark-report requires --reviews.")
+
+    if args.frozen:
+        frozen = load_frozen(Path(args.frozen))
+        load_s = None
+    else:
+        benchmark_config = replace(
+            config,
+            asr_profile="custom",
+            asr_backend=args.asr_backend,
+            asr_model=args.asr_model,
+            asr_language=args.language,
+        )
+        store = PersonalizationStore(config.data_dir)
+
+        def build():
+            transcriber = _build_transcriber(benchmark_config)
+            transcriber.set_vocabulary_provider(store.dictionary_terms)
+            return transcriber
+
+        load_s, frozen = freeze_asr(cases, build)
+        write_jsonl(frozen_path, frozen)
+        print(f"Frozen ASR: {frozen_path} ({len(frozen)} cases, load {load_s:.3f}s)")
+
+    if args.freeze_only:
+        if args.frozen:
+            write_jsonl(frozen_path, frozen)
+            print(f"Copied frozen ASR: {frozen_path}")
+        return 0
+    if not args.polisher:
+        raise LocalFlowError(
+            "benchmark-models needs at least one --polisher unless --freeze-only is used."
+        )
+
+    store = PersonalizationStore(config.data_dir)
+
+    def client_factory(model: str):
+        return LMStudioClient(
+            base_url=config.lmstudio_base_url,
+            model=model,
+            timeout=config.lmstudio_timeout,
+        )
+
+    report = benchmark_polishers(
+        cases,
+        frozen,
+        args.polisher,
+        client_factory,
+        store,
+        cleanup_level=config.cleanup_level,
+        style=config.style,
+        system_prompt=config.lmstudio_system_prompt,
+        runs=args.runs,
+    )
+    review_path = output_dir / "blind-review.jsonl"
+    write_jsonl(review_path, report["blind_reviews"])
+
+    report_path = output_dir / "model-benchmark.json"
+    atomic_write_text(report_path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    print(f"Model benchmark: {report_path}")
+    print(f"Blind review sheet: {review_path}")
+    print("Recommendation pending completed blind review.")
+    return 0
+
+
 def _describe_input_devices(
     devices: list[dict], default_index: int | None, chosen_index: int | None
 ) -> list[str]:
@@ -790,6 +928,7 @@ def _cmd_check(_args: argparse.Namespace, config: Config) -> int:
     for label, module, extra in (
         ("faster-whisper", "faster_whisper", "asr"),
         ("mlx-whisper", "mlx_whisper", "mlx-asr"),
+        ("mlx-parakeet", "parakeet_mlx", "parakeet-asr"),
         ("sounddevice", "sounddevice", "audio"),
         ("webrtcvad", "webrtcvad", "audio"),
         ("pynput", "pynput", "desktop"),
@@ -2309,6 +2448,23 @@ def _cmd_tray(_args: argparse.Namespace, config: Config) -> int:
     return 0
 
 
+def _cmd_settings(_args: argparse.Namespace, _config: Config) -> int:
+    if sys.platform != "darwin":
+        raise ConfigError(
+            "The native Settings window is currently available only on macOS.",
+            hint="Edit local-flow.toml directly on this platform.",
+        )
+    try:
+        from local_flow.settings.macos import run_settings
+    except ImportError as exc:
+        raise LocalFlowError(
+            "The native Settings dependencies are not installed.",
+            hint="Install desktop support with `uv sync --extra desktop`.",
+        ) from exc
+    run_settings()
+    return 0
+
+
 def _cmd_setup(_args: argparse.Namespace, config: Config) -> int:
     from local_flow.setup_wizard import run_wizard
 
@@ -2415,6 +2571,52 @@ def main(argv: list[str] | None = None) -> int:
         help="also write the full machine-readable report to FILE",
     )
 
+    model_benchmark_p = sub.add_parser(
+        "benchmark-models",
+        help="freeze ASR once, then compare local LM Studio polishers fairly",
+    )
+    model_benchmark_p.add_argument("manifest", help="private benchmark corpus JSONL")
+    model_benchmark_p.add_argument(
+        "--output", required=True, metavar="DIR", help="private result directory"
+    )
+    model_benchmark_p.add_argument(
+        "--frozen", metavar="JSONL", help="reuse an existing frozen ASR result"
+    )
+    model_benchmark_p.add_argument(
+        "--freeze-only", action="store_true", help="transcribe once and stop before polishing"
+    )
+    model_benchmark_p.add_argument(
+        "--asr-backend",
+        choices=VALID_ASR_BACKENDS,
+        default="mlx-parakeet",
+        help="ASR used for the frozen transcript (default: mlx-parakeet)",
+    )
+    model_benchmark_p.add_argument(
+        "--asr-model",
+        default="mlx-community/parakeet-tdt-0.6b-v3",
+        help="ASR model used for the frozen transcript",
+    )
+    model_benchmark_p.add_argument(
+        "--language", default="auto", help="ASR language (default: auto)"
+    )
+    model_benchmark_p.add_argument(
+        "--polisher",
+        action="append",
+        metavar="MODEL_ID",
+        help="LM Studio model id; repeat to compare models",
+    )
+    model_benchmark_p.add_argument(
+        "--runs", type=int, default=1, help="streamed polish runs per case (default: 1)"
+    )
+    model_benchmark_p.add_argument(
+        "--reviews", metavar="JSONL", help="completed blind review sheet"
+    )
+    model_benchmark_p.add_argument(
+        "--benchmark-report",
+        metavar="JSON",
+        help="saved model-benchmark.json to evaluate with --reviews",
+    )
+
     command_p = sub.add_parser("command", help="transform text with an instruction (command mode)")
     command_p.add_argument("instruction", help="what to do, e.g. 'make this more formal'")
     command_p.add_argument("--text", required=True, help="the target text to transform")
@@ -2452,6 +2654,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser(
         "setup", help="interactive onboarding wizard that writes a validated config"
+    )
+
+    sub.add_parser(
+        "settings",
+        help="open the native macOS Settings & Personalization window",
     )
 
     history_p = sub.add_parser("history", help="list/search/clear the local dictation history")
@@ -2585,6 +2792,7 @@ def main(argv: list[str] | None = None) -> int:
         "polish": _cmd_polish,
         "transcribe": _cmd_transcribe,
         "benchmark-asr": _cmd_benchmark_asr,
+        "benchmark-models": _cmd_benchmark_models,
         "command": _cmd_command,
         "transform": _cmd_transform,
         "check": _cmd_check,
@@ -2594,6 +2802,7 @@ def main(argv: list[str] | None = None) -> int:
         "stats": _cmd_stats,
         "tray": _cmd_tray,
         "setup": _cmd_setup,
+        "settings": _cmd_settings,
     }
     try:
         return handlers[args.command](args, config)

@@ -1,0 +1,2 @@
+{"id":"general-01","audio":"audio/general-01.wav","language":"en","verbatim":"um JiSpr Flow ships locally","intended":"JiSpr Flow ships locally.","category":"general","proper_names":["JiSpr Flow"],"protected_tokens":[],"fillers":["um"]}
+{"id":"protected-01","audio":"audio/protected-01.wav","language":"en","verbatim":"deploy version 3.14 to example dot com","intended":"Deploy version 3.14 to example.com.","category":"protected","proper_names":[],"protected_tokens":["3.14","example.com"],"fillers":[]}

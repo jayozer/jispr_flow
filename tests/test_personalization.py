@@ -481,3 +481,52 @@ class TestWriteCrashSafety:
         assert store.styles() == DEFAULT_STYLES
         name, _rules = store.style_rules()
         assert name == "default"
+
+
+class TestSettingsCrud:
+    def test_dictionary_update_preserves_metadata_and_unknown_fields(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        (tmp_path / "dictionary.json").write_text(
+            json.dumps(
+                {
+                    "terms": [
+                        {
+                            "term": "jispr flow",
+                            "uses": 7,
+                            "starred": False,
+                            "private_note": "keep me",
+                        }
+                    ]
+                }
+            )
+        )
+
+        assert store.update_dictionary_term("jispr flow", "JiSpr Flow", starred=True)
+
+        assert store.dictionary_entries() == [
+            {
+                "term": "JiSpr Flow",
+                "uses": 7,
+                "starred": True,
+                "private_note": "keep me",
+            }
+        ]
+        assert store.remove_dictionary_term("JISPR FLOW")
+        assert store.dictionary_entries() == []
+
+    def test_dictionary_update_rejects_duplicate_target(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        store.add_dictionary_term("First")
+        store.add_dictionary_term("Second")
+
+        assert not store.update_dictionary_term("First", "second")
+        assert store.dictionary_terms() == ["First", "Second"]
+
+    def test_alias_update_and_remove_are_atomic_store_operations(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        store.set_snippet("juice flow", "JiSpr Flow")
+
+        assert store.update_snippet("juice flow", "jisper flow", "JiSpr Flow")
+        assert store.snippets() == {"jisper flow": "JiSpr Flow"}
+        assert store.remove_snippet("jisper flow")
+        assert store.snippets() == {}

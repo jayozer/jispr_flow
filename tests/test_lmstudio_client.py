@@ -1,5 +1,7 @@
 """LM Studio client behaviour, exercised through httpx.MockTransport."""
 
+import json
+
 import httpx
 import pytest
 
@@ -56,6 +58,44 @@ class TestChatSuccess:
         client = make_client(handler, model="")
         assert client.chat([{"role": "user", "content": "x"}]) == "ok"
         assert client.model == "qwen2.5-7b"
+
+
+class TestStreaming:
+    def test_collects_sse_text_and_timings(self):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.update(json.loads(request.content))
+            body = (
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n\n'
+                "data: [DONE]\n\n"
+            )
+            return httpx.Response(200, text=body)
+
+        times = iter([10.0, 10.25, 10.75])
+        result = make_client(handler).chat_stream(
+            [{"role": "user", "content": "hi"}], clock=lambda: next(times)
+        )
+
+        assert result.text == "Hello world"
+        assert result.first_token_s == 0.25
+        assert result.total_s == 0.75
+        assert seen["stream"] is True
+
+    def test_malformed_stream_is_actionable(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="data: {not json}\n\n")
+
+        with pytest.raises(LMStudioResponseError, match="malformed"):
+            make_client(handler).chat_stream([{"role": "user", "content": "x"}])
+
+    def test_empty_stream_is_rejected(self):
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text="data: [DONE]\n\n")
+
+        with pytest.raises(LMStudioResponseError, match="no text tokens"):
+            make_client(handler).chat_stream([{"role": "user", "content": "x"}])
 
 
 class TestErrorHandling:

@@ -19,9 +19,10 @@ AudioSource ──► VAD ──► Transcriber ──► rule cleanup ──►
    `segment_stream` groups frames into utterances. Real: `EnergyVAD`
    (dependency-free RMS threshold) or `WebRtcVAD`. Test: `MockVAD`.
 3. **Transcriber** (`local_flow/asr/`) turns PCM into rough text. Real:
-   `FasterWhisperTranscriber` (local Whisper via CTranslate2). Test:
-   `MockTranscriber`. LM Studio is deliberately *not* an ASR option — its
-   OpenAI-compatible server does chat completions, not streaming speech.
+   `FasterWhisperTranscriber`, `MlxWhisperTranscriber`, or Apple-Silicon
+   `MlxParakeetTranscriber` (multilingual Parakeet v3 loaded directly through
+   `parakeet-mlx`). Test: `MockTranscriber`. LM Studio is deliberately *not*
+   an ASR option — it is only the local GGUF runtime for text polishing.
 4. **Rule cleanup** (`local_flow/polish/rules.py`) is deterministic, pure
    Python: filler removal, backtracking ("scratch that"), whitespace repair.
    It runs before the LLM so dictation still works when LM Studio is down.
@@ -67,8 +68,9 @@ the VAD's utterance segmentation.
 
 ## Data & privacy
 
-Settings come from env vars / TOML (`local_flow/config.py`); personalization
-is three hand-editable JSON files (dictionary, snippets, styles) in
+Settings come from env vars / TOML (`local_flow/config.py`); the native macOS
+control center writes validated TOML through a provenance-aware pure service.
+Personalization is stored in hand-editable JSON files in
 `LOCAL_FLOW_DATA_DIR`. Nothing is sent anywhere except the configured
 LM Studio server, which must not be a known cloud AI endpoint — the client
 refuses those at construction time.

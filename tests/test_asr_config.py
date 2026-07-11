@@ -82,6 +82,21 @@ class TestLanguageModelValidation:
         with pytest.raises(ConfigError, match="Apple-Silicon"):
             _build_transcriber(config)
 
+    def test_parakeet_backend_rejects_non_apple_silicon_before_optional_import(
+        self, monkeypatch
+    ):
+        config = load_config(
+            env={
+                "LOCAL_FLOW_ASR_BACKEND": "mlx-parakeet",
+                "LOCAL_FLOW_ASR_MODEL": "mlx-community/parakeet-tdt-0.6b-v3",
+                "LOCAL_FLOW_ASR_LANGUAGE": "auto",
+            }
+        )
+        monkeypatch.setattr(app_module.sys, "platform", "linux")
+
+        with pytest.raises(ConfigError, match="Apple-Silicon"):
+            _build_transcriber(config)
+
 
 class TestMockTranscriberLanguageKwarg:
     def test_accepts_and_ignores_language_kwarg(self):
