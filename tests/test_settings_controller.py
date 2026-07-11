@@ -52,6 +52,8 @@ def test_controller_load_save_and_personalization_crud(tmp_path):
 
     updated = controller.save({"cleanup_level": "light"})
     assert updated.snapshot.config.cleanup_level == "light"
+    updated = controller.save({"asr_language": "it"})
+    assert updated.snapshot.config.asr_language == "it"
 
     assert controller.add_dictionary("JiSpr Flow")
     assert controller.update_dictionary("JiSpr Flow", "JiSpr", starred=True)

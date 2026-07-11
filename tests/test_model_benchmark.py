@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import local_flow.app as app_module
+import local_flow.benchmark_models as benchmark_module
 from local_flow.app import main
 from local_flow.asr.mock import MockTranscriber
 from local_flow.benchmark_models import (
@@ -174,6 +175,124 @@ def test_completed_reviews_apply_safety_gate_and_choose_fastest_eligible(tmp_pat
 
     assert reviewed["unsafe_models"] == ["fast"]
     assert reviewed["recommendation"] == "slow"
+
+
+def test_blind_reviews_are_bound_to_exact_generated_output(tmp_path):
+    class ChangedOutputClient(FakeStreamingClient):
+        def chat_stream(self, messages):
+            result = super().chat_stream(messages)
+            return StreamResult(
+                text="JiSpr Flow ships tomorrow.",
+                first_token_s=result.first_token_s,
+                total_s=result.total_s,
+            )
+
+    wav = tmp_path / "sample.wav"
+    _write_wav(wav)
+    case = _case(wav)
+    frozen = [
+        FrozenTranscript(case.id, case.audio, "en", case.verbatim, 0.2, 1.0, 0.0)
+    ]
+    kwargs = {
+        "store": PersonalizationStore(tmp_path / "data"),
+        "cleanup_level": "medium",
+        "style": "default",
+        "system_prompt": "",
+    }
+    reviewed_report = benchmark_polishers(
+        [case], frozen, ["fast"], lambda model: FakeStreamingClient(model, []), **kwargs
+    )
+    changed_report = benchmark_polishers(
+        [case], frozen, ["fast"], lambda model: ChangedOutputClient(model, []), **kwargs
+    )
+    reviews = [
+        {**item, "material_meaning_change": False, "hallucination": False}
+        for item in reviewed_report["blind_reviews"]
+    ]
+
+    with pytest.raises(LocalFlowError, match="ids must exactly match"):
+        apply_reviews(changed_report, reviews)
+
+
+def test_cli_applies_reviews_to_saved_outputs_without_asr_or_lmstudio(
+    tmp_path, monkeypatch, capsys
+):
+    wav = tmp_path / "sample.wav"
+    _write_wav(wav)
+    case = _case(wav)
+    manifest = tmp_path / "corpus.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "id": case.id,
+                "audio": case.audio,
+                "language": case.language,
+                "verbatim": case.verbatim,
+                "intended": case.intended,
+                "category": case.category,
+                "proper_names": case.proper_names,
+                "protected_tokens": case.protected_tokens,
+                "fillers": case.fillers,
+            }
+        )
+        + "\n"
+    )
+    frozen = [
+        FrozenTranscript(case.id, case.audio, "en", case.verbatim, 0.2, 1.0, 0.0)
+    ]
+    report = benchmark_polishers(
+        [case],
+        frozen,
+        ["fast"],
+        lambda model: FakeStreamingClient(model, []),
+        PersonalizationStore(tmp_path / "data"),
+        cleanup_level="medium",
+        style="default",
+        system_prompt="",
+    )
+    source = tmp_path / "source"
+    source.mkdir()
+    report_path = source / "model-benchmark.json"
+    report_path.write_text(json.dumps(report))
+    reviews_path = source / "blind-review.jsonl"
+    reviews_path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    **item,
+                    "material_meaning_change": False,
+                    "hallucination": False,
+                }
+            )
+            + "\n"
+            for item in report["blind_reviews"]
+        )
+    )
+
+    def unexpected_call(*_args, **_kwargs):
+        raise AssertionError("review application must not rerun ASR or LM Studio")
+
+    monkeypatch.setattr(app_module, "_build_transcriber", unexpected_call)
+    monkeypatch.setattr(benchmark_module, "benchmark_polishers", unexpected_call)
+    output = tmp_path / "reviewed"
+
+    code = main(
+        [
+            "benchmark-models",
+            str(manifest),
+            "--output",
+            str(output),
+            "--benchmark-report",
+            str(report_path),
+            "--reviews",
+            str(reviews_path),
+        ]
+    )
+
+    assert code == 0
+    reviewed = json.loads((output / "model-benchmark.json").read_text())
+    assert reviewed["recommendation"] == "fast"
+    assert "Reviewed saved benchmark" in capsys.readouterr().out
 
 
 def test_metric_helpers_cover_empty_and_partial_cases():

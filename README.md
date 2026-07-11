@@ -140,9 +140,11 @@ uv run local-flow benchmark-models benchmarks/private/corpus.jsonl \
   --polisher Qwen3.5-9B-Q4_K_M.gguf
 ```
 
-Complete the generated blind review sheet before applying `--reviews`; JiSpr
-never emits a recommendation before every output has a safety decision. To
-compare Whisper Turbo with the winner, rerun the same manifest with
+Complete the generated blind review sheet before applying `--reviews` together
+with the saved `--benchmark-report`; JiSpr evaluates those exact saved outputs
+without calling ASR or LM Studio again. It never emits a recommendation before
+every output has a safety decision. To compare Whisper Turbo with the winner,
+rerun the same manifest with
 `--asr-backend mlx-whisper --asr-model mlx-community/whisper-large-v3-turbo`.
 See [the benchmark guide](benchmarks/README.md) for the full procedure.
 

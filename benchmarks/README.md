@@ -32,16 +32,13 @@ uv run local-flow benchmark-models benchmarks/private/corpus.jsonl \
 The command writes `frozen-asr.jsonl`, `model-benchmark.json`, and a blinded
 `blind-review.jsonl`. Inspect every blind output and set
 `material_meaning_change` and `hallucination` to `false` or `true`; leaving
-either null makes that model ineligible. Apply the completed review without
-retranscribing:
+either null makes that model ineligible. Apply the completed review to the
+saved report without retranscribing or re-polishing:
 
 ```bash
 uv run local-flow benchmark-models benchmarks/private/corpus.jsonl \
   --output benchmarks/private/parakeet-reviewed \
-  --frozen benchmarks/private/parakeet-v3/frozen-asr.jsonl \
-  --polisher gemma-4-26B-A4B-it-UD-Q4_K_M.gguf \
-  --polisher Qwen3.5-35B-A3B-Q4_K_M.gguf \
-  --polisher Qwen3.5-9B-Q4_K_M.gguf \
+  --benchmark-report benchmarks/private/parakeet-v3/model-benchmark.json \
   --reviews benchmarks/private/parakeet-v3/blind-review.jsonl
 ```
 

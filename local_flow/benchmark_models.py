@@ -194,8 +194,10 @@ def _finalize(text: str, store: PersonalizationStore, *, cleanup_level: str) -> 
     return text
 
 
-def _blind_id(model: str, case_id: str) -> str:
-    return hashlib.sha256(f"{model}\0{case_id}".encode()).hexdigest()[:12]
+def _blind_id(model: str, case_id: str, raw: str, final: str) -> str:
+    """Bind a blind review id to the exact input and output being reviewed."""
+    payload = f"{model}\0{case_id}\0{raw}\0{final}"
+    return hashlib.sha256(payload.encode()).hexdigest()[:12]
 
 
 def benchmark_polishers(
@@ -245,7 +247,7 @@ def benchmark_polishers(
                 protected_corruption = any(
                     token in row.raw and token not in final for token in case.protected_tokens
                 )
-                blind_id = _blind_id(model, case.id)
+                blind_id = _blind_id(model, case.id, row.raw, final)
                 results.append(
                     {
                         "model": model,
@@ -321,7 +323,7 @@ def benchmark_polishers(
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "models": list(models),
         "runs": runs,
         "results": results,
@@ -330,6 +332,26 @@ def benchmark_polishers(
         "recommendation": None,
         "review_status": "pending",
     }
+
+
+def load_benchmark_report(path: Path) -> dict:
+    """Load the saved outputs that a completed blind-review sheet describes."""
+    try:
+        report = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise LocalFlowError(f"Could not read benchmark report {path}: {exc}") from exc
+    required = {"models", "results", "aggregates", "blind_reviews"}
+    if not isinstance(report, dict) or not required.issubset(report):
+        raise LocalFlowError(f"Invalid benchmark report: {path}")
+    if not all(isinstance(report[field], list) for field in required):
+        raise LocalFlowError(f"Invalid benchmark report collections: {path}")
+    if report.get("schema_version") != 2:
+        raise LocalFlowError(
+            "Benchmark report does not bind reviews to exact outputs; rerun the benchmark."
+        )
+    if not all(isinstance(row, dict) for row in report["results"]):
+        raise LocalFlowError(f"Invalid benchmark result rows: {path}")
+    return report
 
 
 def apply_reviews(report: dict, reviews: Sequence[dict]) -> dict:

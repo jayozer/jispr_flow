@@ -50,6 +50,12 @@ def _popup(items: list[str], frame):
     return popup
 
 
+def _combo(items: list[str], frame):
+    combo = NSComboBox.alloc().initWithFrame_(frame)
+    combo.addItemsWithObjectValues_(items)
+    return combo
+
+
 def _button(title: str, frame, target, action: str):
     button = NSButton.alloc().initWithFrame_(frame)
     button.setTitle_(title)
@@ -132,7 +138,7 @@ class SettingsWindowController(NSObject):
             y,
             "Language",
             "asr_language",
-            _popup(["auto", "en", "es", "fr", "de"], NSMakeRect(180, y, 505, 28)),
+            _combo(["auto", "en", "es", "fr", "de"], NSMakeRect(180, y, 505, 26)),
         )
         y -= 34
         self._row(
@@ -254,7 +260,7 @@ class SettingsWindowController(NSObject):
         self.preset.setEnabled_(not preset_locked)
         self._select(self.controls["asr_backend"], config.asr_backend)
         self.controls["asr_model"].setStringValue_(config.asr_model)
-        self._select(self.controls["asr_language"], config.asr_language)
+        self.controls["asr_language"].setStringValue_(config.asr_language)
         self._select(self.controls["asr_device"], config.asr_device)
         self._select(self.controls["asr_compute_type"], config.asr_compute_type)
         self._select(self.controls["polish_backend"], config.polish_backend)
@@ -322,7 +328,7 @@ class SettingsWindowController(NSObject):
             "asr_profile": profile,
             "asr_backend": backend,
             "asr_model": model,
-            "asr_language": self.controls["asr_language"].titleOfSelectedItem(),
+            "asr_language": self.controls["asr_language"].stringValue(),
             "asr_device": self.controls["asr_device"].titleOfSelectedItem(),
             "asr_compute_type": self.controls["asr_compute_type"].titleOfSelectedItem(),
             "polish_backend": self.controls["polish_backend"].titleOfSelectedItem(),

@@ -736,6 +736,7 @@ def _cmd_benchmark_models(args: argparse.Namespace, config: Config) -> int:
         apply_reviews,
         benchmark_polishers,
         freeze_asr,
+        load_benchmark_report,
         load_corpus,
         load_frozen,
         write_jsonl,
@@ -747,6 +748,44 @@ def _cmd_benchmark_models(args: argparse.Namespace, config: Config) -> int:
     output_dir = Path(args.output).expanduser()
     output_dir.mkdir(parents=True, exist_ok=True)
     frozen_path = output_dir / "frozen-asr.jsonl"
+
+    if args.reviews:
+        review_input = Path(args.reviews).expanduser()
+        source_report = (
+            Path(args.benchmark_report).expanduser()
+            if args.benchmark_report
+            else review_input.with_name("model-benchmark.json")
+        )
+        report = load_benchmark_report(source_report)
+        report_case_ids = {str(row.get("case_id")) for row in report["results"]}
+        if report_case_ids != {case.id for case in cases}:
+            raise LocalFlowError(
+                "Saved benchmark report case ids do not match the benchmark manifest."
+            )
+        if args.polisher and list(args.polisher) != report["models"]:
+            raise LocalFlowError(
+                "--polisher values must match the saved benchmark report when applying reviews."
+            )
+        try:
+            reviews = [
+                json.loads(line)
+                for line in review_input.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except (OSError, ValueError) as exc:
+            raise LocalFlowError(f"Could not read completed reviews: {exc}") from exc
+        report = apply_reviews(report, reviews)
+        report_path = output_dir / "model-benchmark.json"
+        atomic_write_text(report_path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        print(f"Reviewed saved benchmark: {source_report}")
+        print(f"Model benchmark: {report_path}")
+        if report["recommendation"]:
+            print(f"Recommended polisher: {report['recommendation']}")
+        else:
+            print("No polisher passed the safety gates.")
+        return 0
+    if args.benchmark_report:
+        raise LocalFlowError("--benchmark-report requires --reviews.")
 
     if args.frozen:
         frozen = load_frozen(Path(args.frozen))
@@ -801,29 +840,13 @@ def _cmd_benchmark_models(args: argparse.Namespace, config: Config) -> int:
         runs=args.runs,
     )
     review_path = output_dir / "blind-review.jsonl"
-    if args.reviews:
-        try:
-            reviews = [
-                json.loads(line)
-                for line in Path(args.reviews).read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-        except (OSError, ValueError) as exc:
-            raise LocalFlowError(f"Could not read completed reviews: {exc}") from exc
-        report = apply_reviews(report, reviews)
-    else:
-        write_jsonl(review_path, report["blind_reviews"])
+    write_jsonl(review_path, report["blind_reviews"])
 
     report_path = output_dir / "model-benchmark.json"
     atomic_write_text(report_path, json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     print(f"Model benchmark: {report_path}")
-    if not args.reviews:
-        print(f"Blind review sheet: {review_path}")
-        print("Recommendation pending completed blind review.")
-    elif report["recommendation"]:
-        print(f"Recommended polisher: {report['recommendation']}")
-    else:
-        print("No polisher passed the safety gates.")
+    print(f"Blind review sheet: {review_path}")
+    print("Recommendation pending completed blind review.")
     return 0
 
 
@@ -2587,6 +2610,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     model_benchmark_p.add_argument(
         "--reviews", metavar="JSONL", help="completed blind review sheet"
+    )
+    model_benchmark_p.add_argument(
+        "--benchmark-report",
+        metavar="JSON",
+        help="saved model-benchmark.json to evaluate with --reviews",
     )
 
     command_p = sub.add_parser("command", help="transform text with an instruction (command mode)")
