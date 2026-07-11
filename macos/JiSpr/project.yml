@@ -1,0 +1,79 @@
+name: JiSpr
+options:
+  bundleIdPrefix: com.acrobat
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    ENABLE_APP_SANDBOX: NO
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    CURRENT_PROJECT_VERSION: 3
+    MARKETING_VERSION: 0.1.2
+  configs:
+    Debug:
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+      JISPR_ENGINE_PATH: "$(PROJECT_DIR)/../../.venv/bin/local-flow"
+      JISPR_WORKING_DIRECTORY: "$(PROJECT_DIR)/../.."
+    Release:
+      ARCHS: arm64
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+      ENABLE_HARDENED_RUNTIME: YES
+      JISPR_ENGINE_PATH: ""
+      JISPR_WORKING_DIRECTORY: ""
+targets:
+  JiSpr:
+    type: application
+    platform: macOS
+    sources:
+      - path: JiSpr
+    info:
+      path: JiSpr/Info.plist
+      properties:
+        CFBundleDisplayName: JiSpr
+        CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSMinimumSystemVersion: "$(MACOSX_DEPLOYMENT_TARGET)"
+        LSUIElement: true
+        LSApplicationCategoryType: public.app-category.productivity
+        NSHumanReadableCopyright: "Copyright © 2026 JiSpr. All rights reserved."
+        NSHighResolutionCapable: true
+        NSMicrophoneUsageDescription: "JiSpr uses your microphone for private, on-device dictation."
+        NSInputMonitoringUsageDescription: "JiSpr observes your chosen global hotkey for private, on-device dictation."
+        NSPrincipalClass: NSApplication
+        JiSprEnginePath: "$(JISPR_ENGINE_PATH)"
+        JiSprWorkingDirectory: "$(JISPR_WORKING_DIRECTORY)"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.acrobat.jispr
+        PRODUCT_NAME: JiSpr
+  JiSprTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: JiSprTests
+    dependencies:
+      - target: JiSpr
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.acrobat.jispr.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/JiSpr.app/Contents/MacOS/JiSpr"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  JiSpr:
+    build:
+      targets:
+        JiSpr: all
+        JiSprTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - JiSprTests

@@ -240,8 +240,21 @@ as a real desktop tool (not just a CLI) from early on.
       pill appearance, dictionary terms, and correction aliases. Config
       provenance prevents environment overrides from producing fake saves;
       TOML writes validate then replace atomically.
-- [ ] 🟡 **Packaged distribution** — signed .app / Homebrew formula /
-      PyInstaller binaries; auto-start at login.
+- [ ] 🟡 **Packaged distribution** — the local SwiftUI menu-bar beta now owns
+      Settings, live status, and Launch at Login through a versioned JSONL
+      bridge. The Apple-Silicon Release build now embeds its Python engine,
+      carries a real app icon, signs nested native code inside-out, and creates
+      a compressed DMG. The original 0.1.0 submission
+      (`17c2cdbd-0c29-4d99-a2b7-06ca738e4579`) was superseded after clean-Mac
+      testing exposed an LLVM JIT entitlement crash. The corrected 0.1.1 build
+      scopes the required entitlement to embedded Python, passes a signed JIT
+      smoke test, and remains in progress at Apple under submission
+      `9d1d0c75-7eca-4a49-8249-9f512ca0741a`. Local 0.1.2 additionally fixes
+      Homebrew/FFmpeg discovery from a menu-bar launch and has passed live
+      Accessibility/Input Monitoring recovery with the embedded engine Ready.
+      The 0.1.1 submission is therefore superseded; submit, staple, and validate
+      the 0.1.2 replacement DMG before external testing.
+      Remaining after that: clean-Mac QA and optional Homebrew delivery.
 
 ## 10. Engineering & quality
 

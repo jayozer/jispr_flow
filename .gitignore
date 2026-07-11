@@ -17,6 +17,8 @@ benchmarks/private/
 
 # Tooling artifacts
 .understand-anything/
+xcuserdata/
+*.xcuserstate
 
 # OS
 .DS_Store

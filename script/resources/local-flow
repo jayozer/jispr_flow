@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+
+ENGINE_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export PYTHONHOME="$ENGINE_DIR/python"
+export PYTHONNOUSERSITE=1
+export PYTHONDONTWRITEBYTECODE=1
+
+exec "$PYTHONHOME/bin/python3" -m local_flow.app "$@"

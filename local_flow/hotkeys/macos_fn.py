@@ -119,8 +119,8 @@ class QuartzFnListener(HotkeyListener):
             raise HotkeyBackendMissingError(
                 "Could not create the macOS event tap for the Fn key.",
                 hint="Grant Accessibility AND Input Monitoring permission to "
-                "your terminal in System Settings > Privacy & Security, then "
-                "restart the terminal.",
+                "JiSpr (or the terminal running local-flow) in System Settings "
+                "> Privacy & Security, then restart JiSpr or the terminal.",
             )
         tap_holder.append(tap)
         source = q.CFMachPortCreateRunLoopSource(None, tap, 0)

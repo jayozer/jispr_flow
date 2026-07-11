@@ -8,7 +8,7 @@ import pytest
 
 from local_flow.config import load_config_snapshot
 from local_flow.errors import ConfigError
-from local_flow.settings.service import SettingsService
+from local_flow.settings.service import SettingsService, is_settings_editable
 
 
 def test_snapshot_reports_toml_environment_and_profile_sources(tmp_path):
@@ -71,6 +71,24 @@ def test_environment_owned_field_cannot_pretend_to_save(tmp_path):
     assert tomllib.loads(path.read_text())["pill_style"] == "compact"
 
 
+def test_dotenv_owned_field_is_locked_until_migrated(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "# JiSpr local settings\n"
+        "LOCAL_FLOW_PILL_STYLE=expanded  # current style\n"
+        "UNRELATED_VALUE=keep-me\n"
+    )
+    service = SettingsService(default_path=tmp_path / "config.toml")
+
+    before = service.load()
+    assert before.sources["pill_style"] == "dotenv"
+    assert not is_settings_editable(before.sources["pill_style"])
+    with pytest.raises(ConfigError, match="overridden by dotenv"):
+        service.save({"pill_style": "compact"})
+    assert "LOCAL_FLOW_PILL_STYLE=expanded" in dotenv.read_text()
+
+
 def test_default_target_is_created_and_reloaded(tmp_path):
     path = tmp_path / "user" / "config.toml"
     service = SettingsService(env={}, default_path=path)
@@ -85,4 +103,4 @@ def test_service_rejects_non_ui_field(tmp_path):
     service = SettingsService(env={}, default_path=tmp_path / "config.toml")
 
     with pytest.raises(ConfigError, match="unsupported"):
-        service.save({"history_max_entries": 1})
+        service.save({"data_dir": tmp_path / "other"})

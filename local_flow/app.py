@@ -17,6 +17,7 @@ Subcommands:
 - ``stats``   local-only personal insights: words, streaks, top apps
 - ``tray``    menu-bar app with live states + style/language quick-switch
 - ``setup``   interactive onboarding wizard that writes a validated config
+- ``migrate-config`` move legacy LOCAL_FLOW_* dotenv settings into TOML
 - ``settings`` native macOS Settings & Personalization control center
 """
 
@@ -1812,6 +1813,8 @@ def _run_loop(
     reporter: StatusReporter,
     stop_event: threading.Event | None = None,
     dependencies: RunDependencies | None = None,
+    *,
+    quiet: bool = False,
 ) -> int:
     from local_flow.audio.vad import segment_stream
 
@@ -1840,7 +1843,8 @@ def _run_loop(
 
     try:
         if mode == "hands-free":
-            print("hands-free dictation: speak; pause to insert. Ctrl+C to quit.")
+            if not quiet:
+                print("hands-free dictation: speak; pause to insert. Ctrl+C to quit.")
             reporter.notify("recording")
             # "sentence" streaming shortens the pause threshold that closes an
             # utterance so each sentence inserts while the next is still being
@@ -1907,7 +1911,8 @@ def _run_loop(
                 # Streaming (sentence-chunked insertion / live preview) only
                 # applies to hands-free mode; push-to-talk behaves exactly
                 # like `streaming=off` otherwise.
-                print("streaming requires hands-free mode; ignoring")
+                if not quiet:
+                    print("streaming requires hands-free mode; ignoring")
 
             from local_flow.hotkeys.base import (
                 CallbackDispatcher,
@@ -1930,10 +1935,11 @@ def _run_loop(
             hint = "hold Space (a quick tap still types a space)" if (
                 config.hotkey.lower() == "space"
             ) else f"hold {config.hotkey!r}"
-            print(
-                f"push-to-talk: {hint} to dictate; "
-                f"press {config.cancel_hotkey!r} to discard. Ctrl+C to quit."
-            )
+            if not quiet:
+                print(
+                    f"push-to-talk: {hint} to dictate; "
+                    f"press {config.cancel_hotkey!r} to discard. Ctrl+C to quit."
+                )
             if mouse_listener is not None:
                 if config.mouse_button:
                     # Mouse push-to-talk runs alongside (not instead of) the
@@ -1942,17 +1948,19 @@ def _run_loop(
                     # no cancel gesture of its own: `esc` (or
                     # config.cancel_hotkey) via the keyboard listener above
                     # still discards a mouse-started recording.
-                    print(
-                        f"mouse push-to-talk also active: {config.mouse_mode} "
-                        f"{config.mouse_button!r}"
-                    )
+                    if not quiet:
+                        print(
+                            f"mouse push-to-talk also active: {config.mouse_mode} "
+                            f"{config.mouse_button!r}"
+                        )
                 else:
                     # Enter-only config (`mouse_button` unset, only
                     # `mouse_enter_button` set): no mouse push-to-talk at all.
-                    print(
-                        f"mouse enter-key button active: "
-                        f"{config.mouse_enter_button!r} (no mouse push-to-talk)"
-                    )
+                    if not quiet:
+                        print(
+                            f"mouse enter-key button active: "
+                            f"{config.mouse_enter_button!r} (no mouse push-to-talk)"
+                        )
             recorder: dict[str, _Recording | None] = {"current": None}
             # Which `_Recording` currently owns the microphone -- shared with
             # the command-hotkey recorder below (if configured): both
@@ -2063,7 +2071,8 @@ def _run_loop(
                         )
                     else:
                         mic_owner[0] = None
-                print("dictation discarded")
+                if not quiet:
+                    print("dictation discarded")
                 # Silent on the console (ConsoleReporter has no output for
                 # "idle"); makes a tray reporter go back to its idle icon.
                 reporter.notify("idle")
@@ -2465,6 +2474,13 @@ def _cmd_settings(_args: argparse.Namespace, _config: Config) -> int:
     return 0
 
 
+def _cmd_app_host(_args: argparse.Namespace, _config: Config) -> int:
+    """Run the private JSONL bridge used by the native macOS app."""
+    from local_flow.app_host import run_app_host
+
+    return run_app_host(sys.stdin, sys.stdout)
+
+
 def _cmd_setup(_args: argparse.Namespace, config: Config) -> int:
     from local_flow.setup_wizard import run_wizard
 
@@ -2472,6 +2488,26 @@ def _cmd_setup(_args: argparse.Namespace, config: Config) -> int:
         run_wizard(config)
     except LocalFlowError as exc:
         return _fail(exc)
+    return 0
+
+
+def _cmd_migrate_config(args: argparse.Namespace, _config: Config) -> int:
+    from local_flow.config_migration import dotenv_config_fields, migrate_dotenv_to_toml
+
+    dotenv_path = Path(args.dotenv).expanduser()
+    target = Path(args.target).expanduser()
+    pending = sorted(dotenv_config_fields(dotenv_path))
+    if not pending:
+        print(f"No legacy LOCAL_FLOW_* settings found in {dotenv_path}.")
+        return 0
+    if not args.apply:
+        print(f"Would migrate {len(pending)} settings from {dotenv_path} to {target}:")
+        print("  " + ", ".join(pending))
+        print("Run again with --apply to perform the validated migration.")
+        return 0
+    migrated = migrate_dotenv_to_toml(dotenv_path, target)
+    print(f"Migrated {len(migrated)} settings to {target}.")
+    print(f"Removed their legacy overrides from {dotenv_path}.")
     return 0
 
 
@@ -2656,10 +2692,30 @@ def main(argv: list[str] | None = None) -> int:
         "setup", help="interactive onboarding wizard that writes a validated config"
     )
 
+    migrate_p = sub.add_parser(
+        "migrate-config",
+        help="move legacy LOCAL_FLOW_* dotenv settings into Settings-owned TOML",
+    )
+    migrate_p.add_argument(
+        "--dotenv", default=".env", help="legacy dotenv path (default: ./.env)"
+    )
+    migrate_p.add_argument(
+        "--target",
+        default=str(Path.home() / ".config" / "local-flow" / "config.toml"),
+        help="destination TOML path",
+    )
+    migrate_p.add_argument(
+        "--apply",
+        action="store_true",
+        help="perform the migration; without this flag only a preview is shown",
+    )
+
     sub.add_parser(
         "settings",
         help="open the native macOS Settings & Personalization window",
     )
+
+    sub.add_parser("app-host", help=argparse.SUPPRESS)
 
     history_p = sub.add_parser("history", help="list/search/clear the local dictation history")
     history_p.add_argument(
@@ -2802,7 +2858,9 @@ def main(argv: list[str] | None = None) -> int:
         "stats": _cmd_stats,
         "tray": _cmd_tray,
         "setup": _cmd_setup,
+        "migrate-config": _cmd_migrate_config,
         "settings": _cmd_settings,
+        "app-host": _cmd_app_host,
     }
     try:
         return handlers[args.command](args, config)
