@@ -240,21 +240,51 @@ as a real desktop tool (not just a CLI) from early on.
       pill appearance, dictionary terms, and correction aliases. Config
       provenance prevents environment overrides from producing fake saves;
       TOML writes validate then replace atomically.
+
+### Next notarized beta gate (complete in order)
+
+Do not submit another notarization build until the product surface and runtime
+are frozen. Complete these beta-blocking items in order so Apple receives one
+final candidate rather than another superseded intermediate build:
+
+1. [ ] **Prove native-app reliability and permissions** — repeat installed-app
+   launch, quit/reopen, engine restart, sleep/wake, Accessibility, Input
+   Monitoring, microphone, Fn recording, insertion, and error-recovery tests.
+   The menu icon and Settings status must agree, and an engine failure must not
+   require resetting macOS privacy records during ordinary use.
+2. [ ] **Finish Settings and Appearance UX** — verify the adaptive pastel theme,
+   replace checkbox-like affordances with native switches where appropriate,
+   remove redundant recording-pill controls, make compact/expanded previews
+   visibly respond, and confirm every disabled field has a real provenance
+   explanation. Migrate legacy dotenv configuration into TOML before judging
+   whether a control is implemented or locked.
+3. [ ] **Finish model onboarding and real-model validation** — add first-run
+   model-download progress, document HF_TOKEN and fully offline installs, and
+   complete private real-voice Parakeet/Whisper plus local polish evaluation.
+4. [ ] **Protect user state** — preserve/restore the clipboard around insertion
+   and add dictionary, alias, and settings import/export for beta backup and
+   recovery.
+5. [ ] **Close automated release gates** — add the synthetic-speech end-to-end
+   test and rerun Python, Ruff, mocked demo, Swift tests, Release build, embedded
+   Python JIT, FFmpeg discovery, signing, and malformed-host recovery checks.
+6. [ ] **Freeze, notarize, and validate once** — build the final versioned DMG
+   from the frozen commit, submit it with `JiSprNotary`, wait for `Accepted`,
+   staple and validate the ticket, run Gatekeeper checks, then complete clean-Mac
+   installation and upgrade QA before sharing with testers.
+
 - [ ] 🟡 **Packaged distribution** — the local SwiftUI menu-bar beta now owns
       Settings, live status, and Launch at Login through a versioned JSONL
       bridge. The Apple-Silicon Release build now embeds its Python engine,
       carries a real app icon, signs nested native code inside-out, and creates
       a compressed DMG. The original 0.1.0 submission
-      (`17c2cdbd-0c29-4d99-a2b7-06ca738e4579`) was superseded after clean-Mac
+      (`17c2cdbd-0c29-4d99-a2b7-06ca738e4579`) is Accepted but superseded after
       testing exposed an LLVM JIT entitlement crash. The corrected 0.1.1 build
-      scopes the required entitlement to embedded Python, passes a signed JIT
-      smoke test, and remains in progress at Apple under submission
-      `9d1d0c75-7eca-4a49-8249-9f512ca0741a`. Local 0.1.2 additionally fixes
-      Homebrew/FFmpeg discovery from a menu-bar launch and has passed live
-      Accessibility/Input Monitoring recovery with the embedded engine Ready.
-      The 0.1.1 submission is therefore superseded; submit, staple, and validate
-      the 0.1.2 replacement DMG before external testing.
-      Remaining after that: clean-Mac QA and optional Homebrew delivery.
+      (`9d1d0c75-7eca-4a49-8249-9f512ca0741a`) is also Accepted and passes the
+      signed JIT smoke test, but it is not stapled and is superseded by local
+      0.1.2's menu-bar Homebrew/FFmpeg discovery fix. Do not distribute or
+      notarize another intermediate build; complete the ordered gate above,
+      then submit the frozen replacement and finish clean-Mac QA. Optional
+      Homebrew delivery remains later.
 
 ## 10. Engineering & quality
 
@@ -292,9 +322,9 @@ evidence or supported-platform demand justifies the added maintenance surface.
 
 ## Suggested sequencing
 
-1. **Now — macOS beta hardening** — clipboard preservation, private real-voice
-   Parakeet/Whisper and GGUF evaluation, synthetic-speech e2e coverage,
-   first-run model progress, import/export, then signed packaging/login launch.
+1. **Now — finish the ordered notarization gate** — reliability/permissions,
+   Settings and Appearance UX, model onboarding, user-state protection, and
+   automated release checks. Notarization and clean-Mac QA stay last.
 2. **Next — evidence-backed ergonomics** — chord hotkeys, spelling mode,
    measured model preset labels, and optional audio cues.
 3. **Conditional** — non-macOS packaging/CI/sinks and other speculative
