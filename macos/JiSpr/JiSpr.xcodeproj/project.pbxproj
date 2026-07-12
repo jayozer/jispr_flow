@@ -1,0 +1,537 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		2340AF9F60C6A85AABDFEF80 /* PersonalizationSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DCFC390C785D698C95908B0 /* PersonalizationSettingsView.swift */; };
+		240B42186641860A053FC570 /* GeneralSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D62A336F2BD8908EDE60E187 /* GeneralSettingsView.swift */; };
+		286BFD5D556C99D2F29EE3DD /* SettingsRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D57D87930CC8752C26AB908 /* SettingsRootView.swift */; };
+		34966D1253955E9648DBE697 /* AdvancedSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE415326386960EE1AD271F1 /* AdvancedSettingsView.swift */; };
+		3ED0444D26DB661BB1DE4B6C /* EngineLocatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32446E00828E0D56AD194C32 /* EngineLocatorTests.swift */; };
+		69D442CC5ED3B1FFCA18A135 /* WritingSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE472D6718F52335D6AACE91 /* WritingSettingsView.swift */; };
+		81479E607CDEE768496F2DF0 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 275303796241718CA954E539 /* AppStore.swift */; };
+		8B0AA4F1A0359274BBEF03C2 /* HostModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97A4408078B3CBDBC4AF8DF8 /* HostModels.swift */; };
+		95B9A5C403C906F36039E667 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BE045CAF593D44875C8E5786 /* Assets.xcassets */; };
+		B42E75138AA12C38D8ACC9C6 /* EngineLocator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9882BB27C46998B6FC674D69 /* EngineLocator.swift */; };
+		B5288982A61D2B52D6FAFB0E /* EngineProcessService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94C1BAB073C7A87984BBF7DF /* EngineProcessService.swift */; };
+		BD8E8FEAD2961A44A37AB1B1 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E306F2E6AB7580A6A4E823A /* Theme.swift */; };
+		C483314D3471D10BE57DDDB4 /* AppearanceSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 072D38C42FD409DB47AC0EA6 /* AppearanceSettingsView.swift */; };
+		C7A3F2C7DB27B6803D6D8114 /* HostModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111157BB8972E1AF16FD5219 /* HostModelsTests.swift */; };
+		D441B32D597CCE52A4BEB30F /* JiSprApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 794204B039982AB55C31FE7F /* JiSprApp.swift */; };
+		DDEE9378E4B67E0D540456F7 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 441D631471153A34F53CBB77 /* JSONValue.swift */; };
+		E4B5BFFFA5F29D8B33BC176C /* ModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B6E9F2ACE1EBAA74F352E5A /* ModelSettingsView.swift */; };
+		E737B9477E968122AB3A7AAF /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76FF5D0325D799A98E4A9480 /* MenuBarContent.swift */; };
+		FF6CB92F69C80C65B5B8C1BC /* SettingsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40939A69D17373A7CB416D59 /* SettingsComponents.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E8F12622112A3816D9E92DFA /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1530F4C7643BFD8C85CAF06C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 3598CE84C26548C564124175;
+			remoteInfo = JiSpr;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		072D38C42FD409DB47AC0EA6 /* AppearanceSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsView.swift; sourceTree = "<group>"; };
+		111157BB8972E1AF16FD5219 /* HostModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostModelsTests.swift; sourceTree = "<group>"; };
+		1DCFC390C785D698C95908B0 /* PersonalizationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationSettingsView.swift; sourceTree = "<group>"; };
+		275303796241718CA954E539 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
+		2E306F2E6AB7580A6A4E823A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		32446E00828E0D56AD194C32 /* EngineLocatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineLocatorTests.swift; sourceTree = "<group>"; };
+		3D57D87930CC8752C26AB908 /* SettingsRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRootView.swift; sourceTree = "<group>"; };
+		40939A69D17373A7CB416D59 /* SettingsComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsComponents.swift; sourceTree = "<group>"; };
+		441D631471153A34F53CBB77 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
+		6B6E9F2ACE1EBAA74F352E5A /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
+		755DD714BB45508AE028C2AA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		76FF5D0325D799A98E4A9480 /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
+		794204B039982AB55C31FE7F /* JiSprApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JiSprApp.swift; sourceTree = "<group>"; };
+		94C1BAB073C7A87984BBF7DF /* EngineProcessService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineProcessService.swift; sourceTree = "<group>"; };
+		97A4408078B3CBDBC4AF8DF8 /* HostModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostModels.swift; sourceTree = "<group>"; };
+		9882BB27C46998B6FC674D69 /* EngineLocator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EngineLocator.swift; sourceTree = "<group>"; };
+		AE472D6718F52335D6AACE91 /* WritingSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WritingSettingsView.swift; sourceTree = "<group>"; };
+		BE045CAF593D44875C8E5786 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C15AC2BB00A5B9199FD9FDAC /* JiSprTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JiSprTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		D62A336F2BD8908EDE60E187 /* GeneralSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralSettingsView.swift; sourceTree = "<group>"; };
+		EC0E98D901898152F255217F /* JiSpr.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = JiSpr.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FE415326386960EE1AD271F1 /* AdvancedSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdvancedSettingsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		467DC3976E81BE366F87E0E7 /* Stores */ = {
+			isa = PBXGroup;
+			children = (
+				275303796241718CA954E539 /* AppStore.swift */,
+			);
+			path = Stores;
+			sourceTree = "<group>";
+		};
+		507C9AFDB79628925018C9D5 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				794204B039982AB55C31FE7F /* JiSprApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		52A053968E3F8FFE30A77C97 = {
+			isa = PBXGroup;
+			children = (
+				B061F7F353D1496F8CB285D8 /* JiSpr */,
+				EEF65EBE0FB06CA8202670C3 /* JiSprTests */,
+				ED8307864797BD4D7F91B1FE /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		93107F88BD2CCFFE684E698B /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				97A4408078B3CBDBC4AF8DF8 /* HostModels.swift */,
+				441D631471153A34F53CBB77 /* JSONValue.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		9D1BA1E2A6F9D9F0DAEA1C48 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				76FF5D0325D799A98E4A9480 /* MenuBarContent.swift */,
+				40939A69D17373A7CB416D59 /* SettingsComponents.swift */,
+				3D57D87930CC8752C26AB908 /* SettingsRootView.swift */,
+				AD7F1F6A261D00025A3466D0 /* Sections */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		AD7F1F6A261D00025A3466D0 /* Sections */ = {
+			isa = PBXGroup;
+			children = (
+				FE415326386960EE1AD271F1 /* AdvancedSettingsView.swift */,
+				072D38C42FD409DB47AC0EA6 /* AppearanceSettingsView.swift */,
+				D62A336F2BD8908EDE60E187 /* GeneralSettingsView.swift */,
+				6B6E9F2ACE1EBAA74F352E5A /* ModelSettingsView.swift */,
+				1DCFC390C785D698C95908B0 /* PersonalizationSettingsView.swift */,
+				AE472D6718F52335D6AACE91 /* WritingSettingsView.swift */,
+			);
+			path = Sections;
+			sourceTree = "<group>";
+		};
+		B061F7F353D1496F8CB285D8 /* JiSpr */ = {
+			isa = PBXGroup;
+			children = (
+				BE045CAF593D44875C8E5786 /* Assets.xcassets */,
+				755DD714BB45508AE028C2AA /* Info.plist */,
+				507C9AFDB79628925018C9D5 /* App */,
+				93107F88BD2CCFFE684E698B /* Models */,
+				C1A8703C07345C7B5B29C46F /* Services */,
+				467DC3976E81BE366F87E0E7 /* Stores */,
+				E5DEC6AEE74454AC41DE9A66 /* Support */,
+				9D1BA1E2A6F9D9F0DAEA1C48 /* Views */,
+			);
+			path = JiSpr;
+			sourceTree = "<group>";
+		};
+		C1A8703C07345C7B5B29C46F /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				9882BB27C46998B6FC674D69 /* EngineLocator.swift */,
+				94C1BAB073C7A87984BBF7DF /* EngineProcessService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		E5DEC6AEE74454AC41DE9A66 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				2E306F2E6AB7580A6A4E823A /* Theme.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		ED8307864797BD4D7F91B1FE /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				EC0E98D901898152F255217F /* JiSpr.app */,
+				C15AC2BB00A5B9199FD9FDAC /* JiSprTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		EEF65EBE0FB06CA8202670C3 /* JiSprTests */ = {
+			isa = PBXGroup;
+			children = (
+				32446E00828E0D56AD194C32 /* EngineLocatorTests.swift */,
+				111157BB8972E1AF16FD5219 /* HostModelsTests.swift */,
+			);
+			path = JiSprTests;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		3598CE84C26548C564124175 /* JiSpr */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F050B0246FAE1E32F6B63F52 /* Build configuration list for PBXNativeTarget "JiSpr" */;
+			buildPhases = (
+				EC0C4E019F0B96C4586F1B62 /* Sources */,
+				E345D5D32D00807A84740CF7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = JiSpr;
+			packageProductDependencies = (
+			);
+			productName = JiSpr;
+			productReference = EC0E98D901898152F255217F /* JiSpr.app */;
+			productType = "com.apple.product-type.application";
+		};
+		862327CAD50EB081E0271857 /* JiSprTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FAB6BEB11C3396C707EDCC89 /* Build configuration list for PBXNativeTarget "JiSprTests" */;
+			buildPhases = (
+				F2E9C4976DC4E365F5FFD3BF /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2C1C5B5BCBB912D968B598D0 /* PBXTargetDependency */,
+			);
+			name = JiSprTests;
+			packageProductDependencies = (
+			);
+			productName = JiSprTests;
+			productReference = C15AC2BB00A5B9199FD9FDAC /* JiSprTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		1530F4C7643BFD8C85CAF06C /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = AA3A640D03DC7134DDF6DBC9 /* Build configuration list for PBXProject "JiSpr" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 52A053968E3F8FFE30A77C97;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = ED8307864797BD4D7F91B1FE /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				3598CE84C26548C564124175 /* JiSpr */,
+				862327CAD50EB081E0271857 /* JiSprTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E345D5D32D00807A84740CF7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				95B9A5C403C906F36039E667 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		EC0C4E019F0B96C4586F1B62 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				34966D1253955E9648DBE697 /* AdvancedSettingsView.swift in Sources */,
+				81479E607CDEE768496F2DF0 /* AppStore.swift in Sources */,
+				C483314D3471D10BE57DDDB4 /* AppearanceSettingsView.swift in Sources */,
+				B42E75138AA12C38D8ACC9C6 /* EngineLocator.swift in Sources */,
+				B5288982A61D2B52D6FAFB0E /* EngineProcessService.swift in Sources */,
+				240B42186641860A053FC570 /* GeneralSettingsView.swift in Sources */,
+				8B0AA4F1A0359274BBEF03C2 /* HostModels.swift in Sources */,
+				DDEE9378E4B67E0D540456F7 /* JSONValue.swift in Sources */,
+				D441B32D597CCE52A4BEB30F /* JiSprApp.swift in Sources */,
+				E737B9477E968122AB3A7AAF /* MenuBarContent.swift in Sources */,
+				E4B5BFFFA5F29D8B33BC176C /* ModelSettingsView.swift in Sources */,
+				2340AF9F60C6A85AABDFEF80 /* PersonalizationSettingsView.swift in Sources */,
+				FF6CB92F69C80C65B5B8C1BC /* SettingsComponents.swift in Sources */,
+				286BFD5D556C99D2F29EE3DD /* SettingsRootView.swift in Sources */,
+				BD8E8FEAD2961A44A37AB1B1 /* Theme.swift in Sources */,
+				69D442CC5ED3B1FFCA18A135 /* WritingSettingsView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F2E9C4976DC4E365F5FFD3BF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3ED0444D26DB661BB1DE4B6C /* EngineLocatorTests.swift in Sources */,
+				C7A3F2C7DB27B6803D6D8114 /* HostModelsTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		2C1C5B5BCBB912D968B598D0 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 3598CE84C26548C564124175 /* JiSpr */;
+			targetProxy = E8F12622112A3816D9E92DFA /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		1E42F7AC6470E590DA7745FA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = JiSpr/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.acrobat.jispr;
+				PRODUCT_NAME = JiSpr;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		3870DB6BCC1DD8A9F00DF46B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = JiSpr/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.acrobat.jispr;
+				PRODUCT_NAME = JiSpr;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		8B801AA6484DCA1424F307BA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 3;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				JISPR_ENGINE_PATH = "";
+				JISPR_WORKING_DIRECTORY = "";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.2;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		B89765E768C1CE6EE657E076 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 3;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				JISPR_ENGINE_PATH = "$(PROJECT_DIR)/../../.venv/bin/local-flow";
+				JISPR_WORKING_DIRECTORY = "$(PROJECT_DIR)/../..";
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.2;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C86F6F66F59D8D65B00FF06F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.acrobat.jispr.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JiSpr.app/Contents/MacOS/JiSpr";
+			};
+			name = Debug;
+		};
+		E67F24BFB2F1E43D464D1D6D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.acrobat.jispr.tests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/JiSpr.app/Contents/MacOS/JiSpr";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA3A640D03DC7134DDF6DBC9 /* Build configuration list for PBXProject "JiSpr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B89765E768C1CE6EE657E076 /* Debug */,
+				8B801AA6484DCA1424F307BA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F050B0246FAE1E32F6B63F52 /* Build configuration list for PBXNativeTarget "JiSpr" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1E42F7AC6470E590DA7745FA /* Debug */,
+				3870DB6BCC1DD8A9F00DF46B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FAB6BEB11C3396C707EDCC89 /* Build configuration list for PBXNativeTarget "JiSprTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C86F6F66F59D8D65B00FF06F /* Debug */,
+				E67F24BFB2F1E43D464D1D6D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1530F4C7643BFD8C85CAF06C /* Project object */;
+}

@@ -21,22 +21,23 @@ loaded and its server running.
 git clone <repository-url>
 cd jispr_flow
 uv sync --all-extras
-cp .env.example .env
+uv run local-flow setup
 ```
 
-For the recommended accurate local setup, edit `.env`:
+For the recommended accurate local setup, edit
+`~/.config/local-flow/config.toml` or use the native Settings app:
 
-```dotenv
-LOCAL_FLOW_ASR_PROFILE=accuracy
-LOCAL_FLOW_ASR_LANGUAGE=en
+```toml
+asr_profile = "accuracy"
+asr_language = "en"
 
 # Optional local-LLM cleanup. Use rules to run without LM Studio.
-LOCAL_FLOW_POLISH_BACKEND=lmstudio
-LOCAL_FLOW_LMSTUDIO_MODEL=
+polish_backend = "lmstudio"
+lmstudio_model = ""
 
-LOCAL_FLOW_FLOATING_PILL=true
-LOCAL_FLOW_PILL_STYLE=compact
-LOCAL_FLOW_HOTKEY=fn
+floating_pill = true
+pill_style = "compact"
+hotkey = "fn"
 ```
 
 Then verify and run:
@@ -87,11 +88,11 @@ brew install ffmpeg
 uv sync --extra parakeet-asr
 ```
 
-```dotenv
-LOCAL_FLOW_ASR_PROFILE=custom
-LOCAL_FLOW_ASR_BACKEND=mlx-parakeet
-LOCAL_FLOW_ASR_MODEL=mlx-community/parakeet-tdt-0.6b-v3
-LOCAL_FLOW_ASR_LANGUAGE=auto
+```toml
+asr_profile = "custom"
+asr_backend = "mlx-parakeet"
+asr_model = "mlx-community/parakeet-tdt-0.6b-v3"
+asr_language = "auto"
 ```
 
 Parakeet v3 manages multilingual recognition itself. It does not currently
@@ -106,10 +107,10 @@ to local polish and deterministically enforced on the final text.
 | `fast` | MLX Whisper Small.en | lowest latency and memory use |
 | `custom` | configured backend and model | faster-whisper, multilingual, or custom paths |
 
-```dotenv
-LOCAL_FLOW_ASR_PROFILE=fast
+```toml
+asr_profile = "fast"
 # or
-LOCAL_FLOW_ASR_PROFILE=accuracy
+asr_profile = "accuracy"
 ```
 
 On one 11.3-second technical sample, Turbo reduced WER from `0.190` to
@@ -208,6 +209,36 @@ uv run local-flow learn --add 1 2
 
 Run `uv run local-flow --help` or `<command> --help` for every option.
 
+## Native macOS app (local beta)
+
+JiSpr now includes a SwiftUI menu-bar app under `macos/JiSpr`. It keeps the
+Python dictation engine as the local source of truth, while providing a pastel
+beige/sage/orange settings window, live recording status, quick style/language
+choices, Launch at Login, and recovery when the engine stops unexpectedly.
+Closing Settings leaves the small JiSpr waveform in the upper-right menu bar;
+use the menu's **Quit JiSpr** action to stop the app.
+
+```bash
+uv sync --all-extras
+xcodegen generate --spec macos/JiSpr/project.yml
+./script/build_and_run.sh --verify
+```
+
+The debug app resolves the engine from this checkout's `.venv/bin/local-flow`.
+The Release pipeline bundles that engine and its Python runtime into the app:
+
+```bash
+./script/package_beta.sh
+```
+
+Without a Developer ID certificate this produces an ad-hoc DMG for local
+validation only. With Developer ID and a notarytool Keychain profile it creates
+the signed, notarized friend beta. See
+[Beta distribution](docs/BETA_DISTRIBUTION.md). Grant the launched **JiSpr** app
+Microphone, Accessibility, and Input Monitoring access when macOS asks. The
+legacy `local-flow tray` and `local-flow settings` commands remain available as
+fallbacks during beta testing.
+
 ## Important settings
 
 Copy [.env.example](.env.example) for the complete annotated list. Environment
@@ -233,9 +264,15 @@ history, dictionaries, notes, or generated audio.
 
 ## Permissions and common fixes
 
-On macOS, grant the terminal **Microphone**, **Accessibility**, and **Input
-Monitoring** access under System Settings → Privacy & Security, then restart
-the terminal.
+On macOS, grant the process you launch—your terminal for CLI use, or **JiSpr**
+for the native beta—**Microphone**, **Accessibility**, and **Input Monitoring**
+access under System Settings → Privacy & Security, then restart it.
+In JiSpr, open **General → Permissions** and click **Request Access** first; this
+registers the native app so it appears in the corresponding macOS privacy list.
+
+Settings writes validated TOML only. Legacy `.env` settings remain read-only
+until migrated with `uv run local-flow migrate-config --apply`; true
+parent-process overrides always remain read-only.
 
 - No bar: run with `--pill` and confirm `LOCAL_FLOW_FLOATING_PILL=true`.
 - Bar appears but no recording: check Microphone and Input Monitoring access.

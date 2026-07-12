@@ -269,17 +269,20 @@ def _read_dotenv(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("export "):
+            key = key.removeprefix("export ").strip()
         value = value.strip()
         if value[:1] in ("'", '"'):
             closing = value.find(value[0], 1)
             if closing != -1:
-                values[key.strip()] = value[1:closing]
+                values[key] = value[1:closing]
                 continue
             # No closing quote: fall through to the unquoted handling below.
         comment_at = value.find(" #")
         if comment_at != -1:
             value = value[:comment_at].rstrip()
-        values[key.strip()] = value.strip("'\"")
+        values[key] = value.strip("'\"")
     return values
 
 

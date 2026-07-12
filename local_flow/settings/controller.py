@@ -33,6 +33,7 @@ ASR_PRESETS: dict[str, dict[str, object]] = {
 class SettingsViewModel:
     snapshot: ConfigSnapshot
     styles: list[str]
+    transforms: list[str]
     dictionary_entries: list[dict]
     aliases: dict[str, str]
 
@@ -53,6 +54,7 @@ class SettingsController:
         return SettingsViewModel(
             snapshot=snapshot,
             styles=sorted(store.styles()),
+            transforms=sorted(store.transforms()),
             dictionary_entries=store.dictionary_entries(),
             aliases=store.snippets(),
         )

@@ -65,9 +65,7 @@ def _button(title: str, frame, target, action: str):
 
 
 def _is_environment_source(source: str) -> bool:
-    return source in {"dotenv", "environment"} or source.endswith(":dotenv") or source.endswith(
-        ":environment"
-    )
+    return source == "environment" or source.endswith(":environment")
 
 
 class SettingsWindowController(NSObject):
