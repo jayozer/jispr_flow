@@ -20,8 +20,8 @@ from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.status import StatusReporter
 
 
-def _pcm(n: int = 100) -> bytes:
-    return b"\x00\x01" * n
+def _pcm(n: int = 1600) -> bytes:
+    return b"\x00\x10" * n
 
 
 def _save_named(store: PendingAudioStore, name: str, mtime: float) -> None:
@@ -214,6 +214,33 @@ class TestRecoverCommand:
         assert store.pending() == []
         out = capsys.readouterr().out
         assert "2 recovered" in out
+
+    def test_quiet_pending_audio_is_not_rejected_by_frame_vad(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        quiet_pcm = (b"\x78\x00\x88\xff") * 2400  # peak 120; below old RMS gate
+        store = PendingAudioStore(tmp_path)
+        store.save(quiet_pcm, 16000)
+        transcriber = MockTranscriber(["quiet recovered words"])
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(tmp_path, sink, transcriber)
+
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_text_pipeline", lambda config: pipeline)
+        monkeypatch.setattr(
+            app_module,
+            "_build_vad",
+            lambda config: (_ for _ in ()).throw(
+                AssertionError("recover must not re-run frame VAD")
+            ),
+        )
+
+        assert main(["recover"]) == 0
+        assert transcriber.calls == [(len(quiet_pcm), 16000)]
+        assert store.pending() == []
+        assert "1 recovered" in capsys.readouterr().out
 
     def test_failure_keeps_the_file_and_reports_it(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))

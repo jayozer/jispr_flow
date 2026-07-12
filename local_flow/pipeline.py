@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from local_flow.asr.base import Transcriber
+from local_flow.audio.gain import normalize_peak
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
 from local_flow.context.field_text import FieldTextProvider
@@ -22,6 +23,8 @@ from local_flow.polish.rules import (
     expand_snippets,
     extract_dictionary_additions,
 )
+
+_WHISPER_MAX_GAIN = 24.0
 
 
 @dataclass
@@ -85,18 +88,35 @@ class DictationPipeline:
         frame_ms: int = 30,
         silence_ms: int = 600,
         sink_override: TextSink | None = None,
+        normalize_segments: bool = False,
     ) -> DictationResult:
-        """Transcribe a PCM buffer (VAD-segmented when a VAD is given)."""
+        """Transcribe a PCM buffer (VAD-segmented when a VAD is given).
+
+        Raw PCM is always segmented before optional whisper-mode gain. This
+        ordering is important: normalizing first turns harmless ambient noise
+        into full-scale input and causes Whisper's common empty-audio
+        hallucinations. Only segments that the raw-audio VAD accepted are
+        boosted, with a finite gain cap.
+        """
         if vad is not None:
             segments = split_segments(
                 pcm, sample_rate, vad, frame_ms=frame_ms, silence_ms=silence_ms
             )
         else:
             segments = [pcm] if pcm else []
+        if normalize_segments:
+            segments = [normalize_peak(segment, max_gain=_WHISPER_MAX_GAIN) for segment in segments]
         texts = [self.transcriber.transcribe(seg, sample_rate) for seg in segments]
         rough = " ".join(t.strip() for t in texts if t.strip())
         duration_s = sum(len(seg) for seg in segments) / (2 * sample_rate) if sample_rate else 0.0
-        return self.process_transcript(rough, duration_s=duration_s, sink_override=sink_override)
+        result = self.process_transcript(
+            rough,
+            duration_s=duration_s,
+            sink_override=sink_override,
+        )
+        if pcm and not rough:
+            result.warnings.append("no speech detected; nothing inserted")
+        return result
 
     def process_transcript(
         self,

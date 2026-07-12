@@ -3,6 +3,8 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var handledInitialActivation = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         AppStore.shared.launch()
@@ -18,6 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         AppStore.shared.refreshPermissions()
+        guard !handledInitialActivation else { return }
+        handledInitialActivation = true
+        AppStore.shared.requestSettingsWindow()
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        AppStore.shared.requestSettingsWindow()
+        return true
     }
 }
 
@@ -60,11 +73,20 @@ private struct MenuBarLabel: View {
                     "XCTestConfigurationFilePath"
                 ] != nil
                 if !isRunningTests,
-                   !UserDefaults.standard.bool(forKey: "hasOpenedJiSprSettings") {
+                   store.settingsRequestID > 0
+                    || !UserDefaults.standard.bool(forKey: "hasOpenedJiSprSettings") {
                     UserDefaults.standard.set(true, forKey: "hasOpenedJiSprSettings")
-                    openWindow(id: "settings")
-                    NSApp.activate(ignoringOtherApps: true)
+                    openSettings()
                 }
             }
+            .onChange(of: store.settingsRequestID) {
+                openSettings()
+            }
+    }
+
+    private func openSettings() {
+        UserDefaults.standard.set(true, forKey: "hasOpenedJiSprSettings")
+        openWindow(id: "settings")
+        NSApp.activate(ignoringOtherApps: true)
     }
 }

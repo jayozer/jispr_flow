@@ -86,6 +86,18 @@ enum DictationState: String, Sendable {
         }
     }
 
+    var fallbackDetail: String {
+        switch self {
+        case .offline: "Dictation paused"
+        case .idle: "Ready for your hotkey"
+        case .recording, .preview: "Listening to your microphone"
+        case .processing: "Transcribing your speech"
+        case .inserted: "Text inserted"
+        case .warning: "JiSpr needs attention"
+        case .error: "The dictation engine reported an error"
+        }
+    }
+
     var isBusy: Bool {
         self == .recording || self == .processing || self == .preview
     }

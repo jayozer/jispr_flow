@@ -3,6 +3,7 @@
 No microphone, GPU, downloaded model, or running LM Studio is needed.
 """
 
+import array
 import json
 
 import pytest
@@ -103,6 +104,73 @@ class TestAudioToInsertion:
         assert result.rough == "first part. second part."
         assert sink.text.startswith("First part.")
 
+    def test_raw_near_silence_is_dropped_before_whisper_gain(self, store):
+        from local_flow.demo import synth_pcm
+
+        transcriber = MockTranscriber(["Thank you."])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, MockChatClient(["You're welcome."]), sink, transcriber)
+        pcm = synth_pcm([(500, 40)])
+
+        result = pipeline.process_audio(
+            pcm,
+            16000,
+            vad=EnergyVAD(150),
+            normalize_segments=True,
+        )
+
+        assert transcriber.calls == []
+        assert result.final == ""
+        assert sink.events == []
+        assert "no speech detected" in result.warnings[0]
+
+    def test_nonempty_audio_with_blank_asr_result_warns(self, store):
+        transcriber = MockTranscriber([""])
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, MockChatClient(["unused"]), sink, transcriber)
+
+        result = pipeline.process_audio(b"\x80\x00" * 1600, 16000)
+
+        assert transcriber.calls == [(3200, 16000)]
+        assert result.final == ""
+        assert sink.events == []
+        assert "no speech detected" in result.warnings[0]
+
+    def test_quiet_speech_is_gated_raw_then_gain_is_capped(self, store):
+        from local_flow.demo import synth_pcm
+
+        class CapturingTranscriber(MockTranscriber):
+            def __init__(self):
+                super().__init__(["quiet speech"])
+                self.received: list[bytes] = []
+
+            def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+                self.received.append(pcm)
+                return super().transcribe(pcm, sample_rate)
+
+        transcriber = CapturingTranscriber()
+        sink = FakeTextSink()
+        pipeline = make_pipeline(
+            store,
+            MockChatClient(["Quiet speech."]),
+            sink,
+            transcriber,
+        )
+        pcm = synth_pcm([(300, 240)])
+
+        result = pipeline.process_audio(
+            pcm,
+            16000,
+            vad=EnergyVAD(150),
+            normalize_segments=True,
+        )
+
+        samples = array.array("h")
+        samples.frombytes(transcriber.received[0])
+        assert 5000 < max(abs(sample) for sample in samples) < 6000
+        assert result.final == "Quiet speech."
+        assert sink.events == [("insert", "Quiet speech.")]
+
 
 class TestLMStudioDownFallback:
     def test_rules_still_apply_and_warning_is_surfaced(self, store):
@@ -115,6 +183,17 @@ class TestLMStudioDownFallback:
         assert result.final == "email the PostgreSQL team"
         assert any("LM Studio polish skipped" in w for w in result.warnings)
         assert sink.events == [("insert", "email the PostgreSQL team")]
+
+    def test_conversational_reply_falls_back_to_dictated_text(self, store):
+        sink = FakeTextSink()
+        pipeline = make_pipeline(store, MockChatClient(["You're welcome."]), sink)
+
+        result = pipeline.process_transcript("Thank you.")
+
+        assert result.final == "Thank you."
+        assert result.used_llm is False
+        assert sink.events == [("insert", "Thank you.")]
+        assert any("answered the dictated text" in warning for warning in result.warnings)
 
 
 class TestCommandModeThroughPipeline:

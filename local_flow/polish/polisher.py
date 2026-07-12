@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from local_flow.context.field_text import FieldContext
@@ -10,6 +11,38 @@ from local_flow.llm.base import ChatClient
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.polish.prompting import build_polish_messages
 from local_flow.polish.rules import clean_transcript
+
+_ASSISTANT_PREFIX = re.compile(
+    r"^\s*(?:assistant|ai)\s*:|^\s*(?:sure|certainly|of course|here['’]s)\b",
+    re.IGNORECASE,
+)
+_GRATITUDE = re.compile(r"\b(?:thank(?:s| you)?|much appreciated)\b", re.IGNORECASE)
+_GRATITUDE_REPLY = re.compile(
+    r"\b(?:you(?:['’]re| are) welcome|my pleasure|glad to help|anytime)\b",
+    re.IGNORECASE,
+)
+
+
+def _unsafe_polish_reason(source: str, candidate: str) -> str | None:
+    """Explain why an LLM completion is not a faithful transcript rewrite.
+
+    The polisher is not a chatbot. Model-template tokens, assistant preambles,
+    and conversational replies are strong evidence that the local model
+    answered the transcript instead of editing it. The check is deliberately
+    narrow: legitimate dictated phrases such as "You're welcome" remain valid
+    when they were present in ``source``.
+    """
+    if "<|" in candidate or "|>" in candidate:
+        return "response contained model control tokens"
+    if _ASSISTANT_PREFIX.search(candidate) and not _ASSISTANT_PREFIX.search(source):
+        return "response looked like an assistant reply"
+    if (
+        _GRATITUDE.search(source)
+        and not _GRATITUDE_REPLY.search(source)
+        and _GRATITUDE_REPLY.search(candidate)
+    ):
+        return "response answered the dictated text instead of polishing it"
+    return None
 
 
 @dataclass
@@ -133,6 +166,10 @@ class TranscriptPolisher:
             result.warnings.append(f"LM Studio polish skipped: {exc.message}")
             return result
         if polished:
+            reason = _unsafe_polish_reason(cleaned, polished)
+            if reason is not None:
+                result.warnings.append(f"LM Studio polish rejected: {reason}")
+                return result
             result.polished = polished
             result.used_llm = True
         return result

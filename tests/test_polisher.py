@@ -1,5 +1,7 @@
 """TranscriptPolisher: rules + LLM polish, and per-call style overrides."""
 
+import pytest
+
 from local_flow.llm.mock import MockChatClient
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.polish.polisher import TranscriptPolisher
@@ -71,3 +73,35 @@ class TestStyleProperty:
         email_rules = store.style_rules("email")[1]
         system = llm.requests[0][0]["content"]
         assert email_rules in system
+
+
+class TestUnsafeModelOutputFallback:
+    @pytest.mark.parametrize(
+        ("rough", "completion"),
+        [
+            ("send the draft", "<|im_start|>assistant\nSend the draft.<|im_end|>"),
+            ("send the draft", "Assistant: Send the draft."),
+            ("send the draft", "Sure, I can send the draft."),
+            ("Thank you.", "You're welcome."),
+            ("Thank you.", "<|channel>thought <channel|>You're welcome."),
+        ],
+    )
+    def test_rejects_non_transcript_output(self, tmp_path, rough, completion):
+        store = PersonalizationStore(tmp_path)
+        polisher = TranscriptPolisher(MockChatClient([completion]), store)
+
+        result = polisher.polish(rough)
+
+        assert result.polished == result.cleaned
+        assert result.used_llm is False
+        assert any("LM Studio polish rejected" in warning for warning in result.warnings)
+
+    def test_accepts_youre_welcome_when_it_was_dictated(self, tmp_path):
+        store = PersonalizationStore(tmp_path)
+        polisher = TranscriptPolisher(MockChatClient(["You're welcome."]), store)
+
+        result = polisher.polish("you're welcome")
+
+        assert result.polished == "You're welcome."
+        assert result.used_llm is True
+        assert result.warnings == []

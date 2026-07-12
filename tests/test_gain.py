@@ -4,7 +4,7 @@
 
 import array
 
-from local_flow.audio.gain import normalize_peak
+from local_flow.audio.gain import normalize_peak, peak_amplitude
 
 
 def _pcm(samples: list[int]) -> bytes:
@@ -78,3 +78,19 @@ class TestNormalizePeak:
         out = normalize_peak(pcm, target=0.9)
         scaled = _samples(out)
         assert max(abs(s) for s in scaled) > max(abs(s) for s in _samples(pcm)) * 100
+
+
+class TestPeakAmplitude:
+    def test_returns_largest_absolute_sample(self):
+        assert peak_amplitude(_pcm([12, -345, 200])) == 345
+
+    def test_empty_and_odd_only_input_are_silent(self):
+        assert peak_amplitude(b"") == 0
+        assert peak_amplitude(b"\x7f") == 0
+
+    def test_max_gain_prevents_background_noise_from_reaching_full_scale(self):
+        pcm = _pcm([50, -80, 60, -40])
+
+        out = normalize_peak(pcm, target=0.9, max_gain=24.0)
+
+        assert _samples(out) == [1200, -1920, 1440, -960]
