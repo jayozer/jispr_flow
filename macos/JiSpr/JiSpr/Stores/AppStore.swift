@@ -365,12 +365,26 @@ final class AppStore {
             state = .idle
             stateDetail = "Ready for your hotkey"
         case .stop:
-            dictationEnabled = false
-            state = .offline
-            stateDetail = "Dictation paused"
+            if message.result?["stopped"]?.boolValue == false {
+                dictationEnabled = true
+                state = .warning
+                stateDetail = "Dictation may still be active"
+                bannerMessage = "The local engine did not stop. Try Restart Engine."
+            } else {
+                dictationEnabled = false
+                state = .offline
+                stateDetail = "Dictation paused"
+            }
         case .reload:
-            dictationEnabled = true
-            bannerMessage = "Settings applied"
+            if message.result?["stopped"]?.boolValue == false {
+                dictationEnabled = message.result?["running"]?.boolValue ?? true
+                state = .warning
+                stateDetail = "Settings could not be applied safely"
+                bannerMessage = "The local engine did not stop, so settings were not reloaded."
+            } else {
+                dictationEnabled = true
+                bannerMessage = "Settings applied"
+            }
         case let .save(fields):
             dirtyFields.subtract(fields)
             let requiresRestart = message.result?["requires_restart"]?.boolValue ?? false

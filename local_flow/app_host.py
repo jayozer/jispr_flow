@@ -256,6 +256,8 @@ class AppHost:
         stopped = True
         if self.session is not None:
             stopped = self.session.stop()
+            if not stopped:
+                return {"running": self.session.running, "stopped": False}
         self.session = None
         if start:
             self._ensure_session().start()
@@ -278,7 +280,8 @@ class AppHost:
             self._reply(request_id, {"running": session.running})
         elif command == "stop":
             stopped = True if self.session is None else self.session.stop()
-            self._reply(request_id, {"running": False, "stopped": stopped})
+            running = bool(self.session and self.session.running)
+            self._reply(request_id, {"running": running, "stopped": stopped})
         elif command == "reload":
             should_start = bool(payload.get("start", self.session is not None))
             result = self._reload_session(start=should_start)

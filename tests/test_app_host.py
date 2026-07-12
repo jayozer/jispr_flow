@@ -100,6 +100,40 @@ def test_host_emits_ready_snapshot_and_lifecycle_replies(tmp_path):
     assert len(created) == 2
 
 
+def test_reload_keeps_session_when_stop_fails(tmp_path):
+    output = io.StringIO()
+    created: list[FakeSession] = []
+
+    def factory(config, reporter):
+        session = FakeSession(config, reporter)
+        session.stop = lambda: False
+        created.append(session)
+        return session
+
+    input_stream = io.StringIO(
+        "\n".join(
+            [
+                _request("start-1", "start"),
+                _request("reload-1", "reload", {"start": True}),
+            ]
+        )
+        + "\n"
+    )
+
+    AppHost(
+        input_stream=input_stream,
+        output_stream=output,
+        controller=_controller(tmp_path),
+        session_factory=factory,
+    ).run()
+
+    replies = {
+        message["id"]: message for message in _messages(output) if message["event"] == "reply"
+    }
+    assert replies["reload-1"]["result"] == {"running": True, "stopped": False}
+    assert len(created) == 1
+
+
 def test_save_live_choices_and_personalization_crud(tmp_path):
     output = io.StringIO()
     sessions: list[FakeSession] = []
