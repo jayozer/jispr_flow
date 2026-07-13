@@ -13,6 +13,7 @@ BUILD_NUMBER="${JISPR_BUILD_NUMBER:-3}"
 DMG="$DIST/JiSpr-$VERSION-arm64.dmg"
 NOTARY_PROFILE="${JISPR_NOTARY_PROFILE:-}"
 PYTHON_ENTITLEMENTS="$ROOT_DIR/script/resources/python-runtime.entitlements"
+APP_ENTITLEMENTS="$ROOT_DIR/script/resources/jispr-app.entitlements"
 
 IDENTITY="${JISPR_SIGNING_IDENTITY:-}"
 if [[ -z "$IDENTITY" ]]; then
@@ -68,9 +69,11 @@ sign_nested() {
 
 sign_app() {
   if [[ "$IDENTITY" == "-" ]]; then
-    codesign --force --sign - --options runtime "$APP"
+    codesign --force --sign - --options runtime \
+      --entitlements "$APP_ENTITLEMENTS" "$APP"
   else
-    codesign --force --sign "$IDENTITY" --options runtime --timestamp "$APP"
+    codesign --force --sign "$IDENTITY" --options runtime --timestamp \
+      --entitlements "$APP_ENTITLEMENTS" "$APP"
   fi
 }
 

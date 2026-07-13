@@ -12,5 +12,13 @@
     <true/>
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
+    <!--
+      The embedded Python opens the microphone (sounddevice/PortAudio).
+      Without this entitlement a Hardened Runtime process is not refused
+      access; Core Audio silently delivers all-zero sample buffers, and
+      every dictation ends in "no speech detected".
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>

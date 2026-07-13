@@ -40,6 +40,15 @@ final class EngineLocatorTests: XCTestCase {
         XCTAssertEqual(environment["TOKEN"], "kept")
     }
 
+    func testEngineEnvironmentDisablesBytecodeCaches() {
+        // Regression: the engine used to write __pycache__ into the sealed
+        // bundle at runtime, so `codesign --verify --strict` failed on every
+        // installed app after its first launch.
+        let environment = EngineProcessService.launchEnvironment(base: [:])
+
+        XCTAssertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
+    }
+
     func testEnvironmentOverridesBundleConfiguration() throws {
         let executable = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("jispr-engine-\(UUID().uuidString)")

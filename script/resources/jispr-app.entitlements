@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      JiSpr.app is signed with Hardened Runtime and is the TCC "responsible
+      process" for the engine it spawns (which records via the microphone),
+      so the app declares the audio-input capability alongside the embedded
+      Python's own entitlement (see python-runtime.entitlements).
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+</dict>
+</plist>
