@@ -85,12 +85,20 @@ struct FloatingPillPresentation: Equatable {
     }
 }
 
+enum PillTransition: Equatable {
+    case hide
+    case apply
+    case delayIdle
+    case coalesceIdle
+}
+
 @MainActor
 final class FloatingPillController {
     private let panel: NSPanel
     private let hostingController: NSHostingController<FloatingPillView>
     private var displayedConfiguration: FloatingPillConfiguration?
     private var transitionRevision = 0
+    private var pendingIdleConfiguration: FloatingPillConfiguration?
 
     init() {
         let initial = FloatingPillConfiguration(
@@ -125,33 +133,63 @@ final class FloatingPillController {
         panel.setAccessibilityLabel("JiSpr dictation status")
     }
 
-    func update(_ configuration: FloatingPillConfiguration) {
-        transitionRevision += 1
-        let revision = transitionRevision
+    /// Pure decision for `update(_:)`: `inserted`/`warning`/`error` are held
+    /// on screen for a beat before idle replaces them. While that timer runs,
+    /// further idle refreshes must coalesce into it rather than re-arm it --
+    /// hands-free mode repeats the idle state on every audio-level frame
+    /// (~30ms apart), so rescheduling per refresh would postpone the return
+    /// to idle indefinitely.
+    nonisolated static func transition(
+        for configuration: FloatingPillConfiguration,
+        displayed: FloatingPillConfiguration?,
+        idlePending: Bool
+    ) -> PillTransition {
+        guard configuration.enabled else { return .hide }
+        if configuration.state == .idle,
+           let displayed,
+           displayed.state == .inserted
+                || displayed.state == .warning
+                || displayed.state == .error {
+            return idlePending ? .coalesceIdle : .delayIdle
+        }
+        return .apply
+    }
 
-        guard configuration.enabled else {
+    func update(_ configuration: FloatingPillConfiguration) {
+        switch Self.transition(
+            for: configuration,
+            displayed: displayedConfiguration,
+            idlePending: pendingIdleConfiguration != nil
+        ) {
+        case .hide:
+            transitionRevision += 1
+            pendingIdleConfiguration = nil
             displayedConfiguration = nil
             panel.orderOut(nil)
-            return
-        }
-
-        if configuration.state == .idle,
-           let displayedConfiguration,
-           displayedConfiguration.state == .inserted
-                || displayedConfiguration.state == .warning
-                || displayedConfiguration.state == .error {
+        case .coalesceIdle:
+            // Keep the running timer (and its revision); only refresh the
+            // configuration it will show when it fires.
+            pendingIdleConfiguration = configuration
+        case .delayIdle:
+            transitionRevision += 1
+            let revision = transitionRevision
+            pendingIdleConfiguration = configuration
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
                 guard let self, self.transitionRevision == revision else { return }
-                self.apply(configuration)
+                guard let pending = self.pendingIdleConfiguration else { return }
+                self.pendingIdleConfiguration = nil
+                self.apply(pending)
             }
-            return
+        case .apply:
+            transitionRevision += 1
+            pendingIdleConfiguration = nil
+            apply(configuration)
         }
-
-        apply(configuration)
     }
 
     func close() {
         transitionRevision += 1
+        pendingIdleConfiguration = nil
         displayedConfiguration = nil
         panel.orderOut(nil)
         panel.close()

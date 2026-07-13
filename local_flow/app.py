@@ -2598,8 +2598,15 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
                 continue
             # Pending PTT audio is human-bounded; pending hands-free audio
             # has already crossed VAD. Re-segmenting either here can reject
-            # the same quiet words that the live path accepts.
-            result = pipeline.process_audio(pcm, sample_rate)
+            # the same quiet words that the live path accepts. Whisper-mode
+            # boosting, however, must match the live path: pending WAVs hold
+            # the raw PCM, so without it a recovered quiet utterance reaches
+            # ASR quieter than the live path would have sent it.
+            result = pipeline.process_audio(
+                pcm,
+                sample_rate,
+                normalize_segments=config.vad_preset == "whisper",
+            )
         except LocalFlowError as exc:
             print(f"failed {path.name}: {exc.message}")
             kept += 1

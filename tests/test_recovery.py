@@ -53,6 +53,18 @@ def _make_pipeline(tmp_path, sink, transcriber=None):
     )
 
 
+class AudioCapturingTranscriber(MockTranscriber):
+    """MockTranscriber that also keeps the raw PCM it was asked to transcribe."""
+
+    def __init__(self, scripted):
+        super().__init__(scripted)
+        self.audio: list[bytes] = []
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+        self.audio.append(pcm)
+        return super().transcribe(pcm, sample_rate)
+
+
 class TestSaveLoadRoundTrip:
     def test_round_trips_bytes_and_sample_rate(self, tmp_path):
         store = PendingAudioStore(tmp_path)
@@ -240,6 +252,34 @@ class TestRecoverCommand:
         assert main(["recover"]) == 0
         assert transcriber.calls == [(len(quiet_pcm), 16000)]
         assert store.pending() == []
+        assert "1 recovered" in capsys.readouterr().out
+
+    def test_whisper_preset_boosts_recovered_audio_like_the_live_path(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Live whisper-mode processing normalizes accepted audio at processing
+        time (pending WAVs hold the raw, unboosted PCM). Recover must apply the
+        same boost, or a quiet utterance saved before a crash reaches ASR
+        quieter than the live path would have sent it."""
+        from local_flow.audio.gain import peak_amplitude
+
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_VAD_PRESET", "whisper")
+        quiet_pcm = (b"\x78\x00\x88\xff") * 2400  # peak 120; passes the recover gate
+        store = PendingAudioStore(tmp_path)
+        store.save(quiet_pcm, 16000)
+
+        transcriber = AudioCapturingTranscriber(["quiet recovered words"])
+        pipeline = _make_pipeline(tmp_path, FakeTextSink(), transcriber)
+
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_text_pipeline", lambda config: pipeline)
+
+        assert main(["recover"]) == 0
+        assert store.pending() == []
+        [seen] = transcriber.audio
+        assert peak_amplitude(seen) > peak_amplitude(quiet_pcm)
         assert "1 recovered" in capsys.readouterr().out
 
     def test_failure_keeps_the_file_and_reports_it(self, capsys, tmp_path, monkeypatch):
