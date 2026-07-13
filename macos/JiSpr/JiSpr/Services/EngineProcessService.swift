@@ -82,6 +82,10 @@ final class EngineProcessService: @unchecked Sendable {
 
     static func launchEnvironment(base: [String: String]) -> [String: String] {
         var environment = base
+        // The engine lives inside the signed app bundle; letting Python write
+        // __pycache__/*.pyc there adds unsealed files and fails strict
+        // code-sign verification after the first run.
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         let standardPaths = [
             "/opt/homebrew/bin",
             "/usr/local/bin",

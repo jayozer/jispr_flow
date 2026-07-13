@@ -190,7 +190,7 @@ def test_composite_reporter_only_forwards_levels_to_interested_reporters():
 
 
 class TestRunWithPill:
-    def test_enabled_pill_wraps_the_existing_run_loop(self, monkeypatch):
+    def test_enabled_pill_wraps_the_existing_run_loop(self, monkeypatch, tmp_path):
         calls = []
 
         class FakeMacPillApplication:
@@ -212,6 +212,9 @@ class TestRunWithPill:
             floating_pill=True,
             hotkey="fn",
             pill_style="compact",
+            # A tmp data_dir keeps the single-instance runtime.lock out of the
+            # real one, which a live JiSpr.app legitimately holds.
+            data_dir=tmp_path,
         )
 
         code = _cmd_run(SimpleNamespace(mode=None, pill=None), config)
@@ -223,7 +226,7 @@ class TestRunWithPill:
             ("run", "push-to-talk", True),
         ]
 
-    def test_no_pill_override_runs_console_directly(self, monkeypatch):
+    def test_no_pill_override_runs_console_directly(self, monkeypatch, tmp_path):
         calls = []
 
         def fake_run_loop(config, mode, reporter, stop_event=None):
@@ -231,21 +234,21 @@ class TestRunWithPill:
             return 3
 
         monkeypatch.setattr(app_module, "_run_loop", fake_run_loop)
-        config = replace(load_config(env={}), floating_pill=True)
+        config = replace(load_config(env={}), floating_pill=True, data_dir=tmp_path)
 
         code = _cmd_run(SimpleNamespace(mode=None, pill=False), config)
 
         assert code == 3
         assert calls == [("push-to-talk", "ConsoleReporter", None)]
 
-    def test_unavailable_pill_warns_and_falls_back(self, monkeypatch, capsys):
+    def test_unavailable_pill_warns_and_falls_back(self, monkeypatch, capsys, tmp_path):
         class MissingPill:
             def __init__(self, _hotkey, style):
                 raise LocalFlowError("AppKit missing", hint="install desktop extras")
 
         monkeypatch.setattr(macos_module, "MacPillApplication", MissingPill)
         monkeypatch.setattr(app_module, "_run_loop", lambda *_args, **_kwargs: 0)
-        config = replace(load_config(env={}), floating_pill=True)
+        config = replace(load_config(env={}), floating_pill=True, data_dir=tmp_path)
 
         assert _cmd_run(SimpleNamespace(mode=None, pill=None), config) == 0
         error = capsys.readouterr().err

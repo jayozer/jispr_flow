@@ -21,9 +21,11 @@ _IDLE, _PENDING, _RECORDING, _CANCELLED = "idle", "pending", "recording", "cance
 
 @dataclass
 class SpaceActions:
-    start: bool = False  # begin recording
+    start: bool = False  # begin capturing immediately (including the hold threshold)
+    confirm: bool = False  # the hold threshold elapsed; expose recording UI
     stop: bool = False  # finish recording and insert
     cancel: bool = False  # discard the recording
+    discard: bool = False  # silently discard a quick tap's capture
     replay_space: bool = False  # synthesize the swallowed space (it was a tap)
     start_timer: bool = False  # schedule hold_elapsed(machine.generation)
 
@@ -37,14 +39,16 @@ class SpaceStateMachine:
         if self.state == _IDLE:
             self.state = _PENDING
             self.generation += 1
-            return SpaceActions(start_timer=True)
+            # Capture from physical key-down so a deliberate hold retains
+            # the first syllable spoken during the tap-vs-hold threshold.
+            return SpaceActions(start=True, start_timer=True)
         return SpaceActions()  # OS auto-repeat while pending/recording/cancelled
 
     def space_up(self) -> SpaceActions:
         if self.state == _PENDING:
             self.state = _IDLE
             self.generation += 1  # invalidate the in-flight hold timer
-            return SpaceActions(replay_space=True)
+            return SpaceActions(discard=True, replay_space=True)
         if self.state == _RECORDING:
             self.state = _IDLE
             return SpaceActions(stop=True)
@@ -55,7 +59,7 @@ class SpaceStateMachine:
     def hold_elapsed(self, generation: int) -> SpaceActions:
         if self.state == _PENDING and generation == self.generation:
             self.state = _RECORDING
-            return SpaceActions(start=True)
+            return SpaceActions(confirm=True)
         return SpaceActions()
 
     def other_key_down(self) -> SpaceActions:
@@ -69,12 +73,13 @@ class SpaceStateMachine:
         if self.state == _PENDING:
             self.state = _CANCELLED
             self.generation += 1  # invalidate the in-flight hold timer
-            return SpaceActions(replay_space=True)
+            return SpaceActions(discard=True, replay_space=True)
         return SpaceActions()
 
     def cancel_down(self) -> SpaceActions:
-        if self.state == _RECORDING:
+        if self.state in {_PENDING, _RECORDING}:
             self.state = _CANCELLED  # stay parked until the physical space release
+            self.generation += 1  # pending cancellation invalidates the hold timer
             return SpaceActions(cancel=True)
         return SpaceActions()
 
@@ -125,6 +130,23 @@ class SpacePushToTalk(HotkeyListener):
         self._on_press: Callable[[], None] | None = None
         self._on_release: Callable[[], None] | None = None
         self._on_cancel: Callable[[], None] | None = None
+        self._on_hold_confirm: Callable[[], None] | None = None
+        self._on_tap_discard: Callable[[], None] | None = None
+
+    def set_preroll_callbacks(
+        self,
+        on_hold_confirm: Callable[[], None],
+        on_tap_discard: Callable[[], None],
+    ) -> None:
+        """Configure the two Space-only sides of preroll capture.
+
+        ``on_press`` begins hidden capture at physical key-down. This hook
+        announces a deliberate hold only after the threshold, while the
+        discard hook stops that hidden capture for an ordinary tap without
+        flashing the recording UI.
+        """
+        self._on_hold_confirm = on_hold_confirm
+        self._on_tap_discard = on_tap_discard
 
     # -- actions ---------------------------------------------------------
     def _apply(self, actions: SpaceActions, generation: int) -> None:
@@ -140,10 +162,22 @@ class SpacePushToTalk(HotkeyListener):
             self._timer = threading.Timer(self.hold_ms / 1000.0, self._fire_hold, args=[generation])
             self._timer.daemon = True
             self._timer.start()
+        preroll_enabled = (
+            self._on_hold_confirm is not None and self._on_tap_discard is not None
+        )
+        if actions.start and preroll_enabled and self._on_press is not None:
+            self._on_press()
+        if actions.confirm:
+            if preroll_enabled and self._on_hold_confirm is not None:
+                self._on_hold_confirm()
+            elif self._on_press is not None:
+                # Backward-compatible direct use without preroll hooks:
+                # taps remain inert and a hold starts on the threshold.
+                self._on_press()
+        if actions.discard and preroll_enabled and self._on_tap_discard is not None:
+            self._on_tap_discard()
         if actions.replay_space:
             self._replay_space()
-        if actions.start and self._on_press is not None:
-            self._on_press()
         if actions.stop and self._on_release is not None:
             self._on_release()
         if actions.cancel and self._on_cancel is not None:

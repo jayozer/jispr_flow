@@ -387,4 +387,9 @@ class AppHost:
 
 
 def run_app_host(input_stream: IO[str], output_stream: IO[str]) -> int:
-    return AppHost(input_stream=input_stream, output_stream=output_stream).run()
+    from local_flow.runtime_lock import RuntimeInstanceLock
+
+    host = AppHost(input_stream=input_stream, output_stream=output_stream)
+    config = host.controller.load().snapshot.config
+    with RuntimeInstanceLock(config.data_dir, "native app-host"):
+        return host.run()

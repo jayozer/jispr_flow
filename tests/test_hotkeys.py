@@ -156,15 +156,15 @@ class TestSpaceStateMachine:
     def test_quick_tap_replays_a_space(self):
         m = SpaceStateMachine()
         down = m.space_down()
-        assert down.start_timer and not down.start
+        assert down.start_timer and down.start
         up = m.space_up()
-        assert up.replay_space and not up.stop
+        assert up.replay_space and up.discard and not up.stop
 
     def test_hold_starts_then_release_stops(self):
         m = SpaceStateMachine()
         m.space_down()
         held = m.hold_elapsed(m.generation)
-        assert held.start
+        assert held.confirm and not held.start
         up = m.space_up()
         assert up.stop and not up.replay_space
 
@@ -192,11 +192,12 @@ class TestSpaceStateMachine:
         assert m.space_up() == SpaceActions()  # physical release: swallowed, no stop
         assert m.space_down().start_timer  # a fresh press afterwards works again
 
-    def test_cancel_while_idle_or_pending_is_noop(self):
+    def test_cancel_while_idle_is_noop_but_pending_capture_discards(self):
         m = SpaceStateMachine()
         assert m.cancel_down() == SpaceActions()
         m.space_down()
-        assert m.cancel_down() == SpaceActions()
+        assert m.cancel_down().cancel
+        assert m.space_up() == SpaceActions()
 
     def test_up_while_idle_is_noop(self):
         assert SpaceStateMachine().space_up() == SpaceActions()
@@ -208,7 +209,7 @@ class TestSpaceStateMachine:
         m = SpaceStateMachine()
         m.space_down()
         flush = m.other_key_down()
-        assert flush.replay_space and not flush.start and not flush.stop
+        assert flush.replay_space and flush.discard and not flush.start and not flush.stop
         # The physical space release afterwards is swallowed: the space was
         # already typed by the flush.
         assert m.space_up() == SpaceActions()
@@ -590,13 +591,55 @@ class TestSpacePushToTalkRollover:
         assert replays == ["space"]  # the physical release does not replay again
 
     def test_plain_tap_still_replays_on_release(self, monkeypatch):
+        events = []
         replays = []
         sp = self._listener(monkeypatch, replays)
+        sp._on_press = lambda: events.append("capture")
+        sp.set_preroll_callbacks(
+            lambda: events.append("confirm"),
+            lambda: events.append("discard"),
+        )
 
         sp._handle_press(sp._keyboard.Key.space)
         sp._handle_release(sp._keyboard.Key.space)
 
+        assert events == ["capture", "discard"]
         assert replays == ["space"]
+
+    def test_hold_keeps_preroll_and_confirms_before_release(self, monkeypatch):
+        events = []
+        sp = self._listener(monkeypatch, [])
+        sp._on_press = lambda: events.append("capture")
+        sp._on_release = lambda: events.append("finish")
+        sp.set_preroll_callbacks(
+            lambda: events.append("confirm"),
+            lambda: events.append("discard"),
+        )
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._fire_hold(sp._machine.generation)
+        sp._handle_release(sp._keyboard.Key.space)
+
+        assert events == ["capture", "confirm", "finish"]
+
+    def test_direct_use_without_preroll_hooks_keeps_legacy_tap_behavior(
+        self, monkeypatch
+    ):
+        events = []
+        replays = []
+        sp = self._listener(monkeypatch, replays)
+        sp._on_press = lambda: events.append("start")
+        sp._on_release = lambda: events.append("finish")
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._handle_release(sp._keyboard.Key.space)
+        assert events == []
+        assert replays == ["space"]
+
+        sp._handle_press(sp._keyboard.Key.space)
+        sp._fire_hold(sp._machine.generation)
+        sp._handle_release(sp._keyboard.Key.space)
+        assert events == ["start", "finish"]
 
     def test_injected_key_press_does_not_flush(self, monkeypatch):
         # A TypingSink-typed character (injected) while the space is pending

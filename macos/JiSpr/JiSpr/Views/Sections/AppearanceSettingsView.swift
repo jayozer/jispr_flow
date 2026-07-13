@@ -78,7 +78,8 @@ struct AppearanceSettingsView: View {
                         .stroke(JiSprTheme.border.opacity(0.8), lineWidth: 1)
 
                     if pillEnabled {
-                        pillPreview
+                        FloatingPillView(configuration: previewConfiguration)
+                            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
                             .transition(.scale(scale: 0.96).combined(with: .opacity))
                     } else {
                         VStack(spacing: 10) {
@@ -111,57 +112,16 @@ struct AppearanceSettingsView: View {
         }
     }
 
-    @ViewBuilder
-    private var pillPreview: some View {
-        if pillStyle == "expanded" {
-            HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .fill(JiSprTheme.orange.opacity(0.18))
-                        .frame(width: 46, height: 46)
-                    Image(systemName: "waveform")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(JiSprTheme.orange)
-                }
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("JiSpr is listening")
-                        .font(.headline)
-                        .foregroundStyle(JiSprTheme.ink)
-                    Text("Speak naturally — release Fn when you're done")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 12)
-                HStack(alignment: .center, spacing: 3) {
-                    ForEach([12, 22, 32, 18, 27, 14], id: \.self) { height in
-                        Capsule()
-                            .fill(JiSprTheme.sage)
-                            .frame(width: 4, height: CGFloat(height))
-                    }
-                }
-            }
-            .padding(.horizontal, 18)
-            .frame(width: 470, height: 76)
-            .background(JiSprTheme.surface, in: RoundedRectangle(cornerRadius: 24))
-            .overlay { RoundedRectangle(cornerRadius: 24).stroke(JiSprTheme.border) }
-            .shadow(color: .black.opacity(0.08), radius: 12, y: 5)
-        } else {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(JiSprTheme.orange)
-                    .frame(width: 10, height: 10)
-                Image(systemName: "waveform")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(JiSprTheme.sage)
-                Text("Listening")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(JiSprTheme.ink)
-            }
-            .padding(.horizontal, 18)
-            .frame(height: 44)
-            .background(JiSprTheme.surface, in: Capsule())
-            .overlay { Capsule().stroke(JiSprTheme.border) }
-            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
-        }
+    private var previewConfiguration: FloatingPillConfiguration {
+        FloatingPillConfiguration(
+            enabled: true,
+            style: pillStyle,
+            state: .recording,
+            detail: "",
+            audioLevel: 0.68,
+            hotkey: store.stringValue("hotkey").isEmpty
+                ? "fn"
+                : store.stringValue("hotkey")
+        )
     }
 }

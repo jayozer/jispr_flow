@@ -2,6 +2,32 @@ import XCTest
 @testable import JiSpr
 
 final class EngineLocatorTests: XCTestCase {
+    @MainActor
+    func testFirstActivationRequestsSettingsOnce() {
+        let delegate = AppDelegate()
+        let initialRequest = AppStore.shared.settingsRequestID
+        let notification = Notification(name: NSApplication.didBecomeActiveNotification)
+
+        delegate.applicationDidBecomeActive(notification)
+        delegate.applicationDidBecomeActive(notification)
+
+        XCTAssertEqual(AppStore.shared.settingsRequestID, initialRequest + 1)
+    }
+
+    @MainActor
+    func testReopenRequestsSettingsWindow() {
+        let delegate = AppDelegate()
+        let initialRequest = AppStore.shared.settingsRequestID
+
+        XCTAssertTrue(
+            delegate.applicationShouldHandleReopen(
+                NSApplication.shared,
+                hasVisibleWindows: false
+            )
+        )
+        XCTAssertEqual(AppStore.shared.settingsRequestID, initialRequest + 1)
+    }
+
     func testEngineEnvironmentIncludesHomebrewAndPreservesExistingPath() {
         let environment = EngineProcessService.launchEnvironment(
             base: ["PATH": "/custom/bin:/usr/bin", "TOKEN": "kept"]
@@ -12,6 +38,15 @@ final class EngineLocatorTests: XCTestCase {
             "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/custom/bin"
         )
         XCTAssertEqual(environment["TOKEN"], "kept")
+    }
+
+    func testEngineEnvironmentDisablesBytecodeCaches() {
+        // Regression: the engine used to write __pycache__ into the sealed
+        // bundle at runtime, so `codesign --verify --strict` failed on every
+        // installed app after its first launch.
+        let environment = EngineProcessService.launchEnvironment(base: [:])
+
+        XCTAssertEqual(environment["PYTHONDONTWRITEBYTECODE"], "1")
     }
 
     func testEnvironmentOverridesBundleConfiguration() throws {

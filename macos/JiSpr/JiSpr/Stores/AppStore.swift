@@ -21,14 +21,23 @@ final class AppStore {
     }
 
     private let engine = EngineProcessService()
+    @ObservationIgnored private lazy var floatingPill = FloatingPillController()
     private var pendingActions: [String: PendingAction] = [:]
     private(set) var drafts: [String: JSONValue] = [:]
     private(set) var dirtyFields: Set<String> = []
 
-    private(set) var snapshot: HostSnapshot?
-    private(set) var state: DictationState = .offline
-    private(set) var stateDetail = "Starting local engine…"
-    private(set) var audioLevel = 0.0
+    private(set) var snapshot: HostSnapshot? {
+        didSet { refreshFloatingPill() }
+    }
+    private(set) var state: DictationState = .offline {
+        didSet { refreshFloatingPill() }
+    }
+    private(set) var stateDetail = "Starting local engine…" {
+        didSet { refreshFloatingPill() }
+    }
+    private(set) var audioLevel = 0.0 {
+        didSet { refreshFloatingPill() }
+    }
     private(set) var isHostOnline = false
     private(set) var dictationEnabled = false
     private(set) var pendingRestart = false
@@ -38,6 +47,7 @@ final class AppStore {
     private(set) var launchAtLogin = false
     private(set) var accessibilityGranted = AXIsProcessTrusted()
     private(set) var inputMonitoringGranted = CGPreflightListenEventAccess()
+    private(set) var settingsRequestID = 0
     private var isQuitting = false
 
     private init() {
@@ -113,6 +123,7 @@ final class AppStore {
 
     func quit() {
         isQuitting = true
+        floatingPill.close()
         engine.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             NSApplication.shared.terminate(nil)
@@ -121,12 +132,17 @@ final class AppStore {
 
     func applicationWillTerminate() {
         isQuitting = true
+        floatingPill.close()
         engine.stop(forceAfter: 0.2)
     }
 
     func openDataFolder() {
         guard let path = snapshot?.dataDir else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+    }
+
+    func requestSettingsWindow() {
+        settingsRequestID += 1
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -182,6 +198,9 @@ final class AppStore {
         } else {
             dirtyFields.insert(key)
         }
+        if key == "floating_pill" || key == "pill_style" || key == "hotkey" {
+            refreshFloatingPill()
+        }
     }
 
     func saveSettings() {
@@ -205,6 +224,7 @@ final class AppStore {
         }
         dirtyFields.removeAll()
         bannerMessage = nil
+        refreshFloatingPill()
     }
 
     func setStyle(_ name: String) {
@@ -330,7 +350,9 @@ final class AppStore {
         case "state":
             if let rawState = message.state {
                 state = DictationState(hostValue: rawState)
-                stateDetail = message.detail?.isEmpty == false ? message.detail! : state.title
+                stateDetail = message.detail?.isEmpty == false
+                    ? message.detail!
+                    : state.fallbackDetail
                 if pendingRestart, !state.isBusy {
                     pendingRestart = false
                     let id = engine.send(command: "reload", payload: ["start": true])
@@ -448,5 +470,21 @@ final class AppStore {
             string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)"
         ) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    private func refreshFloatingPill() {
+        guard snapshot != nil else { return }
+        floatingPill.update(
+            FloatingPillConfiguration(
+                enabled: boolValue("floating_pill"),
+                style: stringValue("pill_style").isEmpty
+                    ? "compact"
+                    : stringValue("pill_style"),
+                state: state,
+                detail: stateDetail,
+                audioLevel: audioLevel,
+                hotkey: stringValue("hotkey").isEmpty ? "fn" : stringValue("hotkey")
+            )
+        )
     }
 }

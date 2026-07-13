@@ -20,8 +20,8 @@ from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.status import StatusReporter
 
 
-def _pcm(n: int = 100) -> bytes:
-    return b"\x00\x01" * n
+def _pcm(n: int = 1600) -> bytes:
+    return b"\x00\x10" * n
 
 
 def _save_named(store: PendingAudioStore, name: str, mtime: float) -> None:
@@ -51,6 +51,18 @@ def _make_pipeline(tmp_path, sink, transcriber=None):
         store=store,
         sink=sink,
     )
+
+
+class AudioCapturingTranscriber(MockTranscriber):
+    """MockTranscriber that also keeps the raw PCM it was asked to transcribe."""
+
+    def __init__(self, scripted):
+        super().__init__(scripted)
+        self.audio: list[bytes] = []
+
+    def transcribe(self, pcm: bytes, sample_rate: int) -> str:
+        self.audio.append(pcm)
+        return super().transcribe(pcm, sample_rate)
 
 
 class TestSaveLoadRoundTrip:
@@ -214,6 +226,61 @@ class TestRecoverCommand:
         assert store.pending() == []
         out = capsys.readouterr().out
         assert "2 recovered" in out
+
+    def test_quiet_pending_audio_is_not_rejected_by_frame_vad(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        quiet_pcm = (b"\x78\x00\x88\xff") * 2400  # peak 120; below old RMS gate
+        store = PendingAudioStore(tmp_path)
+        store.save(quiet_pcm, 16000)
+        transcriber = MockTranscriber(["quiet recovered words"])
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(tmp_path, sink, transcriber)
+
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_text_pipeline", lambda config: pipeline)
+        monkeypatch.setattr(
+            app_module,
+            "_build_vad",
+            lambda config: (_ for _ in ()).throw(
+                AssertionError("recover must not re-run frame VAD")
+            ),
+        )
+
+        assert main(["recover"]) == 0
+        assert transcriber.calls == [(len(quiet_pcm), 16000)]
+        assert store.pending() == []
+        assert "1 recovered" in capsys.readouterr().out
+
+    def test_whisper_preset_boosts_recovered_audio_like_the_live_path(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """Live whisper-mode processing normalizes accepted audio at processing
+        time (pending WAVs hold the raw, unboosted PCM). Recover must apply the
+        same boost, or a quiet utterance saved before a crash reaches ASR
+        quieter than the live path would have sent it."""
+        from local_flow.audio.gain import peak_amplitude
+
+        monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_VAD_PRESET", "whisper")
+        quiet_pcm = (b"\x78\x00\x88\xff") * 2400  # peak 120; passes the recover gate
+        store = PendingAudioStore(tmp_path)
+        store.save(quiet_pcm, 16000)
+
+        transcriber = AudioCapturingTranscriber(["quiet recovered words"])
+        pipeline = _make_pipeline(tmp_path, FakeTextSink(), transcriber)
+
+        import local_flow.app as app_module
+
+        monkeypatch.setattr(app_module, "_build_text_pipeline", lambda config: pipeline)
+
+        assert main(["recover"]) == 0
+        assert store.pending() == []
+        [seen] = transcriber.audio
+        assert peak_amplitude(seen) > peak_amplitude(quiet_pcm)
+        assert "1 recovered" in capsys.readouterr().out
 
     def test_failure_keeps_the_file_and_reports_it(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))

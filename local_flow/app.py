@@ -66,6 +66,12 @@ _DEFAULT_VAD_ENERGY_THRESHOLD = next(
 )
 _WHISPER_PRESET_ENERGY_THRESHOLD = 150.0
 
+# Push-to-talk already has human-defined utterance boundaries. This tiny
+# whole-buffer peak check rejects only electrical silence/near-silence; it is
+# deliberately far below the frame-level VAD threshold that rejected real
+# quiet speech before ASR could see it.
+_PTT_MIN_PEAK_AMPLITUDE = 100
+
 # Minimum time (monotonic seconds) that must elapse after one transform-hotkey
 # tap COMPLETES before another is allowed to run -- see `_run_loop`'s
 # `_transform_tap` and `_transform_tap_debounced` below.
@@ -1088,7 +1094,12 @@ def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
         window = ScratchpadWindow(store)
         stop_event: threading.Event | None = None
         loop_thread: threading.Thread | None = None
+        runtime_lock = None
         if args.with_dictation:
+            from local_flow.runtime_lock import RuntimeInstanceLock
+
+            runtime_lock = RuntimeInstanceLock(config.data_dir, "scratchpad dictation")
+            runtime_lock.acquire()
             stop_event = threading.Event()
             loop_thread = threading.Thread(
                 target=_run_loop,
@@ -1103,6 +1114,8 @@ def _cmd_pad(args: argparse.Namespace, config: Config) -> int:
                 stop_event.set()
             if loop_thread is not None:
                 loop_thread.join(timeout=_PAD_DICTATION_JOIN_TIMEOUT)
+            if runtime_lock is not None:
+                runtime_lock.release()
         return 0
 
     if args.list:
@@ -1385,11 +1398,10 @@ def _handle_utterance(
     full) costs that one utterance, not the session.
     ``pending_store=None`` is byte-identical to before this existed.
 
-    When ``normalize_audio`` is set (``vad_preset="whisper"``; see
-    ``_build_vad``/``_build_run_dependencies``), the PCM is peak-normalized
-    *before* both the pending-store save and ``pipeline.process_audio`` --
-    so a crash-recovered whisper-mode WAV is already boosted too, and ASR
-    always sees the same bytes that were persisted.
+    ``normalize_audio`` is used only for audio that has already crossed a
+    hands-free/recovery speech boundary. Push-to-talk passes raw PCM because
+    its held key defines the boundary and pre-gain can amplify room noise into
+    an ASR hallucination.
 
     ``sink_override`` (E13 scratchpad): resolved by the *caller* (``_run_loop``,
     from its ``pad_active`` toggle holder) rather than threaded through as a
@@ -1408,14 +1420,12 @@ def _handle_utterance(
     """
     reporter.notify("processing")
     try:
-        if normalize_audio:
-            from local_flow.audio.gain import normalize_peak
-
-            pcm = normalize_peak(pcm)
         pending_path = (
             pending_store.save(pcm, sample_rate) if pending_store is not None else None
         )
         process_kwargs = {"sink_override": sink_override} if sink_override is not None else {}
+        if normalize_audio:
+            process_kwargs["normalize_segments"] = True
         result = pipeline.process_audio(pcm, sample_rate, **process_kwargs)
         for warning in result.warnings:
             reporter.notify("warning", warning)
@@ -1923,6 +1933,7 @@ def _run_loop(
             )
 
             mouse_listener = create_mouse_listener(config)
+            auxiliary_listeners = [mouse_listener] if mouse_listener is not None else []
             # Set while a recording (started by either the keyboard listener
             # below or the mouse listener, if any) is in flight. Threaded
             # into `create_hotkey_listener` as `cancel_gate` so the keyboard
@@ -1962,6 +1973,9 @@ def _run_loop(
                             f"{config.mouse_enter_button!r} (no mouse push-to-talk)"
                         )
             recorder: dict[str, _Recording | None] = {"current": None}
+            recording_announced = {"current": False}
+            keyboard_claim: list[_Recording | None] = [None]
+            mouse_claim: list[_Recording | None] = [None]
             # Which `_Recording` currently owns the microphone -- shared with
             # the command-hotkey recorder below (if configured): both
             # eventually call `source.record_until` on the very same
@@ -1984,20 +1998,48 @@ def _run_loop(
                 owner = mic_owner[0]
                 return owner is not None and owner.thread.is_alive()
 
-            def start() -> None:
+            def _start(claim: list[_Recording | None], *, announce: bool) -> None:
                 if _mic_busy():
                     reporter.notify(
                         "warning", "microphone busy; finish the other recording first"
                     )
                     return
                 recording_active.set()
-                reporter.notify("recording")
                 rec = _Recording(source, config.vad_frame_ms)
                 recorder["current"] = rec
                 mic_owner[0] = rec
+                claim[0] = rec
+                recording_announced["current"] = announce
+                if announce:
+                    reporter.notify("recording")
 
-            def finish() -> None:
-                if not recording_active.is_set():
+            def start() -> None:
+                _start(keyboard_claim, announce=True)
+
+            def start_mouse() -> None:
+                _start(mouse_claim, announce=True)
+
+            def start_space_preroll() -> None:
+                _start(keyboard_claim, announce=False)
+
+            def confirm_space_hold() -> None:
+                # Both callbacks share the dispatcher, so the preroll start
+                # is guaranteed to have run before this hold confirmation.
+                if (
+                    recording_active.is_set()
+                    and keyboard_claim[0] is not None
+                    and recorder["current"] is keyboard_claim[0]
+                ):
+                    recording_announced["current"] = True
+                    reporter.notify("recording")
+
+            def _finish(claim: list[_Recording | None]) -> None:
+                claimed = claim[0]
+                if (
+                    not recording_active.is_set()
+                    or claimed is None
+                    or recorder["current"] is not claimed
+                ):
                     # `start()` refused above (mic busy) -- the key's own
                     # `PushToTalkCore.held` still flips true/false on
                     # physical press/release regardless, so `finish()` still
@@ -2006,7 +2048,9 @@ def _run_loop(
                     # nothing to release (releasing it here could steal it
                     # out from under whoever else does own it).
                     return
+                claim[0] = None
                 recording_active.clear()
+                recording_announced["current"] = False
                 rec = recorder["current"]
                 recorder["current"] = None
                 if rec is None:
@@ -2026,26 +2070,46 @@ def _run_loop(
                     reporter.notify("idle")
                     return
                 mic_owner[0] = None
-                if pcm:
-                    # Resolved here, not inside the processing task:
-                    # `finish()` runs on the same dispatcher as
-                    # `_toggle_pad`, so `pad_active` is read exactly when
-                    # finish() executes (see `_toggle_pad`'s docstring).
-                    sink_override = scratchpad_sink if pad_active[0] else None
+                if not pcm:
+                    reporter.notify("warning", "microphone captured no audio")
+                    reporter.notify("idle")
+                    return
 
-                    def _process(pcm: bytes = pcm) -> None:
-                        _handle_utterance(
-                            pipeline,
-                            reporter,
-                            pcm,
-                            config.sample_rate,
-                            pending_store,
-                            normalize_audio,
-                            max_utterance_min,
-                            sink_override,
+                # Resolved here, not inside the processing task:
+                # `finish()` runs on the same dispatcher as `_toggle_pad`,
+                # so `pad_active` is read exactly when finish executes.
+                sink_override = scratchpad_sink if pad_active[0] else None
+
+                def _process(pcm: bytes = pcm) -> None:
+                    # A held push-to-talk key already defines one utterance.
+                    # Send that raw capture to ASR once: no frame VAD and no
+                    # gain that can amplify room noise into a hallucination.
+                    from local_flow.audio.gain import peak_amplitude
+
+                    if peak_amplitude(pcm) < _PTT_MIN_PEAK_AMPLITUDE:
+                        reporter.notify(
+                            "warning", "no speech detected; nothing inserted"
                         )
+                        reporter.notify("idle")
+                        return
+                    _handle_utterance(
+                        pipeline,
+                        reporter,
+                        pcm,
+                        config.sample_rate,
+                        pending_store,
+                        False,
+                        max_utterance_min,
+                        sink_override,
+                    )
 
-                    processor.submit(_process)
+                processor.submit(_process)
+
+            def finish() -> None:
+                _finish(keyboard_claim)
+
+            def finish_mouse() -> None:
+                _finish(mouse_claim)
 
             def cancel() -> None:
                 if not recording_active.is_set():
@@ -2059,8 +2123,14 @@ def _run_loop(
                     # no mic claim of this callback's own to release.
                     return
                 recording_active.clear()
+                announced = recording_announced["current"]
+                recording_announced["current"] = False
                 rec = recorder["current"]
                 recorder["current"] = None
+                if keyboard_claim[0] is rec:
+                    keyboard_claim[0] = None
+                if mouse_claim[0] is rec:
+                    mouse_claim[0] = None
                 if rec is not None:
                     if rec.finish() is None:
                         # Same abandonment as finish(); the cancelled audio
@@ -2075,7 +2145,38 @@ def _run_loop(
                     print("dictation discarded")
                 # Silent on the console (ConsoleReporter has no output for
                 # "idle"); makes a tray reporter go back to its idle icon.
-                reporter.notify("idle")
+                if announced:
+                    reporter.notify("idle")
+
+            def discard_space_tap() -> None:
+                """Stop Space's hidden preroll without user-visible status.
+
+                An ordinary tap still types a space. It must not flash the
+                floating pill or print "dictation discarded" merely because
+                we captured the threshold interval to preserve held speech.
+                """
+                claimed = keyboard_claim[0]
+                if (
+                    not recording_active.is_set()
+                    or claimed is None
+                    or recorder["current"] is not claimed
+                ):
+                    return
+                keyboard_claim[0] = None
+                recording_active.clear()
+                announced = recording_announced["current"]
+                recording_announced["current"] = False
+                rec = recorder["current"]
+                recorder["current"] = None
+                if rec is not None:
+                    if rec.finish() is None:
+                        reporter.notify("warning", "microphone did not stop in time")
+                        reporter.notify("idle")
+                        return
+                    mic_owner[0] = None
+                if announced:
+                    # Only possible at the exact threshold boundary.
+                    reporter.notify("idle")
 
             dispatcher = CallbackDispatcher()
             # The second lane (Group C item 10): everything slow -- ASR +
@@ -2093,6 +2194,16 @@ def _run_loop(
             wrapped_start = dispatcher.wrap(start)
             wrapped_finish = dispatcher.wrap(finish)
             wrapped_cancel = dispatcher.wrap(cancel)
+            wrapped_mouse_start = dispatcher.wrap(start_mouse)
+            wrapped_mouse_finish = dispatcher.wrap(finish_mouse)
+            keyboard_start = wrapped_start
+            configure_preroll = getattr(listener, "set_preroll_callbacks", None)
+            if config.hotkey.lower() == "space" and callable(configure_preroll):
+                keyboard_start = dispatcher.wrap(start_space_preroll)
+                configure_preroll(
+                    dispatcher.wrap(confirm_space_hold),
+                    dispatcher.wrap(discard_space_tap),
+                )
 
             if mouse_listener is not None:
                 if config.mouse_enter_button:
@@ -2117,7 +2228,7 @@ def _run_loop(
                 # silently, as an uncaught daemon-thread exception would.
                 threading.Thread(
                     target=_run_mouse_listener,
-                    args=(mouse_listener, wrapped_start, wrapped_finish),
+                    args=(mouse_listener, wrapped_mouse_start, wrapped_mouse_finish),
                     daemon=True,
                 ).start()
 
@@ -2195,6 +2306,7 @@ def _run_loop(
                         reporter,
                     )
                     if transform_listener is not None:
+                        auxiliary_listeners.append(transform_listener)
                         # On the processor lane (LLM + clipboard), so a tap
                         # can never run concurrently with an in-flight
                         # insertion -- and so it doesn't block
@@ -2251,12 +2363,15 @@ def _run_loop(
                         reporter,
                     )
                     if pad_listener is not None:
+                        auxiliary_listeners.append(pad_listener)
                         threading.Thread(
                             target=_run_scratchpad_listener,
                             args=(pad_listener, dispatcher.wrap(_toggle_pad)),
                             daemon=True,
                         ).start()
 
+            cmd_recorder: dict[str, _Recording | None] = {"current": None}
+            cmd_recording_active = threading.Event()
             if config.command_hotkey:
                 # A second, independent push-to-talk recorder: its own
                 # `_Recording` holder, deliberately NOT shared with the main
@@ -2268,9 +2383,6 @@ def _run_loop(
                 # once has the second one refused (with a warning) rather
                 # than corrupting either recording. See `mic_owner`'s
                 # definition above for why a plain box (no lock) is safe.
-                cmd_recorder: dict[str, _Recording | None] = {"current": None}
-                cmd_recording_active = threading.Event()
-
                 def cmd_start() -> None:
                     if _mic_busy():
                         reporter.notify(
@@ -2335,6 +2447,7 @@ def _run_loop(
                     reporter,
                 )
                 if command_listener is not None:
+                    auxiliary_listeners.append(command_listener)
                     threading.Thread(
                         target=_run_command_hotkey_listener,
                         args=(
@@ -2362,7 +2475,48 @@ def _run_loop(
                     daemon=True,
                 ).start()
 
-            listener.run(wrapped_start, wrapped_finish, wrapped_cancel)
+            try:
+                listener.run(keyboard_start, wrapped_finish, wrapped_cancel)
+            finally:
+                # A native app-host reload stops the primary listener but
+                # keeps this Python process alive. Stop every companion
+                # listener too, otherwise old mouse/transform/command hooks
+                # can survive beside the replacement session.
+                for auxiliary_listener in auxiliary_listeners:
+                    stop_auxiliary = getattr(auxiliary_listener, "stop", None)
+                    if callable(stop_auxiliary):
+                        stop_auxiliary()
+
+                cleanup_done = threading.Event()
+
+                def _cleanup_active_recording() -> None:
+                    announced = (
+                        recording_announced["current"]
+                        or cmd_recording_active.is_set()
+                    )
+                    recording_active.clear()
+                    cmd_recording_active.clear()
+                    recorder["current"] = None
+                    cmd_recorder["current"] = None
+                    keyboard_claim[0] = None
+                    mouse_claim[0] = None
+                    recording_announced["current"] = False
+                    owner = mic_owner[0]
+                    if owner is not None:
+                        if owner.finish() is None:
+                            reporter.notify(
+                                "warning", "microphone did not stop in time"
+                            )
+                        else:
+                            mic_owner[0] = None
+                    if announced:
+                        reporter.notify("idle")
+                    cleanup_done.set()
+
+                # Serialize cleanup behind any last key event already
+                # queued by a listener as it stopped.
+                dispatcher.submit(_cleanup_active_recording)
+                cleanup_done.wait(timeout=_RECORDER_JOIN_TIMEOUT_S + 1.0)
     except KeyboardInterrupt:
         print("\nbye")
         return 0
@@ -2372,6 +2526,13 @@ def _run_loop(
 
 
 def _cmd_run(args: argparse.Namespace, config: Config) -> int:
+    from local_flow.runtime_lock import RuntimeInstanceLock
+
+    with RuntimeInstanceLock(config.data_dir, "local-flow run"):
+        return _cmd_run_unlocked(args, config)
+
+
+def _cmd_run_unlocked(args: argparse.Namespace, config: Config) -> int:
     mode = args.mode or config.mode
     pill_enabled = config.floating_pill if args.pill is None else args.pill
     console = ConsoleReporter()
@@ -2404,6 +2565,7 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
     ``local-flow run`` uses, deleted on success, and left in place on
     failure so a later ``recover`` can try again.
     """
+    from local_flow.audio.gain import peak_amplitude
     from local_flow.audio.recovery import PendingAudioStore
 
     store = PendingAudioStore(config.data_dir)
@@ -2430,7 +2592,21 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
             kept += 1
             continue
         try:
-            result = pipeline.process_audio(pcm, sample_rate)
+            if peak_amplitude(pcm) < _PTT_MIN_PEAK_AMPLITUDE:
+                print(f"skip {path.name}: no audible audio")
+                kept += 1
+                continue
+            # Pending PTT audio is human-bounded; pending hands-free audio
+            # has already crossed VAD. Re-segmenting either here can reject
+            # the same quiet words that the live path accepts. Whisper-mode
+            # boosting, however, must match the live path: pending WAVs hold
+            # the raw PCM, so without it a recovered quiet utterance reaches
+            # ASR quieter than the live path would have sent it.
+            result = pipeline.process_audio(
+                pcm,
+                sample_rate,
+                normalize_segments=config.vad_preset == "whisper",
+            )
         except LocalFlowError as exc:
             print(f"failed {path.name}: {exc.message}")
             kept += 1
@@ -2447,6 +2623,13 @@ def _cmd_recover(_args: argparse.Namespace, config: Config) -> int:
 
 
 def _cmd_tray(_args: argparse.Namespace, config: Config) -> int:
+    from local_flow.runtime_lock import RuntimeInstanceLock
+
+    with RuntimeInstanceLock(config.data_dir, "local-flow tray"):
+        return _cmd_tray_unlocked(config)
+
+
+def _cmd_tray_unlocked(config: Config) -> int:
     from local_flow.tray.app import TrayApp
 
     try:

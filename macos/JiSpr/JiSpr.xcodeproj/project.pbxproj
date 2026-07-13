@@ -22,9 +22,11 @@
 		C483314D3471D10BE57DDDB4 /* AppearanceSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 072D38C42FD409DB47AC0EA6 /* AppearanceSettingsView.swift */; };
 		C7A3F2C7DB27B6803D6D8114 /* HostModelsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 111157BB8972E1AF16FD5219 /* HostModelsTests.swift */; };
 		D441B32D597CCE52A4BEB30F /* JiSprApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 794204B039982AB55C31FE7F /* JiSprApp.swift */; };
+		D9AF0C884C4DB96A9A0E61FA /* FloatingPillControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2A91FF0CF8ACCC59CB20A4 /* FloatingPillControllerTests.swift */; };
 		DDEE9378E4B67E0D540456F7 /* JSONValue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 441D631471153A34F53CBB77 /* JSONValue.swift */; };
 		E4B5BFFFA5F29D8B33BC176C /* ModelSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B6E9F2ACE1EBAA74F352E5A /* ModelSettingsView.swift */; };
 		E737B9477E968122AB3A7AAF /* MenuBarContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 76FF5D0325D799A98E4A9480 /* MenuBarContent.swift */; };
+		EBCAA6635CD0A8DBBDD6A948 /* FloatingPillController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F66FF853202410FBF68BB31 /* FloatingPillController.swift */; };
 		FF6CB92F69C80C65B5B8C1BC /* SettingsComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40939A69D17373A7CB416D59 /* SettingsComponents.swift */; };
 /* End PBXBuildFile section */
 
@@ -41,6 +43,7 @@
 /* Begin PBXFileReference section */
 		072D38C42FD409DB47AC0EA6 /* AppearanceSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsView.swift; sourceTree = "<group>"; };
 		111157BB8972E1AF16FD5219 /* HostModelsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostModelsTests.swift; sourceTree = "<group>"; };
+		1B2A91FF0CF8ACCC59CB20A4 /* FloatingPillControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPillControllerTests.swift; sourceTree = "<group>"; };
 		1DCFC390C785D698C95908B0 /* PersonalizationSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationSettingsView.swift; sourceTree = "<group>"; };
 		275303796241718CA954E539 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		2E306F2E6AB7580A6A4E823A /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
@@ -49,6 +52,7 @@
 		40939A69D17373A7CB416D59 /* SettingsComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsComponents.swift; sourceTree = "<group>"; };
 		441D631471153A34F53CBB77 /* JSONValue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONValue.swift; sourceTree = "<group>"; };
 		6B6E9F2ACE1EBAA74F352E5A /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
+		6F66FF853202410FBF68BB31 /* FloatingPillController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPillController.swift; sourceTree = "<group>"; };
 		755DD714BB45508AE028C2AA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		76FF5D0325D799A98E4A9480 /* MenuBarContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarContent.swift; sourceTree = "<group>"; };
 		794204B039982AB55C31FE7F /* JiSprApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JiSprApp.swift; sourceTree = "<group>"; };
@@ -142,6 +146,7 @@
 			children = (
 				9882BB27C46998B6FC674D69 /* EngineLocator.swift */,
 				94C1BAB073C7A87984BBF7DF /* EngineProcessService.swift */,
+				6F66FF853202410FBF68BB31 /* FloatingPillController.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -167,6 +172,7 @@
 			isa = PBXGroup;
 			children = (
 				32446E00828E0D56AD194C32 /* EngineLocatorTests.swift */,
+				1B2A91FF0CF8ACCC59CB20A4 /* FloatingPillControllerTests.swift */,
 				111157BB8972E1AF16FD5219 /* HostModelsTests.swift */,
 			);
 			path = JiSprTests;
@@ -263,6 +269,7 @@
 				C483314D3471D10BE57DDDB4 /* AppearanceSettingsView.swift in Sources */,
 				B42E75138AA12C38D8ACC9C6 /* EngineLocator.swift in Sources */,
 				B5288982A61D2B52D6FAFB0E /* EngineProcessService.swift in Sources */,
+				EBCAA6635CD0A8DBBDD6A948 /* FloatingPillController.swift in Sources */,
 				240B42186641860A053FC570 /* GeneralSettingsView.swift in Sources */,
 				8B0AA4F1A0359274BBEF03C2 /* HostModels.swift in Sources */,
 				DDEE9378E4B67E0D540456F7 /* JSONValue.swift in Sources */,
@@ -282,6 +289,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				3ED0444D26DB661BB1DE4B6C /* EngineLocatorTests.swift in Sources */,
+				D9AF0C884C4DB96A9A0E61FA /* FloatingPillControllerTests.swift in Sources */,
 				C7A3F2C7DB27B6803D6D8114 /* HostModelsTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -15,7 +15,6 @@ from local_flow.app import (
     parse_mic_priority,
 )
 from local_flow.asr.mock import MockStream, MockTranscriber
-from local_flow.audio.gain import normalize_peak
 from local_flow.audio.vad import EnergyVAD
 from local_flow.commands.command_mode import CommandMode
 from local_flow.config import load_config
@@ -300,9 +299,12 @@ class TestHandleUtteranceNonLocalFlowError:
 class DummyVAD:
     """Placeholder VAD passed through `_run_loop`'s `dependencies` tuple.
 
-    `segment_stream` is monkeypatched in these tests, so the real VAD is
-    never consulted.
+    Hands-free tests monkeypatch ``segment_stream``. Push-to-talk deliberately
+    ignores this dependency because the held key defines its boundaries.
     """
+
+    def is_speech(self, _frame, _sample_rate):
+        return True
 
 
 class TestHandsFreeReArmsRecording:
@@ -483,6 +485,376 @@ class TestCancelPathNotifiesIdle:
         assert "dictation discarded" in capsys.readouterr().out
 
 
+class TestSpacePreroll:
+    def test_capture_begins_before_hold_confirmation(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path / "data")
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(
+            store,
+            MockChatClient(["Captured from the beginning."]),
+            sink,
+            MockTranscriber(["captured from the beginning"]),
+        )
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_HOTKEY": "space"})
+        capture_started = threading.Event()
+        recording_visible = threading.Event()
+        done = threading.Event()
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "recording":
+                    recording_visible.set()
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                capture_started.set()
+                stop.wait(timeout=5)
+                return b"\x00\x10" * 4800
+
+        class FakeSpaceListener:
+            def set_preroll_callbacks(self, on_hold_confirm, on_tap_discard):
+                self.on_hold_confirm = on_hold_confirm
+                self.on_tap_discard = on_tap_discard
+
+            def run(self, on_press, on_release, on_cancel):
+                on_press()  # physical Space down
+                assert capture_started.wait(timeout=5), "preroll capture did not start"
+                assert not recording_visible.is_set(), "pill appeared before hold threshold"
+                self.on_hold_confirm()  # 250 ms threshold
+                assert recording_visible.wait(timeout=5), "held Space was not announced"
+                on_release()
+                assert done.wait(timeout=5), "held Space was not processed"
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeSpaceListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert [event[0] for event in reporter.events] == [
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]
+        assert sink.events == [("insert", "Captured from the beginning.")]
+
+    def test_quick_tap_discards_preroll_without_flashing(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path / "data")
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(store, MockChatClient(["unused"]), sink)
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_HOTKEY": "space"})
+        capture_started = threading.Event()
+        capture_stopped = threading.Event()
+        captured_gate = {}
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                capture_started.set()
+                stop.wait(timeout=5)
+                capture_stopped.set()
+                return b"tap-preroll"
+
+        class FakeSpaceListener:
+            def set_preroll_callbacks(self, on_hold_confirm, on_tap_discard):
+                self.on_tap_discard = on_tap_discard
+
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                assert capture_started.wait(timeout=5), "preroll capture did not start"
+                self.on_tap_discard()
+                assert capture_stopped.wait(timeout=5), "tap preroll was not stopped"
+
+        def fake_listener(config, cancel_gate=None):
+            captured_gate["gate"] = cancel_gate
+            return FakeSpaceListener()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            fake_listener,
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            reporter,
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+            quiet=True,
+        )
+
+        assert captured_gate["gate"]() is False
+        assert reporter.events == []
+        assert sink.events == []
+
+    def test_listener_stop_cleans_up_hidden_preroll(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path / "data")
+        pipeline = _make_pipeline(store, MockChatClient(["unused"]), FakeTextSink())
+        reporter = FakeReporter()
+        config = load_config(env={"LOCAL_FLOW_HOTKEY": "space"})
+        capture_started = threading.Event()
+        capture_stopped = threading.Event()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                capture_started.set()
+                stop.wait(timeout=5)
+                capture_stopped.set()
+                return b"pending-preroll"
+
+        class FakeSpaceListener:
+            def set_preroll_callbacks(self, on_hold_confirm, on_tap_discard):
+                pass
+
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                assert capture_started.wait(timeout=5), "preroll capture did not start"
+                # Simulate app-host Stop/reload before Space reaches either
+                # the tap release or hold threshold.
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeSpaceListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            reporter,
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+            quiet=True,
+        )
+
+        assert capture_stopped.is_set()
+        assert reporter.events == []
+
+    def test_space_tap_cannot_discard_mouse_recording(self, tmp_path, monkeypatch):
+        store = PersonalizationStore(tmp_path / "data")
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(
+            store,
+            MockChatClient(["Mouse dictation survived."]),
+            sink,
+            MockTranscriber(["mouse dictation survived"]),
+        )
+        reporter = FakeReporter()
+        config = load_config(
+            env={
+                "LOCAL_FLOW_HOTKEY": "space",
+                "LOCAL_FLOW_MOUSE_BUTTON": "middle",
+            }
+        )
+        mouse_started = threading.Event()
+        space_refused = threading.Event()
+        release_mouse = threading.Event()
+        done = threading.Event()
+        captured_gate = {}
+
+        class SignalingReporter(StatusReporter):
+            def notify(self, state, detail: str = "") -> None:
+                reporter.notify(state, detail)
+                if state == "recording":
+                    mouse_started.set()
+                if state == "warning" and "microphone busy" in detail:
+                    space_refused.set()
+                if state == "idle":
+                    done.set()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return b"\x00\x10" * 4800
+
+        class FakeSpaceListener:
+            def set_preroll_callbacks(self, on_hold_confirm, on_tap_discard):
+                self.on_tap_discard = on_tap_discard
+
+            def run(self, on_press, on_release, on_cancel):
+                assert mouse_started.wait(timeout=5), "mouse recording never started"
+                on_press()
+                assert space_refused.wait(timeout=5), "Space was not refused while mic busy"
+                self.on_tap_discard()
+                assert captured_gate["gate"](), "Space tap stole the mouse recording"
+                release_mouse.set()
+                assert done.wait(timeout=5), "mouse recording did not finish"
+
+        class FakeMouseListener:
+            def run(self, on_press, on_release):
+                on_press()
+                assert release_mouse.wait(timeout=5), "Space path never released mouse test"
+                on_release()
+
+        def fake_listener(config, cancel_gate=None):
+            captured_gate["gate"] = cancel_gate
+            return FakeSpaceListener()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            fake_listener,
+        )
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_mouse_listener",
+            lambda config: FakeMouseListener(),
+        )
+
+        _run_loop(
+            config,
+            "push-to-talk",
+            SignalingReporter(),
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+            quiet=True,
+        )
+
+        assert sink.events == [("insert", "Mouse dictation survived.")]
+
+
+class TestPushToTalkAudioPath:
+    def test_quiet_capture_goes_to_asr_once_without_vad_or_gain(
+        self, tmp_path, monkeypatch
+    ):
+        raw = array.array("h", [120, -120] * 2400).tobytes()
+
+        class CapturingTranscriber(MockTranscriber):
+            def __init__(self):
+                super().__init__(["quiet words"])
+                self.received = []
+
+            def transcribe(self, pcm, sample_rate):
+                self.received.append(pcm)
+                return super().transcribe(pcm, sample_rate)
+
+        transcriber = CapturingTranscriber()
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(
+            PersonalizationStore(tmp_path / "data"),
+            MockChatClient(["Quiet words."]),
+            sink,
+            transcriber,
+        )
+        done = threading.Event()
+
+        class RejectingVAD:
+            def is_speech(self, _frame, _sample_rate):
+                raise AssertionError("push-to-talk must not consult frame VAD")
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return raw
+
+        class FakeListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                on_release()
+                assert done.wait(timeout=5), "quiet push-to-talk was not processed"
+
+        class SignalingReporter(FakeReporter):
+            def notify(self, state, detail: str = "") -> None:
+                super().notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeListener(),
+        )
+        reporter = SignalingReporter()
+
+        _run_loop(
+            load_config(env={"LOCAL_FLOW_HOTKEY": "fn"}),
+            "push-to-talk",
+            reporter,
+            dependencies=RunDependencies(pipeline, FakeSource(), RejectingVAD()),
+        )
+
+        assert transcriber.calls == [(len(raw), 16000)]
+        assert transcriber.received == [raw]
+        assert sink.events == [("insert", "Quiet words.")]
+        assert [state for state, _ in reporter.events] == [
+            "recording",
+            "processing",
+            "inserted",
+            "idle",
+        ]
+
+    def test_near_silence_is_rejected_before_asr(self, tmp_path, monkeypatch):
+        raw = array.array("h", [40, -40] * 2400).tobytes()
+        transcriber = MockTranscriber(["Thank you."])
+        sink = FakeTextSink()
+        pipeline = _make_pipeline(
+            PersonalizationStore(tmp_path / "data"),
+            MockChatClient(["You're welcome."]),
+            sink,
+            transcriber,
+        )
+        done = threading.Event()
+
+        class FakeSource:
+            def frames(self, frame_ms):
+                return iter([])
+
+            def record_until(self, stop, frame_ms):
+                stop.wait(timeout=5)
+                return raw
+
+        class FakeListener:
+            def run(self, on_press, on_release, on_cancel):
+                on_press()
+                on_release()
+                assert done.wait(timeout=5), "silence guard did not return to idle"
+
+        class SignalingReporter(FakeReporter):
+            def notify(self, state, detail: str = "") -> None:
+                super().notify(state, detail)
+                if state == "idle":
+                    done.set()
+
+        monkeypatch.setattr(
+            "local_flow.hotkeys.base.create_hotkey_listener",
+            lambda config, cancel_gate=None: FakeListener(),
+        )
+        reporter = SignalingReporter()
+
+        _run_loop(
+            load_config(env={"LOCAL_FLOW_HOTKEY": "fn"}),
+            "push-to-talk",
+            reporter,
+            dependencies=RunDependencies(pipeline, FakeSource(), DummyVAD()),
+        )
+
+        assert transcriber.calls == []
+        assert sink.events == []
+        assert reporter.events[-2:] == [
+            ("warning", "no speech detected; nothing inserted"),
+            ("idle", ""),
+        ]
+
+
 class TestAppLevelCancelGate:
     """`_run_loop`'s `recording_active` Event is threaded into
     `create_hotkey_listener` as `cancel_gate`, so the keyboard listener's
@@ -602,7 +974,7 @@ class TestAppLevelCancelGate:
 
             def record_until(self, stop, frame_ms):
                 stop.wait(timeout=5)
-                return b"pcm-bytes"  # non-empty: finish() must actually process it
+                return b"\x00\x10" * 4800
 
         class FakeListener:
             def run(self, on_press, on_release, on_cancel):
@@ -825,7 +1197,7 @@ class TestPushToTalkStreamingNotice:
 
             def record_until(self, stop, frame_ms):
                 stop.wait(timeout=5)
-                return b"pcm-bytes"
+                return b"\x00\x10" * 4800
 
         class FakeListener:
             def run(self, on_press, on_release, on_cancel):
@@ -981,11 +1353,13 @@ class _RecordingPipeline:
 
     def __init__(self, duration_s: float = 0.0, final: str = "") -> None:
         self.received_pcm: bytes | None = None
+        self.received_kwargs: dict[str, object] = {}
         self._duration_s = duration_s
         self._final = final
 
-    def process_audio(self, pcm: bytes, sample_rate: int) -> DictationResult:
+    def process_audio(self, pcm: bytes, sample_rate: int, **kwargs) -> DictationResult:
         self.received_pcm = pcm
+        self.received_kwargs = kwargs
         return DictationResult(
             rough=self._final,
             cleaned=self._final,
@@ -1000,29 +1374,27 @@ class _FailingRecordingPipeline(_RecordingPipeline):
     to inspect what was persisted to a `PendingAudioStore` before failure.
     """
 
-    def process_audio(self, pcm: bytes, sample_rate: int) -> DictationResult:
+    def process_audio(self, pcm: bytes, sample_rate: int, **kwargs) -> DictationResult:
         self.received_pcm = pcm
+        self.received_kwargs = kwargs
         raise LocalFlowError("simulated pipeline failure")
 
 
 class TestHandleUtteranceNormalizeAudio:
-    """`normalize_audio=True` (`vad_preset="whisper"`) peak-normalizes the
-    PCM once, before both the pending-store save and `pipeline.process_audio`
-    see it.
-    """
+    """Gain is delegated only for already-segmented hands-free/recovery audio."""
 
     def _quiet_pcm(self) -> bytes:
         return array.array("h", [50, -80, 60, -40]).tobytes()
 
-    def test_true_normalizes_pcm_before_processing(self):
+    def test_true_keeps_raw_pcm_and_requests_segment_normalization(self):
         pipeline = _RecordingPipeline()
         reporter = FakeReporter()
         raw = self._quiet_pcm()
 
         _handle_utterance(pipeline, reporter, raw, 16000, normalize_audio=True)
 
-        assert pipeline.received_pcm == normalize_peak(raw)
-        assert pipeline.received_pcm != raw
+        assert pipeline.received_pcm == raw
+        assert pipeline.received_kwargs == {"normalize_segments": True}
 
     def test_false_leaves_pcm_unchanged(self):
         pipeline = _RecordingPipeline()
@@ -1032,6 +1404,7 @@ class TestHandleUtteranceNormalizeAudio:
         _handle_utterance(pipeline, reporter, raw, 16000, normalize_audio=False)
 
         assert pipeline.received_pcm == raw
+        assert pipeline.received_kwargs == {}
 
     def test_default_is_false(self):
         pipeline = _RecordingPipeline()
@@ -1041,8 +1414,9 @@ class TestHandleUtteranceNormalizeAudio:
         _handle_utterance(pipeline, reporter, raw, 16000)
 
         assert pipeline.received_pcm == raw
+        assert pipeline.received_kwargs == {}
 
-    def test_pending_store_saves_the_normalized_bytes(self, tmp_path):
+    def test_pending_store_saves_raw_bytes_for_safe_recovery(self, tmp_path):
         from local_flow.audio.recovery import PendingAudioStore
 
         pending = PendingAudioStore(tmp_path)
@@ -1052,13 +1426,12 @@ class TestHandleUtteranceNormalizeAudio:
 
         _handle_utterance(pipeline, reporter, raw, 16000, pending, normalize_audio=True)
 
-        # Failure leaves the WAV in place (existing autosave contract); its
-        # bytes should already be the normalized ones, not the raw input.
+        # Failure leaves the WAV in place. Recovery must re-run speech gating
+        # on the original signal instead of persisting amplified noise.
         [saved_path] = pending.pending()
         saved_pcm, saved_rate = pending.load(saved_path)
-        assert saved_pcm == normalize_peak(raw)
+        assert saved_pcm == raw
         assert saved_rate == 16000
-
 
 class TestHandleUtteranceLongUtteranceWarning:
     """After processing, a utterance longer than `max_utterance_min` minutes
