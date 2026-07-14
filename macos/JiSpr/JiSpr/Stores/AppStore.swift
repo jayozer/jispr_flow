@@ -49,6 +49,7 @@ final class AppStore {
     private(set) var inputMonitoringGranted = CGPreflightListenEventAccess()
     private(set) var settingsRequestID = 0
     private var isQuitting = false
+    private var engineIsBundled = true
 
     private init() {
         launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -80,6 +81,10 @@ final class AppStore {
         guard !engine.isRunning else { return }
         do {
             let location = try EngineLocator.resolve()
+            engineIsBundled = EngineLocator.isBundled(
+                engineURL: location.executableURL,
+                resourceRoot: Bundle.main.resourceURL
+            )
             state = .offline
             stateDetail = "Starting local engine…"
             try engine.start(
@@ -163,7 +168,7 @@ final class AppStore {
     func refreshPermissions() {
         accessibilityGranted = AXIsProcessTrusted()
         inputMonitoringGranted = CGPreflightListenEventAccess()
-        if accessibilityGranted, inputMonitoringGranted,
+        if engineIsBundled, accessibilityGranted, inputMonitoringGranted,
            bannerMessage?.contains("Fn hotkey is paused") == true {
             bannerMessage = "Permissions granted—restart the JiSpr engine to enable Fn."
         }
@@ -439,14 +444,35 @@ final class AppStore {
 
     private func receiveDiagnostic(_ diagnostic: String) {
         guard !diagnostic.isEmpty else { return }
+        if diagnostic.contains("Fn hotkey listener active") {
+            // Ground truth from the engine: the event tap was created, so the Fn
+            // hotkey is live. Clear the permission warning if it was showing —
+            // don't touch any other banner.
+            if needsPermissionAttention {
+                state = .idle
+                stateDetail = "Ready for your hotkey"
+                bannerMessage = nil
+            }
+            return
+        }
         if diagnostic.contains("Could not create the macOS event tap") {
             state = .warning
             stateDetail = "Fn hotkey needs permission"
-            bannerMessage = "Fn hotkey is paused. Open General → Permissions, grant JiSpr access, then restart the engine."
+            bannerMessage = fnPermissionBannerMessage()
             refreshPermissions()
-        } else {
-            bannerMessage = diagnostic
+            return
         }
+        bannerMessage = diagnostic
+    }
+
+    private func fnPermissionBannerMessage() -> String {
+        if !engineIsBundled {
+            return "Fn hotkey is paused. This developer build runs the engine "
+                + "outside JiSpr.app, so macOS grants to JiSpr do not reach it — "
+                + "use the installed /Applications/JiSpr.app for a working Fn hotkey."
+        }
+        return "Fn hotkey is paused. Open General → Permissions, grant JiSpr "
+            + "Accessibility, then restart the engine."
     }
 
     private func engineTerminated(status: Int32) {
