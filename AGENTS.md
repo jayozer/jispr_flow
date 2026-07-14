@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-`local_flow/` contains the Python package. `app.py` wires the application; `pipeline.py` coordinates dictation; adapter-focused subpackages such as `audio/`, `asr/`, `llm/`, `hotkeys/`, and `insertion/` isolate platform or service integrations. Personalization, transforms, history, scratchpad, and tray behavior live in their matching subpackages. Tests are under `tests/` and mirror the production areas (`tests/test_config.py`, `tests/test_hotkeys.py`, etc.). Architecture notes and implementation plans are in `docs/`; product usage belongs in `README.md`, while `TODO.md` and `ROADMAP.md` track remaining work.
+`local_flow/` contains the Python package. `app.py` wires the application; `pipeline.py` coordinates dictation; adapter-focused subpackages such as `audio/`, `asr/`, `llm/`, `hotkeys/`, and `insertion/` isolate platform or service integrations. Personalization, transforms, history, scratchpad, and tray behavior live in their matching subpackages. Tests are under `tests/` and mirror the production areas (`tests/test_config.py`, `tests/test_hotkeys.py`, etc.). Architecture notes and implementation plans are in `docs/`; product usage belongs in `README.md`, while `TODO.md` and `ROADMAP.md` track remaining work. The native macOS app lives in `macos/JiSpr/` (SwiftUI menu-bar app; XcodeGen spec in `macos/JiSpr/project.yml`), and build/packaging scripts are in `script/` (`bootstrap.sh`, `build_and_run.sh`, `package_beta.sh`). The macOS app is the primary deliverable; the Python package is the dictation engine it drives.
 
 ## Build, Test, and Development Commands
 
@@ -12,6 +12,7 @@
 - `uv run ruff check .`: enforce imports, style, and common correctness rules.
 - `uv run local-flow demo`: exercise the full mocked pipeline without hardware or permissions.
 - `uv run local-flow check`: inspect the local LM Studio, ASR, microphone, and clipboard setup.
+- `./script/bootstrap.sh`: **build and launch the native macOS app end to end** (checks full Xcode + `xcodegen`, runs `uv sync --all-extras`, generates the Xcode project, then builds and launches JiSpr.app). Use this on a fresh machine — `uv sync` alone gives only the engine. See the README's "Native macOS app (JiSpr)" section for LM Studio, permissions, and model selection.
 
 ## Coding Style & Naming Conventions
 
