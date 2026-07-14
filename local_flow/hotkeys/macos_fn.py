@@ -123,6 +123,10 @@ class QuartzFnListener(HotkeyListener):
                 "> Privacy & Security, then restart JiSpr or the terminal.",
             )
         tap_holder.append(tap)
+        # Positive ground-truth signal for the macOS app: the tap now exists, so
+        # the Fn hotkey is live regardless of what a parent process's TCC preflight
+        # reports. The app clears its "Fn hotkey needs permission" warning on this.
+        print("Fn hotkey listener active.", file=sys.stderr, flush=True)
         source = q.CFMachPortCreateRunLoopSource(None, tap, 0)
         run_loop = q.CFRunLoopGetCurrent()
         self._run_loop = run_loop

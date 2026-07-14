@@ -81,4 +81,29 @@ final class EngineLocatorTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("Reinstall JiSpr"))
         }
     }
+
+    func testIsBundledDetectsEngineInsideResourceRoot() {
+        let root = URL(fileURLWithPath: "/Applications/JiSpr.app/Contents/Resources")
+        let engine = root.appendingPathComponent("engine/local-flow")
+        XCTAssertTrue(EngineLocator.isBundled(engineURL: engine, resourceRoot: root))
+    }
+
+    func testIsBundledRejectsOutOfBundleDevEngine() {
+        // Debug/repository builds resolve JISPR_ENGINE_PATH to the repo `.venv`,
+        // whose interpreter macOS attributes the tap to — grants to JiSpr.app
+        // never reach it, so this must read as NOT bundled.
+        let root = URL(fileURLWithPath: "/Applications/JiSpr.app/Contents/Resources")
+        let engine = URL(fileURLWithPath: "/Users/dev/repo/.venv/bin/local-flow")
+        XCTAssertFalse(EngineLocator.isBundled(engineURL: engine, resourceRoot: root))
+        XCTAssertFalse(EngineLocator.isBundled(engineURL: engine, resourceRoot: nil))
+    }
+
+    func testIsBundledRejectsSiblingPrefixCollision() {
+        // "/Resources" must not spuriously match a sibling "/Resources-dev/…".
+        let root = URL(fileURLWithPath: "/Applications/JiSpr.app/Contents/Resources")
+        let engine = URL(
+            fileURLWithPath: "/Applications/JiSpr.app/Contents/Resources-dev/engine/local-flow"
+        )
+        XCTAssertFalse(EngineLocator.isBundled(engineURL: engine, resourceRoot: root))
+    }
 }

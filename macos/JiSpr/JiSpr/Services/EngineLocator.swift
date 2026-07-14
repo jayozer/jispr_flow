@@ -46,4 +46,16 @@ enum EngineLocator {
             workingDirectoryURL: workingURL
         )
     }
+
+    /// Whether the resolved engine lives inside the app bundle. A dev/repository
+    /// build points at an out-of-bundle interpreter (e.g. `.venv`/Homebrew Python)
+    /// via `JISPR_ENGINE_PATH`; macOS attributes the Fn event tap to that binary,
+    /// so TCC grants to JiSpr.app do not reach it and the Fn hotkey cannot work.
+    static func isBundled(engineURL: URL, resourceRoot: URL?) -> Bool {
+        guard let resourceRoot else { return false }
+        let engine = engineURL.standardizedFileURL.path
+        let root = resourceRoot.standardizedFileURL.path
+        let rootPrefix = root.hasSuffix("/") ? root : root + "/"
+        return engine == root || engine.hasPrefix(rootPrefix)
+    }
 }
