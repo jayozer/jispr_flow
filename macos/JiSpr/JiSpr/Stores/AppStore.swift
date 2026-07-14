@@ -472,7 +472,7 @@ final class AppStore {
                 + "use the installed /Applications/JiSpr.app for a working Fn hotkey."
         }
         return "Fn hotkey is paused. Open General → Permissions, grant JiSpr "
-            + "Accessibility, then restart the engine."
+            + "Accessibility and Input Monitoring, then restart the engine."
     }
 
     private func engineTerminated(status: Int32) {
