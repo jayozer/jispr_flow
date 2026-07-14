@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 local-flow: local-first desktop dictation (package `local_flow`, distribution name `local-flow`). Local ASR (faster-whisper) + VAD + LM Studio polish + clipboard/typing insertion. Python 3.11+, managed with uv, built with hatchling.
 
+**The primary deliverable is the native macOS app (JiSpr)** — the SwiftUI menu-bar app under `macos/JiSpr`, built with full Xcode + `xcodegen`. The `local_flow` Python package described here is the dictation engine it drives, not the finished product. On a fresh machine: confirm you're on the latest `main` (the presence of `macos/JiSpr/` is the check — there are no tagged releases, so latest = tip of `origin/main`), then run `./script/bootstrap.sh` to build and launch the app. **Do not stop after `uv sync` / `uv run local-flow run`** — that gives you the engine only, not the app. See the README's "Native macOS app (JiSpr)" section for LM Studio, permissions, and model selection.
+
 ## Commands
 
 ```bash

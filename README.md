@@ -11,7 +11,50 @@ local LM Studio server, if enabled. Known cloud AI endpoints are refused.
 > The product is **JiSpr Flow**. The command and Python package remain
 > `local-flow` and `local_flow`.
 
+## New machine? Start here
+
+**The native macOS app (JiSpr) is the primary way to run this.** The Python
+`local-flow` engine underneath it is a component, not the finished product — stop
+after `uv sync` and you have the engine only, not the app.
+
+**1. Get the actual latest.** There are no tagged releases, so "latest" is always
+the tip of `main`:
+
+```bash
+git clone https://github.com/jayozer/jispr_flow.git   # fresh machine
+# ...or, in an existing clone:
+git checkout main && git pull
+```
+
+**2. Verify you really have it** — a fork or a stale branch looks just like a good
+clone. All four must be true:
+
+```bash
+git remote -v              # points at github.com/jayozer/jispr_flow
+                           # (if it's your fork, add an `upstream` remote or re-clone)
+git branch --show-current  # prints: main
+git status                 # says "up to date with 'origin/main'"
+ls macos/JiSpr             # exists — this directory IS the native app
+```
+
+If `macos/JiSpr/` is missing you do **not** have the app; fix the remote/branch above.
+
+**3. Build and launch the app** — one command does the whole thing:
+
+```bash
+./script/bootstrap.sh
+```
+
+It checks prerequisites (full Xcode, `uv`, `xcodegen`), installs the engine,
+generates the Xcode project, then builds and launches JiSpr.app. See
+[Native macOS app (JiSpr)](#native-macos-app-jispr) for the step-by-step version and
+the manual follow-up (LM Studio, permissions, model selection).
+
 ## Quick start: Apple Silicon Mac
+
+> This runs the **dictation engine directly from the command line** — no app. For
+> the native menu-bar app (recommended), see
+> [New machine? Start here](#new-machine-start-here).
 
 Requirements: [uv](https://docs.astral.sh/uv/), macOS microphone permissions,
 and optionally [LM Studio](https://lmstudio.ai/) with a local instruct model
@@ -209,22 +252,117 @@ uv run local-flow learn --add 1 2
 
 Run `uv run local-flow --help` or `<command> --help` for every option.
 
-## Native macOS app (local beta)
+## Native macOS app (JiSpr)
 
-JiSpr now includes a SwiftUI menu-bar app under `macos/JiSpr`. It keeps the
-Python dictation engine as the local source of truth, while providing a pastel
-beige/sage/orange settings window, live recording status, quick style/language
-choices, Launch at Login, and recovery when the engine stops unexpectedly.
-Closing Settings leaves the small JiSpr waveform in the upper-right menu bar;
-use the menu's **Quit JiSpr** action to stop the app.
+The native SwiftUI menu-bar app under `macos/JiSpr` is the recommended way to run
+JiSpr on macOS. It drives the same local Python dictation engine behind a
+redesigned menu bar and Settings UI, with Launch at Login and recovery if the
+engine stops unexpectedly. It lives as a waveform icon in the menu bar (no Dock
+icon); closing Settings leaves it running there — use the icon's **Quit JiSpr**
+action to stop the app.
+
+> **Fast path:** from a checkout on the latest `main`, `./script/bootstrap.sh` does
+> step 1 (engine install) and the `xcodegen generate` + build/launch of step 3 in
+> one command. It only *checks* for full Xcode — it does **not** run the one-time
+> `sudo xcode-select` / `xcodebuild -license accept` commands in step 3, so do those
+> first if you haven't. The numbered steps remain the manual equivalent, plus the
+> parts a script can't do (LM Studio, permissions, model selection).
+
+### Requirements
+
+- Apple Silicon Mac, macOS 14 or later
+- [uv](https://docs.astral.sh/uv/)
+- **Full Xcode** (not just the Command Line Tools) — required to build the app
+- [LM Studio](https://lmstudio.ai) for writing polish (optional — without it,
+  JiSpr falls back to deterministic rules-only cleanup)
+
+### 1. Build the dictation engine
 
 ```bash
-uv sync --all-extras
-xcodegen generate --spec macos/JiSpr/project.yml
+uv sync --all-extras      # audio + asr + desktop + tray extras
+uv run local-flow check   # optional: verify mic / ASR / clipboard / LM Studio
+```
+
+Plain `uv sync` installs only the core (`httpx`). Without `--all-extras` the
+engine cannot capture the microphone or run local speech recognition.
+
+### 2. Set up LM Studio (writing polish)
+
+LM Studio downloads models from Hugging Face, which **requires authentication** —
+anonymous downloads return `HTTP 403`.
+
+1. Authenticate with Hugging Face (any one of):
+   - Add a Hugging Face **Read** token in LM Studio's settings, or
+   - `launchctl setenv HF_TOKEN <token>`, then fully quit and reopen LM Studio, or
+   - `uv run hf auth login`
+2. Download a model, for example:
+   ```bash
+   uv run hf download lmstudio-community/gemma-4-12B-it-MLX-4bit \
+     --local-dir ~/.cache/lm-studio/models/lmstudio-community/gemma-4-12B-it-MLX-4bit
+   ```
+3. In LM Studio, load the model and start the local server:
+   **Developer → Start Server** (defaults to `http://localhost:1234`).
+
+### 3. Build and launch JiSpr.app
+
+Building the SwiftUI app needs full Xcode. Point the toolchain at it and accept
+the license (one time):
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+sudo xcodebuild -runFirstLaunch
+```
+
+Then build and run — the Debug build is wired to this repo's `.venv` engine:
+
+```bash
+xcodegen generate --spec macos/JiSpr/project.yml   # first time / after project.yml changes
 ./script/build_and_run.sh --verify
 ```
 
-The debug app resolves the engine from this checkout's `.venv/bin/local-flow`.
+### 4. Grant permissions, then restart the app
+
+On first launch, grant **JiSpr** the following in
+**System Settings → Privacy & Security**:
+
+- **Microphone**
+- **Accessibility**
+- **Input Monitoring** (use the *Request Access* button in JiSpr's General settings)
+
+> **Restart JiSpr after granting.** The global Fn hotkey tap is created at launch,
+> so a running instance will not pick up a new grant — the
+> *"Fn hotkey needs permission"* banner clears only after you quit and reopen the
+> app, even though the toggles already read *Granted*.
+
+### 5. Configure the models in Settings
+
+JiSpr has **two independent model stages** — don't confuse them:
+
+| Stage | Where | Value |
+|---|---|---|
+| Speech recognition (voice → text) | Settings → Models → **Speech Recognition** | Backend `mlx-whisper`, model e.g. `small.en` |
+| Writing polish (text → clean text) | Settings → Models → **Writing Polish** | Backend `lmstudio`, model e.g. `gemma-4-12b-it-mlx` |
+
+- If a speech model won't fully load under the **custom** preset, switch
+  **Preset → accuracy**.
+- In **Writing Polish**, set the backend to `lmstudio`, click **Refresh**, and
+  **explicitly select** your chat model (e.g. `gemma-4-12b-it-mlx`). Leaving it
+  blank auto-selects the first loaded model, which can be the wrong one when an
+  embedding model is also loaded in LM Studio.
+
+### Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| Model download fails with **HTTP 403** | Not a network/proxy issue — Hugging Face requires auth. Add an `HF_TOKEN` or log in (step 2). |
+| `xcodebuild` reports "requires Xcode" or a license error | Only Command Line Tools are active. Run the `xcode-select` + `-license accept` commands (step 3). |
+| *"Fn hotkey needs permission"* despite **Granted** | Quit and relaunch JiSpr — grants only apply to a freshly launched process (step 4). |
+| Polish output looks unchanged (rules-only) | LM Studio server isn't running, or the wrong LM Studio model is selected (steps 2 & 5). |
+
+### Packaging a beta build (optional)
+
+The Debug build resolves the engine from this checkout's `.venv/bin/local-flow`.
 The Release pipeline bundles that engine and its Python runtime into the app:
 
 ```bash
@@ -234,10 +372,8 @@ The Release pipeline bundles that engine and its Python runtime into the app:
 Without a Developer ID certificate this produces an ad-hoc DMG for local
 validation only. With Developer ID and a notarytool Keychain profile it creates
 the signed, notarized friend beta. See
-[Beta distribution](docs/BETA_DISTRIBUTION.md). Grant the launched **JiSpr** app
-Microphone, Accessibility, and Input Monitoring access when macOS asks. The
-legacy `local-flow tray` and `local-flow settings` commands remain available as
-fallbacks during beta testing.
+[Beta distribution](docs/BETA_DISTRIBUTION.md). The legacy `local-flow tray` and
+`local-flow settings` commands remain available as fallbacks during beta testing.
 
 ## Important settings
 
