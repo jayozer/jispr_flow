@@ -6,11 +6,12 @@ import re
 from dataclasses import dataclass, field
 
 from local_flow.context.field_text import FieldContext
-from local_flow.errors import LMStudioError
+from local_flow.errors import LMStudioError, LMStudioResponseError
 from local_flow.llm.base import ChatClient
-from local_flow.personalization.store import PersonalizationStore
+from local_flow.personalization.store import DEFAULT_STYLES, PersonalizationStore
 from local_flow.polish.prompting import build_polish_messages
-from local_flow.polish.rules import clean_transcript
+from local_flow.polish.rules import clean_transcript, enforce_dictionary_detailed, remove_fillers
+from local_flow.polish.s1_mini import has_protected_speech, split_transcript
 
 _ASSISTANT_PREFIX = re.compile(
     r"^\s*(?:assistant|ai)\s*:|^\s*(?:sure|certainly|of course|here['’]s)\b",
@@ -70,6 +71,7 @@ class TranscriptPolisher:
         level: str = "medium",
         fallback_to_rules: bool = True,
         system_prompt: str = "",
+        language: str | None = None,
     ) -> None:
         self.chat_client = chat_client
         self.store = store
@@ -77,6 +79,7 @@ class TranscriptPolisher:
         self._level = level
         self.fallback_to_rules = fallback_to_rules
         self.system_prompt = system_prompt
+        self.language = language
 
     @property
     def style(self) -> str:
@@ -112,6 +115,7 @@ class TranscriptPolisher:
         rough: str,
         style: str | None = None,
         field_context: FieldContext | None = None,
+        language: str | None = None,
     ) -> PolishResult:
         """Rules first, then an LLM polish pass using ``style``.
 
@@ -140,7 +144,20 @@ class TranscriptPolisher:
 
         cleaned = clean_transcript(rough)
         result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
+        # Nothing remains to polish. In particular, do not resolve an
+        # auto-selected model over HTTP for filler-only input.
         if not cleaned or self.chat_client is None:
+            return result
+
+        try:
+            if self.chat_client.is_transcript_normalizer:
+                return self._normalize(
+                    rough, result, style, language if language is not None else self.language
+                )
+        except LMStudioError as exc:
+            if not self.fallback_to_rules:
+                raise
+            result.warnings.append(f"LM Studio polish skipped: {exc.message}")
             return result
 
         requested_style = style if style is not None else self.style
@@ -172,4 +189,70 @@ class TranscriptPolisher:
                 return result
             result.polished = polished
             result.used_llm = True
+        return result
+
+    def _normalize(
+        self,
+        rough: str,
+        result: PolishResult,
+        style: str | None,
+        language: str | None,
+    ) -> PolishResult:
+        """Keep the specialized model independent of general-purpose prompts.
+
+        Feed raw ASR text so rule-based backtracking cannot discard the context
+        needed to resolve a self-correction. Rules remain the failure fallback.
+        Field context and arbitrary instructions are never put in S1's prompt.
+        """
+        assert self.chat_client is not None
+        if language and language.lower() not in ("en", "english", "auto"):
+            raise LMStudioResponseError("S1-mini supports English only; using rules.")
+        requested_style = style if style is not None else self.style
+        style_name, style_rules = self.store.style_rules(requested_style)
+        if (
+            requested_style and style_name != requested_style
+            or style_rules != DEFAULT_STYLES.get(style_name)
+            or self.system_prompt.strip()
+        ):
+            raise LMStudioResponseError(
+                "S1-mini cannot apply custom polish instructions or styles; using rules. "
+                "Select Gemma or another general-purpose model to use those instructions."
+            )
+        snippets = self.store.snippets()
+        if has_protected_speech(rough, snippets):
+            raise LMStudioResponseError(
+                "Using rules to preserve spoken commands and snippet triggers with S1-mini."
+            )
+        if self.level == "high":
+            result.warnings.append(
+                "S1-mini applies standard cleanup; high-level rewriting is unused."
+            )
+        chunks = split_transcript(rough)
+        if style_name == "email" and len(chunks) > 1:
+            raise LMStudioResponseError("S1-mini email is too long for one pass; using rules.")
+        outputs: list[str] = []
+        terms = self.store.dictionary_terms()
+        for chunk in chunks:
+            candidate = self.chat_client.normalize_transcript(chunk, style=style_name)
+            # Empty is valid for filler/noise, never proof that a meaningful
+            # utterance should be discarded (including an accidental blank response).
+            if not candidate and re.search(r"\w", remove_fillers(chunk)):
+                raise LMStudioResponseError("S1-mini returned no text for speech; using rules.")
+            reason = _unsafe_polish_reason(chunk, candidate)
+            if reason or has_protected_speech(candidate, snippets):
+                reason = reason or "introduced a spoken command or snippet"
+                raise LMStudioResponseError(
+                    f"S1-mini cleanup rejected: {reason}."
+                )
+            _, before = enforce_dictionary_detailed(chunk, terms)
+            _, after = enforce_dictionary_detailed(candidate, terms)
+            if any(after.get(term, 0) < count for term, count in before.items()):
+                raise LMStudioResponseError("S1-mini changed a dictionary term; using rules.")
+            if candidate:
+                outputs.append(candidate)
+        polished = "\n\n".join(outputs)
+        if has_protected_speech(polished, snippets):
+            raise LMStudioResponseError("S1-mini introduced a command across chunks; using rules.")
+        result.polished = polished
+        result.used_llm = True
         return result

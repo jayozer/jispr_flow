@@ -50,7 +50,10 @@ struct ModelSettingsView: View {
                         } else {
                             Picker("", selection: store.stringBinding("lmstudio_model")) {
                                 Text("Auto-select").tag("")
-                                ForEach(store.loadedModels, id: \.self) { Text($0).tag($0) }
+                                ForEach(store.loadedModels, id: \.self) { model in
+                                    Text(isS1Mini(model) ? "S1-mini by Superwhisper (\(model))" : model)
+                                        .tag(model)
+                                }
                             }
                             .labelsHidden()
                         }
@@ -62,8 +65,27 @@ struct ModelSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
+                if isS1Mini(selectedPolishModel) {
+                    Text("S1-mini by Superwhisper cleans up English dictation. "
+                         + "JiSpr configures it automatically. Custom instructions and field "
+                         + "context are unsupported; command and snippet utterances use rules. "
+                         + "Select Gemma or another general-purpose model for rewriting.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
         }
+    }
+
+    private var selectedPolishModel: String {
+        let model = store.stringValue("lmstudio_model")
+        return model.isEmpty ? (store.loadedModels.first ?? "") : model
+    }
+
+    private func isS1Mini(_ model: String) -> Bool {
+        model.range(of: #"(?i)(?:^|[/\\])s1-mini(?:$|[-_.:@/])"#,
+                    options: .regularExpression) != nil
     }
 
     private var customModelBinding: Binding<String> {

@@ -363,6 +363,7 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
         style=config.style,
         level=config.cleanup_level,
         system_prompt=config.lmstudio_system_prompt,
+        language=config.asr_language,
     )
     command_mode = (
         CommandMode(
@@ -476,8 +477,9 @@ def _polish_text(
         style=config.style,
         level=config.cleanup_level,
         system_prompt=config.lmstudio_system_prompt,
+        language=config.asr_language,
     )
-    result = polisher.polish(text)
+    result = polisher.polish(text, language=config.asr_language)
     final, _dict_count = enforce_dictionary(result.polished, store.dictionary_terms())
     final, _snippet_count = expand_snippets(final, store.snippets())
     final, actions = apply_dictation_commands(final)

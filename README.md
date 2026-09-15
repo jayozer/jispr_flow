@@ -101,6 +101,63 @@ Without a prior `uv sync`, the equivalent one-shot command is:
 uv run --extra mlx-asr --extra audio --extra desktop local-flow run --pill
 ```
 
+### S1-mini by Superwhisper (English writing polish)
+
+S1-mini works after Whisper or Parakeet: speech recognition produces text,
+then S1-mini cleans up that text locally through LM Studio.
+
+1. In LM Studio, download and load the official
+   [S1-mini GGUF](https://huggingface.co/superwhisper/s1-mini-GGUF), preferably
+   `s1-mini-q4_k_m.gguf`, and start the local server.
+2. In JiSpr **Settings → Models → Writing Polish**, keep Backend set to
+   **lmstudio**, click **Refresh**, and select **S1-mini by Superwhisper**.
+3. Click **Save Changes**. JiSpr restarts its engine to apply the selection.
+   After updating JiSpr's source, rebuild/relaunch the app first with
+   `./script/build_and_run.sh`.
+
+JiSpr recognizes model ids such as `s1-mini`, `superwhisper/s1-mini`, and
+`s1-mini-q4_k_m.gguf`. Keep `s1-mini` in its standard model name; arbitrary
+custom aliases are not detected. CLI users set `LOCAL_FLOW_LMSTUDIO_MODEL`
+to the exact id exposed by their LM Studio server. Select an explicit id
+when several models are available; Auto-select uses the first server-listed model.
+
+JiSpr supplies the exact S1-mini prompt, temperature zero, and non-thinking
+assistant prefix automatically. It uses LM Studio's
+[raw completion endpoint](https://lmstudio.ai/docs/developer/openai-compat/completions),
+so the LM Studio chat thinking toggle does not affect JiSpr's requests.
+
+Supported behavior and limits:
+
+- **English only.** A configured non-English ASR language uses rules. `auto`
+  does not identify the transcript language for polish; use S1-mini with English
+  dictation, or select a multilingual general-purpose model for mixed languages.
+- Built-in **default**, **professional**, **casual**, **chat**, and **email** styles
+  map to S1-mini's supported controls. Default/professional/casual allow lists;
+  chat uses prose; email enables email layout. Cleanup **none** stays verbatim;
+  light/medium use S1-mini normalization; high uses the same normalization with
+  a warning because S1-mini does not offer general rewriting.
+- Focused-field context is not sent to S1-mini. Custom system instructions or
+  edited/custom styles use rules with a warning instead of silently ignoring
+  those instructions. Select Gemma or another general-purpose model to use them.
+- Utterances containing spoken commands, code-syntax commands, dictionary
+  additions, or snippet triggers use rules so those phrases survive. Dictionary
+  spelling is still enforced; a model response that removes a matched dictionary
+  term or invents a command is rejected.
+- Longer transcripts split at sentence boundaries into at most 16 requests, each
+  with at most 800 UTF-8 bytes of transcript (a conservative token bound).
+  Oversized single sentences and emails requiring multiple requests use rules.
+  Partial, malformed, timed-out, or failed output falls back for the entire
+  utterance, with no partial insertion. Empty output is accepted only for
+  filler/noise input; meaningful speech is retained if the model returns blank.
+- General transforms and command mode require a general-purpose model. If
+  S1-mini is selected, those actions report an actionable error; auto-transform
+  keeps the cleaned transcript and warns. Select Gemma again to restore its
+  existing polish, context, and rewriting behavior.
+
+No new Python dependencies or bundled model weights are required. The weights
+remain managed by LM Studio. Model terms are in the publisher's
+[license](https://huggingface.co/superwhisper/s1-mini/blob/main/LICENSE).
+
 ## What a session does
 
 ```mermaid

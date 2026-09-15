@@ -163,7 +163,10 @@ class DictationPipeline:
             # -- the polish prompt's "continue this field" instructions.
             field_context = self.field_text.current()
 
-        polish = self.polisher.polish(rough, style=ctx.style, field_context=field_context)
+        polish = self.polisher.polish(
+            rough, style=ctx.style, field_context=field_context,
+            language=getattr(self.transcriber, "language", None),
+        )
         text, dict_counts = enforce_dictionary_detailed(
             polish.polished, self.store.dictionary_terms()
         )

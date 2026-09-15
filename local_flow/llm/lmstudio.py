@@ -24,6 +24,7 @@ from local_flow.errors import (
     LMStudioResponseError,
 )
 from local_flow.llm.base import ChatClient, Message
+from local_flow.polish.s1_mini import build_prompt, is_s1_mini
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,74 @@ class LMStudioClient(ChatClient):
         self._auto_picked = True
         return self.model
 
+    @property
+    def is_transcript_normalizer(self) -> bool:
+        return is_s1_mini(self.resolve_model())
+
+    def _require_general_model(self) -> str:
+        model = self.resolve_model()
+        if is_s1_mini(model):
+            raise LMStudioModelError(
+                "S1-mini by Superwhisper supports English transcript cleanup only. "
+                "Select Gemma or another general-purpose model for rewriting and commands.",
+            )
+        return model
+
+    def normalize_transcript(self, transcript: str, *, style: str = "default") -> str:
+        """Apply S1-mini's exact non-thinking template via raw completions.
+
+        LM Studio's /completions does not apply a chat template. This avoids
+        depending on a UI toggle or an unsupported chat_template_kwargs field.
+        Reference: https://lmstudio.ai/docs/developer/openai-compat/completions
+        """
+        model = self.resolve_model()
+        if not is_s1_mini(model):
+            raise LMStudioModelError("The selected model is no longer S1-mini; retry dictation.")
+        payload = {
+            "model": model,
+            "prompt": build_prompt(transcript, style),
+            "temperature": 0,
+            "max_tokens": max(64, int(len(transcript.encode("utf-8")) * 1.3) + 32),
+            "stream": False,
+            "stop": ["<|im_end|>", "<|endoftext|>"],
+        }
+        try:
+            response = self._client.post(self._url("completions"), json=payload)
+        except httpx.TimeoutException as exc:
+            raise LMStudioConnectionError(
+                "Timed out during S1-mini cleanup.", hint=_CONNECT_HINT
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise LMStudioConnectionError(
+                "Could not reach LM Studio for S1-mini cleanup.", hint=_CONNECT_HINT
+            ) from exc
+        if response.status_code == 404:
+            if self._auto_picked:
+                # Re-detect on the next utterance. Never retry an S1 prompt
+                # against a newly selected general-purpose model.
+                self.model = ""
+            raise LMStudioModelError(
+                f"LM Studio could not complete with S1-mini model {model!r}. "
+                "Check that it is loaded and the server supports /v1/completions."
+            )
+        if response.status_code >= 400:
+            raise LMStudioResponseError(
+                f"S1-mini cleanup failed (HTTP {response.status_code}): {_error_detail(response)}"
+            )
+        data = self._parse_json(response)
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise LMStudioResponseError("S1-mini response contained no completion.")
+        choice = choices[0]
+        if choice.get("finish_reason") != "stop":
+            raise LMStudioResponseError("S1-mini did not finish cleanup; keeping the transcript.")
+        content = choice.get("text")
+        if not isinstance(content, str):
+            raise LMStudioResponseError("S1-mini response was missing completion text.")
+        if any(token in content.lower() for token in ("<|", "|>", "<think", "</think")):
+            raise LMStudioResponseError("S1-mini returned model control tokens; using rules.")
+        return content.strip()
+
     def chat(
         self,
         messages: list[Message],
@@ -176,7 +245,7 @@ class LMStudioClient(ChatClient):
         benchmark and consumes OpenAI-compatible ``data:`` SSE events.
         """
         payload: dict[str, object] = {
-            "model": self.resolve_model(),
+            "model": self._require_general_model(),
             "messages": messages,
             "temperature": temperature,
             "stream": True,
@@ -258,7 +327,7 @@ class LMStudioClient(ChatClient):
         max_tokens: int | None,
     ) -> httpx.Response:
         payload: dict[str, object] = {
-            "model": self.resolve_model(),
+            "model": self._require_general_model(),
             "messages": messages,
             "temperature": temperature,
             "stream": False,

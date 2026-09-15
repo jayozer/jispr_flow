@@ -478,6 +478,8 @@ class TestBuildRunDependenciesScratchpadSink:
     def test_build_run_dependencies_always_builds_a_scratchpad_sink(self, tmp_path, monkeypatch):
         from local_flow.app import _build_run_dependencies
 
+        # This checks dependency wiring, not microphone availability.
+        monkeypatch.setattr("local_flow.audio.capture.SounddeviceSource", lambda **_: object())
         config = _config(
             data_dir=str(tmp_path), asr_backend="mock", lmstudio_base_url="http://127.0.0.1:1/v1"
         )
