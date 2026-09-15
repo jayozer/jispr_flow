@@ -1,7 +1,7 @@
 # JiSpr Flow
 
 Local-first desktop dictation for macOS, Windows, and Linux. Speak into a
-push-to-talk or hands-free session; local Whisper transcribes; deterministic
+push-to-talk or hands-free session; local Whisper or Parakeet transcribes; deterministic
 rules and an optional local LM Studio model clean the text; JiSpr inserts one
 polished copy into the focused app.
 
@@ -10,6 +10,37 @@ local LM Studio server, if enabled. Known cloud AI endpoints are refused.
 
 > The product is **JiSpr Flow**. The command and Python package remain
 > `local-flow` and `local_flow`.
+
+## Ultra-fast local setup: Parakeet + S1-mini MLX
+
+For responsive English dictation on Apple Silicon, pair **Parakeet v3** for
+speech recognition with **S1-mini by Superwhisper, MLX 8-bit** for writing
+polish. Parakeet turns your voice into text; S1-mini removes fillers, handles
+self-corrections, and formats punctuation and spoken numbers. Both run locally.
+
+After [building and launching JiSpr](#new-machine-start-here):
+
+1. In LM Studio, download and load
+   [S1-mini MLX 8-bit](https://huggingface.co/mlx-community/S1-mini-MLX-8bit),
+   then start the local server under **Developer → Start Server**.
+2. Open JiSpr **Settings → Models → Speech Recognition**. Set Preset to
+   **custom**, Backend to **mlx-parakeet**, Model to
+   `mlx-community/parakeet-tdt-0.6b-v3`, and Language to **en**.
+3. Under **Writing Polish**, select Backend **lmstudio**, click **Refresh**,
+   and explicitly choose **S1-mini by Superwhisper (s1-mini-mlx)**, or the
+   corresponding S1-mini MLX identifier shown by your server.
+4. Click **Save Changes**, wait for **Ready**, then hold **Fn** to dictate.
+
+This setup uses the **custom** recognition preset. For a lighter speech
+model, choose the existing **fast** preset (Whisper Small English) and
+keep S1-mini selected for polish. See [S1-mini's supported behavior and
+limits](#s1-mini-by-superwhisper-english-writing-polish) before using custom
+instructions or rewriting features.
+
+For hardware planning, allow **16 GB of unified memory**, or **24 GB** for
+comfortable multitasking. These are recommendations, not measured minimums.
+Actual response time depends on the Mac, recording length, and whether models
+are already loaded. End-to-end speed comparisons remain to be measured.
 
 ## New machine? Start here
 
@@ -106,16 +137,19 @@ uv run --extra mlx-asr --extra audio --extra desktop local-flow run --pill
 S1-mini works after Whisper or Parakeet: speech recognition produces text,
 then S1-mini cleans up that text locally through LM Studio.
 
-1. In LM Studio, download and load the official
-   [S1-mini GGUF](https://huggingface.co/superwhisper/s1-mini-GGUF), preferably
-   `s1-mini-q4_k_m.gguf`, and start the local server.
+1. In LM Studio, download and load
+   [S1-mini MLX 8-bit](https://huggingface.co/mlx-community/S1-mini-MLX-8bit)
+   for the Apple Silicon setup above, and start the local server. The official
+   [S1-mini GGUF](https://huggingface.co/superwhisper/s1-mini-GGUF), such as
+   `s1-mini-q4_k_m.gguf`, is also supported. Switching between these formats
+   does not require a JiSpr code change.
 2. In JiSpr **Settings → Models → Writing Polish**, keep Backend set to
    **lmstudio**, click **Refresh**, and select **S1-mini by Superwhisper**.
 3. Click **Save Changes**. JiSpr restarts its engine to apply the selection.
    After updating JiSpr's source, rebuild/relaunch the app first with
    `./script/build_and_run.sh`.
 
-JiSpr recognizes model ids such as `s1-mini`, `superwhisper/s1-mini`, and
+JiSpr recognizes model ids such as `s1-mini`, `s1-mini-mlx`, `superwhisper/s1-mini`, and
 `s1-mini-q4_k_m.gguf`. Keep `s1-mini` in its standard model name; arbitrary
 custom aliases are not detected. CLI users set `LOCAL_FLOW_LMSTUDIO_MODEL`
 to the exact id exposed by their LM Studio server. Select an explicit id
@@ -345,6 +379,10 @@ engine cannot capture the microphone or run local speech recognition.
 
 ### 2. Set up LM Studio (writing polish)
 
+For the [ultra-fast local setup](#ultra-fast-local-setup-parakeet--s1-mini-mlx),
+select **S1-mini MLX 8-bit** using the steps above. Gemma remains an option for
+general rewriting and custom instructions; the example below installs it.
+
 LM Studio downloads models from Hugging Face, which **requires authentication** —
 anonymous downloads return `HTTP 403`.
 
@@ -398,13 +436,13 @@ JiSpr has **two independent model stages** — don't confuse them:
 
 | Stage | Where | Value |
 |---|---|---|
-| Speech recognition (voice → text) | Settings → Models → **Speech Recognition** | Backend `mlx-whisper`, model e.g. `small.en` |
-| Writing polish (text → clean text) | Settings → Models → **Writing Polish** | Backend `lmstudio`, model e.g. `gemma-4-12b-it-mlx` |
+| Speech recognition (voice → text) | Settings → Models → **Speech Recognition** | Backend `mlx-parakeet`, model `mlx-community/parakeet-tdt-0.6b-v3`; or a Whisper preset |
+| Writing polish (text → clean text) | Settings → Models → **Writing Polish** | Backend `lmstudio`, model `s1-mini-mlx` for English cleanup; or Gemma for general rewriting |
 
 - If a speech model won't fully load under the **custom** preset, switch
   **Preset → accuracy**.
 - In **Writing Polish**, set the backend to `lmstudio`, click **Refresh**, and
-  **explicitly select** your chat model (e.g. `gemma-4-12b-it-mlx`). Leaving it
+  **explicitly select** your polish model (e.g. `s1-mini-mlx`). Leaving it
   blank auto-selects the first loaded model, which can be the wrong one when an
   embedding model is also loaded in LM Studio.
 
