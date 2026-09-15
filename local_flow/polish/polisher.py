@@ -144,7 +144,9 @@ class TranscriptPolisher:
 
         cleaned = clean_transcript(rough)
         result = PolishResult(rough=rough, cleaned=cleaned, polished=cleaned)
-        if not rough.strip() or self.chat_client is None:
+        # Nothing remains to polish. In particular, do not resolve an
+        # auto-selected model over HTTP for filler-only input.
+        if not cleaned or self.chat_client is None:
             return result
 
         try:
@@ -156,9 +158,6 @@ class TranscriptPolisher:
             if not self.fallback_to_rules:
                 raise
             result.warnings.append(f"LM Studio polish skipped: {exc.message}")
-            return result
-
-        if not cleaned:
             return result
 
         requested_style = style if style is not None else self.style

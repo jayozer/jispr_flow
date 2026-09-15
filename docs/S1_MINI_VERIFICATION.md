@@ -63,6 +63,21 @@ not included. The command case intentionally used rules without inference.
 The generated DMG is signed but not notarized; this run validates a local
 installation, not readiness for external distribution.
 
+## PR review follow-up
+
+The review identified a regression for filler-only input: resolving an
+auto-selected model could wait for LM Studio even after rules removed all
+text. A nine-case regression test reproduced the unwanted requests before
+the fix (six failed, three passed). Empty rule results now return before
+model resolution or inference, including when S1-mini is explicitly selected.
+
+- PASS: full isolated suite using the command above: **1,236 passed, 27 skipped**.
+- PASS: Ruff, mocked demo, and `git diff --check`.
+- All nine new cases make zero HTTP requests and return no text or warnings.
+
+This follow-up updates the PR source; the installed build described above
+predates this early-return fix and was not repackaged during review.
+
 ## Manual acceptance still needed
 
 - Dictate through the physical microphone and assess latency/quality for the

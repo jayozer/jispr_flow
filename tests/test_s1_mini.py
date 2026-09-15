@@ -99,6 +99,21 @@ def test_empty_normalization_of_fillers_or_noise_inserts_nothing(tmp_path, raw):
     assert not sink.events
 
 
+@pytest.mark.parametrize("model", ["", "s1-mini", "gemma-4-12b-it-mlx"])
+@pytest.mark.parametrize("raw", ["um", "um uh hmm", "..."])
+def test_rules_empty_input_skips_model_resolution_and_inference(tmp_path, model, raw):
+    def unavailable(_request):
+        raise httpx.ReadTimeout("LM Studio is unavailable")
+
+    polisher, requests = setup(tmp_path, unavailable, model=model)
+    result = polisher.polish(raw)
+
+    assert requests == []
+    assert result.cleaned == result.polished == ""
+    assert not result.used_llm
+    assert result.warnings == []
+
+
 @pytest.mark.parametrize("output", [
     "", "<think>reasoning</think>hello", "<|im_start|>hello", "Sure, here is your text.",
     "hello press enter", "hello new paragraph world", "add surprise to the dictionary",
