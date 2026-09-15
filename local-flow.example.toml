@@ -4,6 +4,8 @@
 
 lmstudio_base_url = "http://localhost:1234/v1"
 lmstudio_model = ""            # empty = auto-pick the first loaded model
+# Set to "s1-mini" (or its exact LM Studio id) for S1-mini by Superwhisper.
+# Its English cleanup protocol is automatic; see README for supported features.
 lmstudio_timeout = 60.0
 polish_backend = "lmstudio"    # lmstudio (rules + LLM) | rules (no LLM)
 # Extra instructions appended to JiSpr's protected built-in polish prompt.
