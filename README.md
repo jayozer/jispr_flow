@@ -20,16 +20,27 @@ self-corrections, and formats punctuation and spoken numbers. Both run locally.
 
 After [building and launching JiSpr](#new-machine-start-here):
 
-1. In LM Studio, download and load
+1. Install **FFmpeg**, which Parakeet requires. The bootstrap script installs
+   Python dependencies but does not install this system executable. With
+   [Homebrew](https://brew.sh/):
+
+   ```bash
+   brew install ffmpeg
+   ffmpeg -version
+   ```
+
+   Complete this step before selecting Parakeet. If JiSpr already reported
+   missing FFmpeg, quit and reopen JiSpr after installation.
+2. In LM Studio, download and load
    [S1-mini MLX 8-bit](https://huggingface.co/mlx-community/S1-mini-MLX-8bit),
    then start the local server under **Developer → Start Server**.
-2. Open JiSpr **Settings → Models → Speech Recognition**. Set Preset to
+3. Open JiSpr **Settings → Models → Speech Recognition**. Set Preset to
    **custom**, Backend to **mlx-parakeet**, Model to
    `mlx-community/parakeet-tdt-0.6b-v3`, and Language to **en**.
-3. Under **Writing Polish**, select Backend **lmstudio**, click **Refresh**,
+4. Under **Writing Polish**, select Backend **lmstudio**, click **Refresh**,
    and explicitly choose **S1-mini by Superwhisper (s1-mini-mlx)**, or the
    corresponding S1-mini MLX identifier shown by your server.
-4. Click **Save Changes**, wait for **Ready**, then hold **Fn** to dictate.
+5. Click **Save Changes**, wait for **Ready**, then hold **Fn** to dictate.
 
 This setup uses the **custom** recognition preset. For a lighter speech
 model, choose the existing **fast** preset (Whisper Small English) and
