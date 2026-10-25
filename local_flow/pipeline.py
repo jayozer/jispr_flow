@@ -195,9 +195,12 @@ class DictationPipeline:
             duration_s=duration_s,
         )
         for term in dictionary_additions:
-            if self.store.add_dictionary_term(term):
+            # Skip dictionary additions for agent commands (same rationale as
+            # skip_history: agent commands are transient instructions, not
+            # dictation to be learned from).
+            if not skip_history and self.store.add_dictionary_term(term):
                 result.warnings.append(f"added '{term}' to dictionary")
-            else:
+            elif not skip_history:
                 result.warnings.append(f"'{term}' already in dictionary")
 
         if (
@@ -244,7 +247,10 @@ class DictationPipeline:
             if text:
                 self.last_transcript = text
 
-        if dict_counts and self.store is not None:
+        if dict_counts and self.store is not None and not skip_history:
+            # Skip recording term usage for agent commands (same rationale as
+            # skip_history: statistics should reflect normal dictation patterns,
+            # not one-off agent instructions).
             self.store.record_term_uses(dict_counts)
 
         if rough and self.history is not None and not skip_history:

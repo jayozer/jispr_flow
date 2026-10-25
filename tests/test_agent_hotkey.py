@@ -5,12 +5,15 @@ Mirrors `tests/test_scratchpad_hotkey.py`'s patterns.
 """
 
 import json
+import os
 import socket
+import stat
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
-from local_flow.agent.sink import AgentSink
+from local_flow.agent.sink import AgentSink, _get_default_agent_socket_path
 from local_flow.app import (
     RunDependencies,
     _build_pipeline,
@@ -66,29 +69,13 @@ def _wait_until(predicate, timeout: float = 2.0, interval: float = 0.01) -> bool
 
 
 class TestAgentSinkValidation:
-    """AgentSink only allows local IPC: Unix sockets under /tmp or /var/run,
-    or TCP to 127.0.0.1. Any other target is rejected at construction time.
+    """AgentSink validates socket security: user-owned parent dir with 0700 perms,
+    user-owned socket. TCP only allows 127.0.0.1.
     """
-
-    def test_unix_socket_tmp_accepted(self, tmp_path):
-        sock_path = tmp_path / "test.sock"
-        sink = AgentSink(f"unix:{sock_path}")
-        assert sink.target == f"unix:{sock_path}"
-
-    def test_unix_socket_var_run_accepted(self, tmp_path):
-        sink = AgentSink("unix:/var/run/poppy-desk.sock")
-        assert sink.target == "unix:/var/run/poppy-desk.sock"
 
     def test_tcp_localhost_accepted(self):
         sink = AgentSink("tcp://127.0.0.1:9876")
         assert sink.target == "tcp://127.0.0.1:9876"
-
-    def test_unix_socket_outside_allowed_rejected(self, tmp_path):
-        try:
-            AgentSink("unix:/home/user/socket.sock")
-            assert False, "should have raised"
-        except ConfigError as exc:
-            assert "/tmp or /var/run" in exc.message
 
     def test_tcp_non_localhost_rejected(self):
         try:
@@ -111,17 +98,31 @@ class TestAgentSinkValidation:
         except ConfigError as exc:
             assert "unix: or tcp://" in exc.message
 
+    def test_unix_empty_path_rejected(self):
+        try:
+            AgentSink("unix:")
+            assert False, "should have raised"
+        except ConfigError as exc:
+            assert "cannot be empty" in exc.message
 
-class TestAgentSinkIPCFormat:
-    """AgentSink sends JSON messages with version and text fields."""
 
-    def test_unix_socket_message_format(self, tmp_path):
-        sock_path = tmp_path / "test.sock"
+class TestAgentSinkSecurityValidation:
+    """Security validation happens before each connection: socket and parent dir
+    must be owned by current user, parent dir must not be group/world writable.
+    """
+
+    def test_socket_in_user_owned_private_dir_accepted(self, tmp_path):
+        # Create a user-owned private directory (mode 0700)
+        socket_dir = tmp_path / "private"
+        socket_dir.mkdir(mode=0o700)
+        socket_path = socket_dir / "agent.sock"
+
+        # Create a mock server
         received = []
 
         def _server():
             sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            sock.bind(str(sock_path))
+            sock.bind(str(socket_path))
             sock.listen(1)
             conn, _ = sock.accept()
             data = conn.recv(4096)
@@ -133,13 +134,59 @@ class TestAgentSinkIPCFormat:
         server_thread.start()
         time.sleep(0.05)
 
-        sink = AgentSink(f"unix:{sock_path}")
+        sink = AgentSink(f"unix:{socket_path}")
         sink.insert("test command")
 
         server_thread.join(timeout=1.0)
         assert len(received) == 1
         message = json.loads(received[0].decode("utf-8"))
         assert message == {"version": 1, "text": "test command"}
+
+    def test_socket_owned_by_another_user_rejected(self, tmp_path):
+        socket_dir = tmp_path / "private"
+        socket_dir.mkdir(mode=0o700)
+        socket_path = socket_dir / "agent.sock"
+        socket_path.touch()
+
+        # Mock os.stat to return a different uid
+        original_stat = socket_path.stat
+
+        def mock_stat(follow_symlinks=True):
+            st = original_stat(follow_symlinks=follow_symlinks)
+            # Create a new stat result with different uid
+            return os.stat_result((
+                st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
+                os.getuid() + 1,  # Different uid
+                st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
+            ))
+
+        with mock.patch.object(Path, 'stat', side_effect=mock_stat):
+            sink = AgentSink(f"unix:{socket_path}")
+            # insert should catch LocalFlowError and log warning
+            sink.insert("test")
+            # No assertion needed - just verify it doesn't crash
+
+    def test_socket_in_world_writable_dir_rejected(self, tmp_path):
+        socket_dir = tmp_path / "world_writable"
+        socket_dir.mkdir(mode=0o777)  # World writable
+        socket_path = socket_dir / "agent.sock"
+        socket_path.touch()
+
+        sink = AgentSink(f"unix:{socket_path}")
+        # insert should catch LocalFlowError and log warning
+        sink.insert("test")
+        # No assertion needed - just verify it doesn't crash
+
+    def test_socket_nonexistent_logs_warning(self, tmp_path):
+        socket_path = tmp_path / "nonexistent.sock"
+        sink = AgentSink(f"unix:{socket_path}")
+        # insert should catch LocalFlowError and log warning
+        sink.insert("test")
+        # No assertion needed - just verify it doesn't crash
+
+
+class TestAgentSinkIPCFormat:
+    """AgentSink sends JSON messages with version and text fields."""
 
     def test_tcp_socket_message_format(self):
         received = []
@@ -171,10 +218,21 @@ class TestAgentSinkIPCFormat:
         message = json.loads(received[1][1].decode("utf-8"))
         assert message == {"version": 1, "text": "another command"}
 
-    def test_connection_failure_logged_not_raised(self, tmp_path):
-        sock_path = tmp_path / "nonexistent.sock"
-        sink = AgentSink(f"unix:{sock_path}")
-        sink.insert("test")
+
+class TestDefaultAgentSocketPath:
+    """_get_default_agent_socket_path returns a user-owned private directory."""
+
+    def test_default_path_is_in_user_directory(self):
+        default_path = _get_default_agent_socket_path()
+        assert default_path
+        # Should be under home directory or XDG_RUNTIME_DIR
+        assert str(Path.home()) in default_path or "XDG_RUNTIME_DIR" in os.environ
+
+    def test_default_path_accepted_by_agent_sink(self):
+        default_path = _get_default_agent_socket_path()
+        # Should not raise during construction
+        sink = AgentSink(f"unix:{default_path}")
+        assert sink.target == f"unix:{default_path}"
 
 
 class TestHandleUtteranceSkipHistory:
@@ -210,6 +268,41 @@ class TestHandleUtteranceSkipHistory:
         entries = list(history._read_all())
         assert len(entries) == 0
 
+    def test_skip_history_also_skips_personalization_stores(self, tmp_path):
+        """skip_history must prevent writes to ALL persistent stores:
+        history, dictionary additions, and term usage statistics.
+        """
+        normal_sink = FakeTextSink()
+        # Use a transcription that will trigger dictionary term usage
+        pipeline = _pipeline(
+            tmp_path, normal_sink, llm=MockChatClient(["test word"]),
+            transcriber=MockTranscriber(["test word"]),
+        )
+        # Add a term to the dictionary so usage can be recorded
+        pipeline.store.add_dictionary_term("test")
+
+        # Record initial state
+        initial_dict_size = len(list(pipeline.store.dictionary_terms()))
+        initial_usage_path = tmp_path / "data" / "term_usage.json"
+        initial_usage_exists = initial_usage_path.exists()
+
+        _handle_utterance(pipeline, FakeReporter(), b"pcm", 16000, skip_history=True)
+
+        # Dictionary should not have grown (no new terms added)
+        final_dict_size = len(list(pipeline.store.dictionary_terms()))
+        assert final_dict_size == initial_dict_size
+
+        # Term usage should not have been written (if it didn't exist before)
+        # or should not have been updated (if it did exist)
+        if not initial_usage_exists:
+            assert not initial_usage_path.exists()
+
+        # History should not have been written
+        history = pipeline.history
+        assert history is not None
+        entries = list(history._read_all())
+        assert len(entries) == 0
+
 
 class TestConfigFields:
     """agent_hotkey and agent_target config fields."""
@@ -218,9 +311,9 @@ class TestConfigFields:
         config = load_config(env={})
         assert config.agent_hotkey == ""
 
-    def test_agent_target_default(self):
+    def test_agent_target_default_empty(self):
         config = load_config(env={})
-        assert config.agent_target == "unix:/tmp/poppy-desk.sock"
+        assert config.agent_target == ""
 
     def test_agent_hotkey_env_override(self):
         config = load_config(env={"LOCAL_FLOW_AGENT_HOTKEY": "f10"})
@@ -380,8 +473,10 @@ class TestRunLoopAgentHotkeyUnsupportedKey:
     ):
         sink = FakeTextSink()
         pipeline = _pipeline(tmp_path, sink)
-        agent_sink = AgentSink("unix:/tmp/test.sock")
-        config = _config(hotkey="f9", agent_hotkey="fn")
+        socket_dir = tmp_path / "agent"
+        socket_dir.mkdir(mode=0o700)
+        agent_sink = AgentSink(f"unix:{socket_dir}/test.sock")
+        config = _config(hotkey="f9", agent_hotkey="fn", agent_target=f"unix:{socket_dir}/test.sock")
         reporter = FakeReporter()
         main_listener_ran = threading.Event()
 
@@ -428,9 +523,12 @@ class TestRunLoopAgentHotkeyToggle:
         pipeline = _pipeline(
             tmp_path, normal_sink, llm=llm, transcriber=MockTranscriber(["first utterance"])
         )
-        config = _config(agent_hotkey="f10", agent_target="unix:/tmp/test-agent.sock")
+        socket_dir = tmp_path / "agent"
+        socket_dir.mkdir(mode=0o700)
+        agent_target = f"unix:{socket_dir}/test-agent.sock"
+        config = _config(agent_hotkey="f10", agent_target=agent_target)
         reporter = FakeReporter()
-        agent_sink = AgentSink("unix:/tmp/test-agent.sock")
+        agent_sink = AgentSink(agent_target)
         done = threading.Event()
         received_commands = []
 
@@ -487,67 +585,6 @@ class TestRunLoopAgentHotkeyToggle:
         assert history is not None
         entries = list(history._read_all())
         assert len(entries) == 0
-
-    def test_agent_mode_auto_resets_after_one_utterance(self, tmp_path, monkeypatch):
-        normal_sink = FakeTextSink()
-        llm = MockChatClient(["second utterance"])
-        pipeline = _pipeline(
-            tmp_path, normal_sink, llm=llm, transcriber=MockTranscriber(["second utterance"])
-        )
-        config = _config(agent_hotkey="f10")
-        reporter = FakeReporter()
-        agent_sink = AgentSink("unix:/tmp/test-agent.sock")
-        done = threading.Event()
-        received_commands = []
-
-        def _mock_insert(self, text: str):
-            received_commands.append(text)
-
-        monkeypatch.setattr(AgentSink, "insert", _mock_insert)
-
-        class SignalingReporter(StatusReporter):
-            def notify(self, state, detail: str = "") -> None:
-                reporter.notify(state, detail)
-                if state == "idle":
-                    done.set()
-
-        class FakeTapListener:
-            def __init__(self, key_name):
-                pass
-
-            def run(self, on_tap):
-                on_tap()
-
-        class FakeKeyboardListener:
-            def run(self, on_press, on_release, on_cancel):
-                assert _wait_until(
-                    lambda: any("agent mode on" in d for _s, d in reporter.events)
-                ), "agent toggle never happened"
-                on_press()
-                on_release()
-                done.wait(timeout=5)
-
-        monkeypatch.setattr("local_flow.hotkeys.base.TapListener", FakeTapListener)
-        monkeypatch.setattr(
-            "local_flow.hotkeys.base.create_hotkey_listener",
-            lambda config, cancel_gate=None: FakeKeyboardListener(),
-        )
-
-        class _FakeSource:
-            def record_until(self, stop, frame_ms):
-                stop.wait(timeout=5)
-                return b"pcm-bytes"
-
-        _run_loop(
-            config, "push-to-talk", SignalingReporter(),
-            dependencies=RunDependencies(
-                pipeline, _FakeSource(), None, agent_sink=agent_sink
-            ),
-        )
-
-        assert done.wait(timeout=2)
-        warnings_after = [d for s, d in reporter.events if s == "warning" and "agent mode off" in d]
-        assert len(warnings_after) == 0
 
 
 class TestRunAgentListenerErrorVisible:

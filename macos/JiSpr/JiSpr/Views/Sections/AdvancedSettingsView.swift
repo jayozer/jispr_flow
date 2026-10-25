@@ -38,7 +38,7 @@ struct AdvancedSettingsView: View {
             }
 
             SectionCard("Agent IPC") {
-                textRow("Agent target", key: "agent_target", placeholder: "unix:/tmp/poppy-desk.sock")
+                textRow("Agent target", key: "agent_target", placeholder: "Default: ~/Library/Application Support/poppy-desk/agent.sock")
             }
         }
     }

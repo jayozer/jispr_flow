@@ -219,10 +219,10 @@ class Config:
     agent_hotkey: str = ""
 
     # IPC target for agent commands: unix:/path/to/socket or tcp://127.0.0.1:PORT.
-    # Only loopback/local targets are allowed for security (Unix sockets under
-    # /tmp or /var/run; TCP only to 127.0.0.1). The agent sink rejects any other
-    # target at construction time.
-    agent_target: str = "unix:/tmp/poppy-desk.sock"
+    # Unix sockets must be in a user-owned private directory with secure permissions
+    # (0700-style, not group/world writable). Socket and parent dir must be owned by
+    # current user. TCP only allows 127.0.0.1 (localhost).
+    agent_target: str = ""  # Resolved to platform default in _build_run_dependencies
 
 
 @dataclass(frozen=True)

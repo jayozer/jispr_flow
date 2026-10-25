@@ -131,6 +131,9 @@ scratchpad_hotkey = ""
 agent_hotkey = ""
 
 # IPC target for agent commands: unix:/path/to/socket or tcp://127.0.0.1:PORT.
-# Only loopback/local targets allowed for security (Unix sockets under /tmp
-# or /var/run; TCP only to 127.0.0.1). Used when agent_hotkey is set.
-agent_target = "unix:/tmp/poppy-desk.sock"
+# Unix sockets must be in a user-owned private directory (not /tmp). Empty
+# (default) uses the platform default:
+#   macOS: ~/Library/Application Support/poppy-desk/agent.sock
+#   Linux: $XDG_RUNTIME_DIR/poppy-desk/agent.sock (fallback: ~/.local/state/poppy-desk/agent.sock)
+# TCP only allows 127.0.0.1 (localhost). Used when agent_hotkey is set.
+agent_target = ""

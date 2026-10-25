@@ -1611,9 +1611,11 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
 
     agent_sink = None
     if config.agent_hotkey:
-        from local_flow.agent.sink import AgentSink
+        from local_flow.agent.sink import AgentSink, _get_default_agent_socket_path
 
-        agent_sink = AgentSink(config.agent_target)
+        # Resolve empty agent_target to platform default
+        target = config.agent_target if config.agent_target else f"unix:{_get_default_agent_socket_path()}"
+        agent_sink = AgentSink(target)
 
     return RunDependencies(
         pipeline=pipeline,
