@@ -573,6 +573,16 @@ def load_config_snapshot(
             )
         seen_hotkeys[key] = field_name
 
+    # Validate agent_target format if agent_hotkey is configured
+    if config.agent_hotkey and config.agent_target:
+        from local_flow.agent.sink import AgentSink
+        # This will raise ConfigError if the format is invalid (null bytes, relative path, etc.)
+        try:
+            AgentSink(config.agent_target)
+        except ConfigError:
+            # Re-raise as-is - AgentSink already provides good error messages
+            raise
+
     return ConfigSnapshot(
         config=config,
         config_path=Path(config_file) if config_file else None,

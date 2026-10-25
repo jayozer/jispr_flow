@@ -244,7 +244,10 @@ class DictationPipeline:
             for action in actions:
                 sink.press_key(action)
             result.inserted = True
-            if text:
+            # Agent commands (skip_history=True) must not become last_transcript:
+            # command mode would then be able to insert them, leaking transient
+            # agent instructions into normal dictation.
+            if text and not skip_history:
                 self.last_transcript = text
 
         if dict_counts and self.store is not None and not skip_history:

@@ -1430,12 +1430,18 @@ def _handle_utterance(
     dictation history. Callers set this when ``sink_override`` is an
     ``AgentSink`` (see ``_run_loop``'s agent-hotkey block).
 
+    Agent commands must also be excluded from audio recovery: their pending
+    audio file (if ``pending_store`` is given) is deleted regardless of
+    whether processing succeeded or failed. This ensures ``local-flow recover``
+    never replays agent commands.
+
     After processing, if the utterance's duration exceeds
     ``max_utterance_min`` minutes, an extra ``"warning"`` notification fires
     (informational only -- it does not truncate or otherwise change what was
     already processed and inserted).
     """
     reporter.notify("processing")
+    pending_path = None
     try:
         pending_path = (
             pending_store.save(pcm, sample_rate) if pending_store is not None else None
@@ -1456,7 +1462,8 @@ def _handle_utterance(
                 "warning",
                 f"utterance was {minutes:.0f} minutes long; consider shorter dictations",
             )
-        if pending_path is not None:
+        # Success: delete pending audio only if NOT an agent command
+        if pending_path is not None and not skip_history:
             pending_store.delete(pending_path)
     except LocalFlowError as exc:
         reporter.notify("error", exc.message)
@@ -1465,10 +1472,21 @@ def _handle_utterance(
     except Exception as exc:
         # Not a LocalFlowError, so there is no curated message/hint -- report
         # the class and keep the full traceback on stderr for diagnosis. The
-        # saved pending WAV (if any) is deliberately left for `recover`.
+        # saved pending WAV (if any) is deliberately left for `recover` UNLESS
+        # this is an agent command (skip_history=True), which must never be
+        # recovered.
         reporter.notify("error", f"{type(exc).__name__}: {exc}")
         traceback.print_exc()
     finally:
+        # Agent commands (skip_history=True): ALWAYS delete pending audio,
+        # regardless of success or failure, so `local-flow recover` never
+        # replays them. Normal dictation: pending audio is kept on failure
+        # (already deleted on success above) so it can be recovered.
+        if skip_history and pending_path is not None and pending_store is not None:
+            try:
+                pending_store.delete(pending_path)
+            except Exception:
+                pass  # Best effort; don't mask the original error
         reporter.notify("idle")
 
 
@@ -2431,7 +2449,11 @@ def _run_loop(
                         ).start()
 
             agent_active: list[bool] = [False]
-            agent_sink = dependencies.agent_sink if dependencies is not None else None
+            # agent_sink was already unpacked from deps at line 1885; it's None only if
+            # config.agent_hotkey wasn't set during _build_run_dependencies (or if a test
+            # passed it explicitly as None). The on-demand build below only runs for tests
+            # that inject a partial RunDependencies; normal entry points go through
+            # _build_run_dependencies which already builds agent_sink when agent_hotkey is set.
             if config.agent_hotkey:
                 if agent_sink is None:
                     reporter.notify(
