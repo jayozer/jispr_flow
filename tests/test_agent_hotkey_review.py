@@ -36,7 +36,7 @@ from local_flow.app import RunDependencies, _handle_utterance, _run_loop
 from local_flow.asr.mock import MockTranscriber
 from local_flow.audio.recovery import PendingAudioStore
 from local_flow.config import load_config
-from local_flow.errors import ConfigError
+from local_flow.errors import ConfigError, LocalFlowError
 from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import FakeTextSink
 from local_flow.llm.mock import MockChatClient
@@ -263,6 +263,38 @@ class TestProductionWiring:
 # --- AC3: target parsing -----------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    "target",
+    [
+        "",
+        "unix:",
+        "tcp://",
+        "localhost.evil.com",
+        "http://127.0.0.1:9876",
+        "TCP://127.0.0.1:9876",
+        "tcp://localhost:9876",
+        "tcp://localhost.evil.com:9876",
+        "tcp://127.0.0.1.evil.com:9876",
+        "tcp://0.0.0.0:9876",
+        "tcp://127.0.0.2:9876",
+        "tcp://[::ffff:127.0.0.1]:9876",
+        "tcp://::ffff:127.0.0.1:9876",
+        "tcp://[::ffff:7f00:1]:9876",
+        "tcp://[0:0:0:0:0:ffff:127.0.0.1]:9876",
+        "tcp://user@127.0.0.1:9876",
+        "tcp://127.0.0.1:9876/path",
+        "tcp://127.0.0.1:",
+        "tcp://127.0.0.1",
+        "unix:/tmp",
+        "/tmp/agent.sock",
+    ],
+)
+def test_non_local_or_malformed_targets_rejected(target):
+    """Reject TCP (no longer supported), malformed unix:, and world-writable paths like /tmp."""
+    with pytest.raises(ConfigError):
+        AgentSink(target)
+
+
 @pytest.mark.parametrize("target", ["unix:../../x", "unix:relative/agent.sock"])
 def test_nb_relative_unix_path_accepted(target):
     """NB (sink.py:86-93): a relative path resolves against the CWD at send
@@ -334,7 +366,8 @@ class TestUnixSocketSecurity:
         server = _Server(d / "agent.sock")
         d.chmod(mode)
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-            AgentSink(f"unix:{server.path}").insert("open safari")
+            with pytest.raises(LocalFlowError):
+                AgentSink(f"unix:{server.path}").insert("open safari")
         assert server.close() == b""
         assert _warned(caplog, "0700") or _warned(caplog, "mode")
 
@@ -343,7 +376,8 @@ class TestUnixSocketSecurity:
         real_uid = os.getuid()
         monkeypatch.setattr(sink_mod.os, "getuid", lambda: real_uid + 1)
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-            AgentSink(f"unix:{server.path}").insert("open safari")
+            with pytest.raises(LocalFlowError):
+                AgentSink(f"unix:{server.path}").insert("open safari")
         assert server.close() == b""
         assert _warned(caplog, "owned by uid")
 
@@ -354,7 +388,8 @@ class TestUnixSocketSecurity:
         d = _private_dir(short_dir)
         server = _Server(d / "agent.sock")
         d.chmod(0o755)
-        AgentSink(f"unix:{server.path}").insert("open safari")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
         assert server.close() == b""
 
     def test_symlinked_socket_into_world_writable_dir_rejected(self, short_dir, caplog):
@@ -364,7 +399,8 @@ class TestUnixSocketSecurity:
         evil.chmod(0o777)
         link = _private_dir(short_dir) / "agent.sock"
         link.symlink_to(server.path)
-        AgentSink(f"unix:{link}").insert("open safari")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{link}").insert("open safari")
         assert server.close() == b""
 
     def test_symlinked_dir_component_into_world_writable_dir_rejected(self, short_dir):
@@ -373,7 +409,8 @@ class TestUnixSocketSecurity:
         server = _Server(evil / "agent.sock")
         evil.chmod(0o777)
         (short_dir / "looks-private").symlink_to(evil, target_is_directory=True)
-        AgentSink(f"unix:{short_dir}/looks-private/agent.sock").insert("open safari")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{short_dir}/looks-private/agent.sock").insert("open safari")
         assert server.close() == b""
 
     @NOT_ROOT
@@ -386,7 +423,8 @@ class TestUnixSocketSecurity:
         shared.mkdir()
         server = _Server(_private_dir(shared) / "agent.sock")
         shared.chmod(0o777)  # world-writable, no sticky bit
-        AgentSink(f"unix:{server.path}").insert("open safari")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
         assert server.close() == b""
 
     def test_bug_T1_path_swapped_after_check_is_followed(self, short_dir, monkeypatch):
@@ -410,7 +448,8 @@ class TestUnixSocketSecurity:
             private.symlink_to(evil, target_is_directory=True)
 
         monkeypatch.setattr(AgentSink, "_validate_socket_security", validate_then_swap)
-        AgentSink(f"unix:{private}/agent.sock").insert("open safari")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{private}/agent.sock").insert("open safari")
         real.close()
         assert impostor.close() == b"", "command was delivered to a swapped-in socket"
 
@@ -421,8 +460,10 @@ class TestUnixSocketSecurity:
 class TestQuietFailure:
     @staticmethod
     def _assert_quiet(sink: AgentSink, caplog) -> None:
+        """Agent send failures raise LocalFlowError and log warnings."""
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-            sink.insert("open safari")
+            with pytest.raises(LocalFlowError):
+                sink.insert("open safari")
         assert _warned(caplog, "failed to send")
 
     @POSIX_ONLY
@@ -451,15 +492,15 @@ class TestQuietFailure:
         t = threading.Thread(target=accept_and_close, daemon=True)
         t.start()
         try:
-            AgentSink(f"unix:{path}").insert("x" * 1_000_000)
+            with pytest.raises(LocalFlowError):
+                AgentSink(f"unix:{path}").insert("x" * 1_000_000)
         finally:
             t.join(timeout=2)
             srv.close()
 
     @POSIX_ONLY
     def test_nb_failed_send_reported_as_inserted(self, tmp_path, short_dir):
-        """NB (app.py:1452): `inserted` fires even though nothing was delivered;
-        the failure only goes to `logging`, so the pill/tray show success."""
+        """Agent send failures must not be reported as 'inserted'."""
         normal = FakeTextSink()
         p = _pipeline(tmp_path, normal)
         reporter = FakeReporter()

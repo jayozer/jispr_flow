@@ -131,6 +131,22 @@ class AgentSink(TextSink):
                 f"max {_MAX_SOCKET_PATH_LENGTH - 1}).",
                 hint="Unix domain socket paths have a 104-byte limit. Use a shorter path.",
             )
+        
+        # Reject paths directly in /tmp (but allow private subdirectories like /tmp/myapp/)
+        # This catches unix:/tmp and /tmp/agent.sock but allows /tmp/private-dir/agent.sock
+        resolved_parts = resolved.parts
+        if len(resolved_parts) == 2 and resolved_parts[0] == "/" and resolved_parts[1] == "tmp":
+            # Path is exactly /tmp (no filename)
+            raise ConfigError(
+                f"agent_target path {path_str!r} is /tmp, which is world-writable.",
+                hint="Use a private subdirectory or a directory in your home.",
+            )
+        elif len(resolved_parts) == 3 and resolved_parts[0] == "/" and resolved_parts[1] == "tmp":
+            # Path is /tmp/<filename> (socket directly in /tmp root)
+            raise ConfigError(
+                f"agent_target path {path_str!r} is directly in /tmp, which is world-writable.",
+                hint="Use a private subdirectory like /tmp/myapp/ or a directory in your home.",
+            )
 
     def _validate_socket_security(self, socket_path: Path) -> None:
         """Verify socket and parent directory are owned by current user with secure permissions.
@@ -281,20 +297,32 @@ class AgentSink(TextSink):
     def insert(self, text: str) -> None:
         """Send ``text`` to poppy-desk as a JSON message over the configured Unix socket.
 
-        Logs warnings on connection/send failures; never raises.
+        :raises LocalFlowError: if connection or send fails
         """
         message = {"version": 1, "text": text}
         payload = json.dumps(message).encode("utf-8") + b"\n"
 
         try:
             self._send_unix(payload)
-        except (OSError, LocalFlowError) as exc:
-            message_str = getattr(exc, "message", str(exc))
+        except OSError as exc:
+            # Convert OSError to LocalFlowError with a clear message
             logger.warning(
                 "agent: failed to send command to poppy-desk at %s: %s",
                 self.target,
-                message_str,
+                str(exc),
             )
+            raise LocalFlowError(
+                f"failed to send command to poppy-desk at {self.target}",
+                hint="Make sure poppy-desk is running and the socket path is correct.",
+            )
+        except LocalFlowError as exc:
+            # LocalFlowError already has good messages, log the full details
+            logger.warning(
+                "agent: failed to send command to poppy-desk at %s: %s",
+                self.target,
+                exc.message,
+            )
+            raise
 
     def _send_unix(self, payload: bytes) -> None:
         # Strip unix: prefix if present

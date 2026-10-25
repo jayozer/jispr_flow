@@ -126,6 +126,7 @@ class TestAgentSinkSecurityValidation:
 
     def test_socket_owned_by_another_user_rejected(self, tmp_path, caplog):
         import logging
+        import pytest
         socket_dir = tmp_path / "private"
         socket_dir.mkdir(mode=0o700)
         socket_path = socket_dir / "agent.sock"
@@ -146,12 +147,14 @@ class TestAgentSinkSecurityValidation:
         with mock.patch.object(Path, 'lstat', side_effect=mock_lstat):
             sink = AgentSink(f"unix:{socket_path}")
             with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-                sink.insert("test")
+                with pytest.raises(LocalFlowError):
+                    sink.insert("test")
             # Must log a warning about the failure
             assert any("failed to send" in record.message for record in caplog.records)
 
     def test_socket_in_world_writable_dir_rejected(self, tmp_path, caplog):
         import logging
+        import pytest
         socket_dir = tmp_path / "world_writable"
         socket_dir.mkdir(mode=0o777)  # World writable
         socket_path = socket_dir / "agent.sock"
@@ -159,16 +162,19 @@ class TestAgentSinkSecurityValidation:
 
         sink = AgentSink(f"unix:{socket_path}")
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-            sink.insert("test")
+            with pytest.raises(LocalFlowError):
+                sink.insert("test")
         # Must log a warning about the failure (world-writable directory)
         assert any("failed to send" in record.message for record in caplog.records)
 
     def test_socket_nonexistent_logs_warning(self, tmp_path, caplog):
         import logging
+        import pytest
         socket_path = tmp_path / "nonexistent.sock"
         sink = AgentSink(f"unix:{socket_path}")
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
-            sink.insert("test")
+            with pytest.raises(LocalFlowError):
+                sink.insert("test")
         # Must log a warning about the failure
         assert any("failed to send" in record.message for record in caplog.records)
 
