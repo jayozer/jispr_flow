@@ -804,7 +804,10 @@ class TestBlockingIssueRegressions:
         s.listen(1)
 
         try:
-            # Mock lstat to make parent appear as symlink (not a directory)
+            # Mock lstat to make parent appear as symlink (not a directory).
+            # NOTE: _send_unix resolves the path before the check, so a real
+            # symlink never reaches S_ISDIR. This mock simulates a swap in that
+            # window; real symlinks are covered elsewhere.
             real_lstat = Path.lstat
 
             def mock_lstat(self):
@@ -828,7 +831,9 @@ class TestBlockingIssueRegressions:
         """Linux SO_PEERCRED must return at least 12 bytes (pid, uid, gid)."""
         import socket as sock_mod
 
-        monkeypatch.setattr("local_flow.agent.sink.sys.platform", "linux")
+        import local_flow.agent.sink as sink_mod
+
+        monkeypatch.setattr(sink_mod.sys, "platform", "linux")
         monkeypatch.setattr(sock_mod, "SO_PEERCRED", 17, raising=False)
 
         # Create socket and server

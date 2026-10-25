@@ -1,14 +1,12 @@
-"""Review tests for the agent hotkey (PR #14, re-reviewed at 141ea94).
+"""Review tests for the agent hotkey (PR #14, re-reviewed at a197fa0).
 
 Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` pin issues
 from earlier rounds (B1, B2, B2b, B3, B5, T1, T2, N1 and the round-3/4 NB
-items); all are fixed at 141ea94 and are kept as regression tests (names are
-historical). The "Round 5" section at the bottom covers security checks in
-sink.py that no other test kills under mutation (S_ISSOCK, parent S_ISDIR,
-parent owner, xucred cr_version, Linux SO_PEERCRED uid).
-
-macOS-only code paths (LOCAL_PEERCRED, /tmp -> /private/tmp) are simulated
-with mocks so they run on every OS.
+items); all are fixed and kept as regression tests (names are historical).
+"Round 5" kills the sink.py security checks no other test covers under
+mutation. "Round 6" (K1, K2) FAILS at a197fa0: a key-only or silent agent
+utterance is reported as "inserted: key sent, no text for agent", but
+AgentSink.press_key sends nothing.
 """
 
 from __future__ import annotations
@@ -859,3 +857,45 @@ class TestRound5SecurityChecks:
         assert sum("key action" in r.getMessage() for r in caplog.records) == 1
         assert _history(p) == []
         assert any(state == "inserted" for state, _ in reporter.events)
+
+
+# --- Round 6 (a197fa0) -------------------------------------------------------
+
+
+def _agent_utterance(tmp_path: Path, short_dir: Path, utterance: str) -> list:
+    server = _Server(_private_dir(short_dir) / "agent.sock")
+    store = PersonalizationStore(tmp_path)
+    p = DictationPipeline(
+        transcriber=MockTranscriber([utterance]),
+        polisher=TranscriptPolisher(MockChatClient([utterance or "x"]), store),
+        store=store,
+        sink=FakeTextSink(),
+        history=HistoryStore(tmp_path),
+    )
+    reporter = FakeReporter()
+    agent = AgentSink(f"unix:{server.path}")
+    _handle_utterance(
+        p, reporter, b"\x01\x00" * 800, 16000, sink_override=agent, skip_history=True
+    )
+    assert server.close() == b""
+    return reporter.events
+
+
+@POSIX_ONLY
+class TestRound6:
+    def test_bug_K1_key_only_agent_utterance_claims_key_sent(self, tmp_path, short_dir):
+        """K1 (app.py:1463-1465): "press enter" in agent mode reports
+        ("inserted", "key sent, no text for agent"), but AgentSink.press_key
+        (sink.py:440-444) only logs; nothing reaches poppy-desk or the focused
+        app. Report a warning such as "keys aren't sent to the agent" instead."""
+        events = _agent_utterance(tmp_path, short_dir, "press enter")
+        assert not any(state == "inserted" for state, _ in events), events
+        assert any(state == "warning" for state, _ in events), events
+
+    def test_bug_K2_silent_agent_utterance_reports_key_sent(self, tmp_path, short_dir):
+        """K2 (app.py:1463): the ``elif skip_history`` branch also fires when
+        there were no actions at all (silence), right after the pipeline's
+        "no speech detected; nothing inserted" warning. Gate it on
+        ``result.actions``."""
+        events = _agent_utterance(tmp_path, short_dir, "")
+        assert not any(state == "inserted" for state, _ in events), events
