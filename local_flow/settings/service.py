@@ -49,6 +49,8 @@ SETTINGS_FIELDS: frozenset[str] = frozenset(
         "command_hotkey",
         "auto_transform",
         "scratchpad_hotkey",
+        "agent_hotkey",
+        "agent_target",
         "floating_pill",
         "pill_style",
         "vad_backend",

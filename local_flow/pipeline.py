@@ -89,6 +89,7 @@ class DictationPipeline:
         silence_ms: int = 600,
         sink_override: TextSink | None = None,
         normalize_segments: bool = False,
+        skip_history: bool = False,
     ) -> DictationResult:
         """Transcribe a PCM buffer (VAD-segmented when a VAD is given).
 
@@ -113,6 +114,7 @@ class DictationPipeline:
             rough,
             duration_s=duration_s,
             sink_override=sink_override,
+            skip_history=skip_history,
         )
         if pcm and not rough:
             result.warnings.append("no speech detected; nothing inserted")
@@ -123,6 +125,7 @@ class DictationPipeline:
         rough: str,
         duration_s: float = 0.0,
         sink_override: TextSink | None = None,
+        skip_history: bool = False,
     ) -> DictationResult:
         """Run the text half of the pipeline and insert the result.
 
@@ -244,7 +247,7 @@ class DictationPipeline:
         if dict_counts and self.store is not None:
             self.store.record_term_uses(dict_counts)
 
-        if rough and self.history is not None:
+        if rough and self.history is not None and not skip_history:
             # A chat client was configured (so the user expects LLM polish)
             # but it was never actually used -- either it raised/was
             # unreachable, or something else skipped it. At

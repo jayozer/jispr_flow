@@ -1355,6 +1355,13 @@ class RunDependencies(NamedTuple):
     which construct a ``RunDependencies`` directly without one) simply means
     the hotkey has nothing to route to; ``_run_loop`` warns and disables the
     hotkey rather than silently no-op'ing (see its scratchpad-hotkey block).
+
+    ``agent_sink``: the :class:`~local_flow.agent.sink.AgentSink` that the
+    agent command hotkey (``config.agent_hotkey``) routes into -- see
+    ``_run_loop``'s ``agent_active`` holder. Commands sent via this sink are
+    never written to history (see ``_handle_utterance``'s ``skip_history``).
+    ``None`` (most tests) means the hotkey has nothing to route to;
+    ``_run_loop`` warns and disables the hotkey.
     """
 
     pipeline: DictationPipeline
@@ -1364,6 +1371,7 @@ class RunDependencies(NamedTuple):
     normalize_audio: bool = False
     max_utterance_min: int = 20
     scratchpad_sink: TextSink | None = None
+    agent_sink: TextSink | None = None
 
 
 def _handle_utterance(
@@ -1375,6 +1383,7 @@ def _handle_utterance(
     normalize_audio: bool = False,
     max_utterance_min: int = 20,
     sink_override: TextSink | None = None,
+    skip_history: bool = False,
 ) -> None:
     """Run one captured utterance's PCM through the pipeline.
 
@@ -1415,6 +1424,12 @@ def _handle_utterance(
     accept the keyword are unaffected -- ``None`` (the default) is
     byte-identical to before this parameter existed.
 
+    ``skip_history`` (agent commands): when ``True``, the result is never
+    written to history, even when ``pipeline.store.history`` is enabled.
+    Agent commands sent to poppy-desk must not be logged in the user's local
+    dictation history. Callers set this when ``sink_override`` is an
+    ``AgentSink`` (see ``_run_loop``'s agent-hotkey block).
+
     After processing, if the utterance's duration exceeds
     ``max_utterance_min`` minutes, an extra ``"warning"`` notification fires
     (informational only -- it does not truncate or otherwise change what was
@@ -1428,6 +1443,8 @@ def _handle_utterance(
         process_kwargs = {"sink_override": sink_override} if sink_override is not None else {}
         if normalize_audio:
             process_kwargs["normalize_segments"] = True
+        if skip_history:
+            process_kwargs["skip_history"] = True
         result = pipeline.process_audio(pcm, sample_rate, **process_kwargs)
         for warning in result.warnings:
             reporter.notify("warning", warning)
@@ -1570,6 +1587,13 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     so the hotkey can be toggled on/off freely without rebuilding
     dependencies; ``_run_loop`` only wires the hotkey listener itself when
     ``scratchpad_hotkey`` is non-empty.
+
+    ``agent_sink`` is built only when ``config.agent_hotkey`` is set (unlike
+    scratchpad, which is always built) because construction validates
+    ``config.agent_target`` (see :class:`AgentSink`'s security checks) and
+    would raise :exc:`ConfigError` if the target is invalid. When the hotkey
+    is disabled, ``agent_sink`` is ``None``; ``_run_loop`` warns and disables
+    the hotkey when the sink is missing.
     """
     from local_flow.audio.capture import SounddeviceSource
     from local_flow.scratchpad.sink import ScratchpadSink
@@ -1584,6 +1608,13 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
     vad = _build_vad(config)
     pending_store = _build_pending_store(config)
     scratchpad_sink = ScratchpadSink(_build_note_store(config))
+
+    agent_sink = None
+    if config.agent_hotkey:
+        from local_flow.agent.sink import AgentSink
+
+        agent_sink = AgentSink(config.agent_target)
+
     return RunDependencies(
         pipeline=pipeline,
         source=source,
@@ -1592,6 +1623,7 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
         normalize_audio=config.vad_preset == "whisper",
         max_utterance_min=config.max_utterance_min,
         scratchpad_sink=scratchpad_sink,
+        agent_sink=agent_sink,
     )
 
 
@@ -1706,6 +1738,19 @@ def _run_scratchpad_listener(pad_listener, on_tap: Callable[[], None]) -> None:
         pad_listener.run(on_tap)
     except LocalFlowError as exc:
         print(f"error: scratchpad hotkey stopped: {exc.message}", file=sys.stderr)
+        if exc.hint:
+            print(f"hint : {exc.hint}", file=sys.stderr)
+
+
+def _run_agent_listener(agent_listener, on_tap: Callable[[], None]) -> None:
+    """Target for the agent command hotkey's daemon thread (see ``_run_loop``).
+
+    Same visible-failure wrapper as ``_run_scratchpad_listener``.
+    """
+    try:
+        agent_listener.run(on_tap)
+    except LocalFlowError as exc:
+        print(f"error: agent hotkey stopped: {exc.message}", file=sys.stderr)
         if exc.hint:
             print(f"hint : {exc.hint}", file=sys.stderr)
 
@@ -1834,7 +1879,7 @@ def _run_loop(
         deps = dependencies if dependencies is not None else _build_run_dependencies(config)
     except LocalFlowError as exc:
         return _fail(exc)
-    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink = (
+    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink, agent_sink = (
         deps
     )
     if reporter.wants_audio_level:
@@ -2078,9 +2123,19 @@ def _run_loop(
                     return
 
                 # Resolved here, not inside the processing task:
-                # `finish()` runs on the same dispatcher as `_toggle_pad`,
-                # so `pad_active` is read exactly when finish executes.
-                sink_override = scratchpad_sink if pad_active[0] else None
+                # `finish()` runs on the same dispatcher as `_toggle_pad` and
+                # `_toggle_agent`, so both `pad_active` and `agent_active` are
+                # read exactly when finish executes. Agent mode wins over
+                # scratchpad when both are on (agent mode is one-shot; pad is
+                # persistent until toggled off).
+                sink_override = None
+                skip_history = False
+                if agent_active[0]:
+                    sink_override = agent_sink
+                    skip_history = True
+                    agent_active[0] = False
+                elif pad_active[0]:
+                    sink_override = scratchpad_sink
 
                 def _process(pcm: bytes = pcm) -> None:
                     # A held push-to-talk key already defines one utterance.
@@ -2103,6 +2158,7 @@ def _run_loop(
                         False,
                         max_utterance_min,
                         sink_override,
+                        skip_history,
                     )
 
                 processor.submit(_process)
@@ -2369,6 +2425,48 @@ def _run_loop(
                         threading.Thread(
                             target=_run_scratchpad_listener,
                             args=(pad_listener, dispatcher.wrap(_toggle_pad)),
+                            daemon=True,
+                        ).start()
+
+            agent_active: list[bool] = [False]
+            agent_sink = dependencies.agent_sink if dependencies is not None else None
+            if config.agent_hotkey:
+                if agent_sink is None:
+                    reporter.notify(
+                        "warning",
+                        "agent_hotkey is set but no agent sink was built; "
+                        "agent hotkey disabled",
+                    )
+                else:
+
+                    def _toggle_agent(sink=agent_sink) -> None:
+                        """Flip `agent_active`. Wrapped by the very same
+                        `dispatcher` as `start`/`finish`, so this is serialized
+                        against them: the toggle applies to any utterance whose
+                        `finish()` runs after the tap, deterministically.
+                        """
+                        agent_active[0] = not agent_active[0]
+                        if agent_active[0]:
+                            reporter.notify(
+                                "warning", "agent mode on: next dictation goes to poppy-desk"
+                            )
+                        else:
+                            reporter.notify(
+                                "warning", "agent mode off: dictating normally"
+                            )
+
+                    agent_listener = _build_secondary_listener(
+                        lambda: TapListener(config.agent_hotkey),
+                        "agent_hotkey",
+                        config.agent_hotkey,
+                        "agent hotkey",
+                        reporter,
+                    )
+                    if agent_listener is not None:
+                        auxiliary_listeners.append(agent_listener)
+                        threading.Thread(
+                            target=_run_agent_listener,
+                            args=(agent_listener, dispatcher.wrap(_toggle_agent)),
                             daemon=True,
                         ).start()
 

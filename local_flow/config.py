@@ -209,6 +209,21 @@ class Config:
     # `local_flow.app._run_loop`.
     scratchpad_hotkey: str = ""
 
+    # Agent command hotkey (see README "Agent commands"): tap this key (push-to-
+    # talk mode only, like the transform/command hotkeys) to route the next
+    # dictation to poppy-desk (a local voice-driven desktop agent) via Unix
+    # socket or localhost TCP. Agent commands are NEVER written to history and
+    # NEVER pasted into the focused app -- they are sent directly to the agent
+    # via IPC. Empty (default) disables the feature entirely. Must be distinct
+    # from hotkey/transform_hotkey/command_hotkey/scratchpad_hotkey.
+    agent_hotkey: str = ""
+
+    # IPC target for agent commands: unix:/path/to/socket or tcp://127.0.0.1:PORT.
+    # Only loopback/local targets are allowed for security (Unix sockets under
+    # /tmp or /var/run; TCP only to 127.0.0.1). The agent sink rejects any other
+    # target at construction time.
+    agent_target: str = "unix:/tmp/poppy-desk.sock"
+
 
 @dataclass(frozen=True)
 class ConfigSnapshot:
@@ -524,14 +539,14 @@ def load_config_snapshot(
         )
 
     # Every configured keyboard hotkey (the main hotkey, cancel_hotkey,
-    # transform_hotkey, command_hotkey, scratchpad_hotkey) must be distinct,
-    # case-insensitively -- two listeners bound to the same key would race
-    # for the same physical keypress with no defined winner. Checked
+    # transform_hotkey, command_hotkey, scratchpad_hotkey, agent_hotkey) must
+    # be distinct, case-insensitively -- two listeners bound to the same key
+    # would race for the same physical keypress with no defined winner. Checked
     # pairwise. cancel_hotkey has no "disabled" state (unlike the optional
-    # trio below) so it always participates; transform_hotkey/command_hotkey/
-    # scratchpad_hotkey are skipped when empty (disabled), so leaving them
-    # unset (the default) never trips this. Mouse buttons (mouse_button/
-    # mouse_enter_button) are a separate input device/namespace --
+    # quartet below) so it always participates; transform_hotkey/command_hotkey/
+    # scratchpad_hotkey/agent_hotkey are skipped when empty (disabled), so
+    # leaving them unset (the default) never trips this. Mouse buttons
+    # (mouse_button/mouse_enter_button) are a separate input device/namespace --
     # "middle"/"x1"/"x2" -- and are validated on their own above; they
     # can never collide with a keyboard key name, so they are not part of
     # this check.
@@ -542,6 +557,7 @@ def load_config_snapshot(
         ("transform_hotkey", config.transform_hotkey),
         ("command_hotkey", config.command_hotkey),
         ("scratchpad_hotkey", config.scratchpad_hotkey),
+        ("agent_hotkey", config.agent_hotkey),
     ):
         if not value:
             continue
@@ -550,10 +566,10 @@ def load_config_snapshot(
             raise ConfigError(
                 f"{field_name} and {seen_hotkeys[key]} cannot both be {value!r}.",
                 hint="hotkey, cancel_hotkey, transform_hotkey, command_hotkey, "
-                "and scratchpad_hotkey must all be distinct; leave "
-                "transform_hotkey/command_hotkey/scratchpad_hotkey empty to "
-                "disable that feature (cancel_hotkey has no disabled state, "
-                "so it must be reassigned instead).",
+                "scratchpad_hotkey, and agent_hotkey must all be distinct; leave "
+                "transform_hotkey/command_hotkey/scratchpad_hotkey/agent_hotkey "
+                "empty to disable that feature (cancel_hotkey has no disabled "
+                "state, so it must be reassigned instead).",
             )
         seen_hotkeys[key] = field_name
 
