@@ -1,9 +1,11 @@
-"""Review tests for the agent hotkey (PR #14, re-reviewed at c6a16d5).
+"""Review tests for the agent hotkey (PR #14, re-reviewed at 141ea94).
 
-Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` pin issues;
-older ones (B1, B2, B2b, B3, B5, T1, T2, N1, and the round-3 NB items) are
-fixed at c6a16d5 and are kept as regression tests. Open items at c6a16d5 are
-in the "Round 4" section at the bottom and FAIL until addressed.
+Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` pin issues
+from earlier rounds (B1, B2, B2b, B3, B5, T1, T2, N1 and the round-3/4 NB
+items); all are fixed at 141ea94 and are kept as regression tests (names are
+historical). The "Round 5" section at the bottom covers security checks in
+sink.py that no other test kills under mutation (S_ISSOCK, parent S_ISDIR,
+parent owner, xucred cr_version, Linux SO_PEERCRED uid).
 
 macOS-only code paths (LOCAL_PEERCRED, /tmp -> /private/tmp) are simulated
 with mocks so they run on every OS.
@@ -15,6 +17,7 @@ import logging
 import os
 import shutil
 import socket
+import stat
 import struct
 import sys
 import tempfile
@@ -766,3 +769,93 @@ class TestRound4:
         with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
             agent.press_key("enter")
         assert _warned(caplog, "key action")
+
+
+# --- Round 5 (141ea94) -------------------------------------------------------
+
+
+def _fake_lstat(monkeypatch, target: Path, **overrides: int) -> None:
+    """Make ``target.lstat()`` report different st_mode / st_uid."""
+    real_lstat = Path.lstat
+    index = {"st_mode": 0, "st_uid": 4}
+
+    def lstat(self):
+        st = real_lstat(self)
+        if self == target:
+            fields = list(st)
+            for name, value in overrides.items():
+                fields[index[name]] = value
+            return os.stat_result(fields)
+        return st
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+
+
+def _rejected(path: Path, needle: str) -> None:
+    with pytest.raises(LocalFlowError) as exc:
+        AgentSink(f"unix:{path}").insert("open safari")
+    assert needle in exc.value.message
+
+
+@POSIX_ONLY
+class TestRound5SecurityChecks:
+    def test_regular_file_at_socket_path_rejected_as_not_a_socket(self, short_dir):
+        path = _private_dir(short_dir) / "agent.sock"
+        path.write_text("")
+        _rejected(path, "not a socket")
+
+    def test_parent_that_is_not_a_directory_rejected(self, short_dir, monkeypatch):
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        _fake_lstat(monkeypatch, server.path.parent, st_mode=stat.S_IFLNK | 0o700)
+        _rejected(server.path, "not a directory")
+        assert server.close() == b""
+
+    def test_parent_owned_by_other_uid_rejected(self, short_dir, monkeypatch):
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        _fake_lstat(monkeypatch, server.path.parent, st_uid=os.getuid() + 1)
+        _rejected(server.path, "parent directory is owned by uid")
+        assert server.close() == b""
+
+    def test_macos_unknown_xucred_version_rejected(self, short_dir, monkeypatch):
+        monkeypatch.setattr(sink_mod, "sys", SimpleNamespace(platform="darwin"))
+        reply = struct.pack("=IIhxx16I", 1, os.getuid(), 1, 20, *[0] * 15)
+        _fake_macos_peercred(monkeypatch, os.getuid(), reply=reply)
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        _rejected(server.path, "version")
+        assert server.close() == b""
+
+    def test_linux_peer_with_other_uid_rejected(self, short_dir, monkeypatch):
+        monkeypatch.setattr(sink_mod, "sys", SimpleNamespace(platform="linux"))
+        monkeypatch.setattr(socket, "SO_PEERCRED", 17, raising=False)
+
+        def getsockopt(self, level, option, buflen=0):
+            return struct.pack("3i", 1, os.getuid() + 1, 1)
+
+        monkeypatch.setattr(socket.socket, "getsockopt", getsockopt)
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        _rejected(server.path, "owned by uid")
+        assert server.close() == b""
+
+    def test_text_plus_key_utterance_delivers_text_and_warns_once(
+        self, tmp_path, short_dir, caplog
+    ):
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        agent = AgentSink(f"unix:{server.path}")
+        utterance = "open safari press enter"
+        store = PersonalizationStore(tmp_path)
+        p = DictationPipeline(
+            transcriber=MockTranscriber([utterance]),
+            polisher=TranscriptPolisher(MockChatClient([utterance]), store),
+            store=store,
+            sink=FakeTextSink(),
+            history=HistoryStore(tmp_path),
+        )
+        reporter = FakeReporter()
+        with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
+            _handle_utterance(
+                p, reporter, b"\x01\x00" * 800, 16000, sink_override=agent, skip_history=True
+            )
+        assert b'"text": "open safari"' in server.close()
+        assert sum("key action" in r.getMessage() for r in caplog.records) == 1
+        assert _history(p) == []
+        assert any(state == "inserted" for state, _ in reporter.events)

@@ -1460,6 +1460,9 @@ def _handle_utterance(
             reporter.notify("warning", warning)
         if result.final:
             reporter.notify("inserted", repr(result.final))
+        elif skip_history:
+            # Key-only agent command: no text to send, but key action was processed
+            reporter.notify("inserted", "key sent, no text for agent")
         if result.duration_s > max_utterance_min * 60:
             minutes = result.duration_s / 60
             reporter.notify(

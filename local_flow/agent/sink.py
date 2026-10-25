@@ -353,6 +353,15 @@ class AgentSink(TextSink):
             try:
                 so_peercred = socket.SO_PEERCRED
                 creds = sock.getsockopt(socket.SOL_SOCKET, so_peercred, struct.calcsize("3i"))
+                # Check we got at least 12 bytes (pid, uid, gid)
+                if len(creds) < 12:
+                    raise LocalFlowError(
+                        f"agent socket peer credential reply too short ({len(creds)} bytes)",
+                        hint=(
+                            "Cannot verify peer identity. "
+                            "Make sure poppy-desk is running correctly."
+                        ),
+                    )
                 peer_pid, peer_uid, peer_gid = struct.unpack("3i", creds)
                 if peer_uid != current_uid:
                     raise LocalFlowError(

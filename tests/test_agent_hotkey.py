@@ -155,19 +155,21 @@ class TestAgentSinkSecurityValidation:
         s.listen(1)
 
         try:
-            # Mock lstat to return a different uid
-            original_lstat = socket_path.lstat
+            # Mock lstat to return a different uid for the socket only
+            original_lstat = Path.lstat
 
-            def mock_lstat():
-                st = original_lstat()
-                # Create a new stat result with different uid
-                return os.stat_result((
-                    st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
-                    os.getuid() + 1,  # Different uid
-                    st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
-                ))
+            def mock_lstat(self):
+                st = original_lstat(self)
+                if self == socket_path:
+                    # Create a new stat result with different uid
+                    return os.stat_result((
+                        st.st_mode, st.st_ino, st.st_dev, st.st_nlink,
+                        os.getuid() + 1,  # Different uid
+                        st.st_gid, st.st_size, st.st_atime, st.st_mtime, st.st_ctime
+                    ))
+                return st
 
-            with mock.patch.object(Path, 'lstat', side_effect=mock_lstat):
+            with mock.patch.object(Path, 'lstat', mock_lstat):
                 sink = AgentSink(f"unix:{socket_path}")
                 with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
                     with pytest.raises(LocalFlowError) as exc_info:
@@ -178,12 +180,14 @@ class TestAgentSinkSecurityValidation:
         finally:
             s.close()
 
+
     def test_socket_in_world_writable_dir_rejected(self, short_dir, caplog):
         import logging
 
         import pytest
         socket_dir = short_dir / "world_writable"
         socket_dir.mkdir(mode=0o777)  # World writable
+        socket_dir.chmod(0o777)  # Ensure it's actually 0o777 (umask may reduce mkdir mode)
         socket_path = socket_dir / "agent.sock"
 
         # Bind a real socket
@@ -784,27 +788,67 @@ class TestBlockingIssueRegressions:
         finally:
             s.close()
 
-    def test_issue_5_symlink_parent_rejected(self, short_dir):
+    def test_issue_5_symlink_parent_rejected(self, short_dir, monkeypatch):
         """Issue 5: Parent must be a real directory, not a symlink."""
         import socket as sock_mod
-        # Create real dir and symlink to it
+        import stat
+
+        # Create a socket in a real directory
         real_dir = short_dir / "real"
         real_dir.mkdir(mode=0o700)
-        symlink_dir = short_dir / "symlink"
-        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+        socket_path = real_dir / "agent.sock"
 
-        socket_path = symlink_dir / "agent.sock"
         # Bind a real socket
         s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
         s.bind(str(socket_path))
         s.listen(1)
 
         try:
-            # resolve() follows symlinks, so the parent check sees the real dir
-            # This test documents that behavior (symlink is followed, then checks apply)
+            # Mock lstat to make parent appear as symlink (not a directory)
+            real_lstat = Path.lstat
+
+            def mock_lstat(self):
+                st = real_lstat(self)
+                if self == socket_path.parent:
+                    # Make it appear as symlink, not directory
+                    fields = list(st)
+                    fields[0] = stat.S_IFLNK | 0o700  # st_mode: symlink with 0700
+                    return os.stat_result(fields)
+                return st
+
+            monkeypatch.setattr(Path, "lstat", mock_lstat)
             sink = AgentSink(f"unix:{socket_path}")
-            # After resolve, parent is real_dir, which has mode 0700, so this should work
-            # The test name is historical - resolve() makes symlinks transparent
-            assert sink is not None
+            with pytest.raises(LocalFlowError) as exc_info:
+                sink.insert("test")
+            assert "not a directory" in exc_info.value.message
+        finally:
+            s.close()
+
+    def test_linux_short_peercred_rejected(self, short_dir, monkeypatch):
+        """Linux SO_PEERCRED must return at least 12 bytes (pid, uid, gid)."""
+        import socket as sock_mod
+
+        monkeypatch.setattr("local_flow.agent.sink.sys.platform", "linux")
+        monkeypatch.setattr(sock_mod, "SO_PEERCRED", 17, raising=False)
+
+        # Create socket and server
+        socket_dir = short_dir / "private"
+        socket_dir.mkdir(mode=0o700)
+        socket_path = socket_dir / "agent.sock"
+
+        s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+        s.bind(str(socket_path))
+        s.listen(1)
+
+        try:
+            # Mock getsockopt to return short (< 12 bytes) credential data
+            def mock_getsockopt(self, level, option, buflen=0):
+                return b"\x00" * 8  # Only 8 bytes, should be 12+
+
+            monkeypatch.setattr(sock_mod.socket, "getsockopt", mock_getsockopt)
+
+            with pytest.raises(LocalFlowError) as exc_info:
+                AgentSink(f"unix:{socket_path}").insert("test")
+            assert "too short" in exc_info.value.message
         finally:
             s.close()
