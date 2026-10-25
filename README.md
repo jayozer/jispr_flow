@@ -354,6 +354,31 @@ uv run local-flow learn --add 1 2
 
 Run `uv run local-flow --help` or `<command> --help` for every option.
 
+## Agent commands
+
+local-flow can send dictated commands to a local voice-driven desktop agent (like poppy-desk) via Unix domain socket IPC. Tap the configured agent hotkey (in push-to-talk mode, like the transform/command hotkeys) to route the next utterance to the agent instead of the focused app. Agent commands are never pasted into any application and never written to history — they're sent directly to the agent via the socket.
+
+**How it works**: Configure `agent_hotkey` and optionally `agent_target` in your config (`.env`, TOML, or ENV variables). The socket must be in a user-owned private directory with mode 0700. The socket file and its parent directory must both be owned by the current user. For security, peer UID is verified after connecting, and all checks use `lstat` to prevent symlink races.
+
+**Platform defaults**:
+- macOS: `~/Library/Application Support/poppy-desk/agent.sock`
+- Linux: `$XDG_RUNTIME_DIR/poppy-desk/agent.sock` (fallback: `~/.local/state/poppy-desk/agent.sock`)
+
+**IPC message format**: JSON, UTF-8 encoded, newline-terminated. Example:
+
+```json
+{"version": 1, "text": "open safari"}
+```
+
+**Configuration example** (`.env` or `local-flow.toml`):
+
+```bash
+LOCAL_FLOW_AGENT_HOTKEY=f10
+LOCAL_FLOW_AGENT_TARGET=unix:~/Library/Application Support/poppy-desk/agent.sock
+```
+
+**Security invariant**: Only local Unix domain sockets are supported. Ancestors up to root are checked for secure ownership and permissions. Paths directly in `/tmp` or `/var/tmp` are rejected at construction time (use a private subdirectory). A socket that passes validation at construction but later becomes compromised (ownership changed, moved to world-writable directory) will be rejected at send time.
+
 ## Native macOS app (JiSpr)
 
 The native SwiftUI menu-bar app under `macos/JiSpr` is the recommended way to run

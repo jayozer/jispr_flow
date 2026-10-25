@@ -56,8 +56,8 @@ class AgentSink(TextSink):
     simulation. The agent hotkey is for sending commands to an autonomous
     agent, not for dictating keystrokes into a document.
 
-    Connection errors (poppy-desk not running, socket unavailable) are logged
-    as warnings; they never crash the dictation session. Each ``insert`` call
+    Connection errors (poppy-desk not running, socket unavailable) raise
+    LocalFlowError and are logged as warnings. Each ``insert`` call
     attempts one connection; no retries, no persistent connection pool.
 
     **Security invariant**: only local Unix domain sockets are supported.
@@ -82,48 +82,52 @@ class AgentSink(TextSink):
         """
         self.target = target
         self._validate_target_format()
+        self._last_insert_had_text = False  # Track if text was sent
 
     def _validate_target_format(self) -> None:
         """Ensure ``target`` has a valid format (detailed security checks happen at send time)."""
         # Strip unix: prefix if present
         path_str = self.target[5:] if self.target.startswith("unix:") else self.target
-        
+
         if not path_str:
             raise ConfigError(
                 "agent_target path cannot be empty.",
-                hint=f"Use unix:/path/to/socket or /path/to/socket (e.g. unix:{_get_default_agent_socket_path()})",
+                hint=(
+                    "Use unix:/path/to/socket or /path/to/socket "
+                    f"(e.g. unix:{_get_default_agent_socket_path()})"
+                ),
             )
-        
+
         # Check for null bytes (would cause ValueError at connect time)
         if "\x00" in path_str:
             raise ConfigError(
                 "agent_target path contains null byte.",
                 hint="Socket paths cannot contain null bytes.",
             )
-        
+
         # Expand ~ and check if relative
         try:
             expanded = Path(path_str).expanduser()
         except Exception as exc:
             raise ConfigError(
                 f"agent_target path {path_str!r} cannot be expanded: {exc}",
-            )
-        
+            ) from exc
+
         # Reject relative paths (require absolute paths for security)
         if not expanded.is_absolute():
             raise ConfigError(
                 f"agent_target path must be absolute; got relative path {path_str!r}.",
                 hint="Use an absolute path like /path/to/socket or ~/path/to/socket.",
             )
-        
+
         # Resolve to check sun_path limit
         try:
             resolved = expanded.resolve()
         except Exception as exc:
             raise ConfigError(
                 f"agent_target path {path_str!r} cannot be resolved: {exc}",
-            )
-        
+            ) from exc
+
         resolved_str = str(resolved)
         if len(resolved_str.encode("utf-8")) >= _MAX_SOCKET_PATH_LENGTH:
             raise ConfigError(
@@ -131,21 +135,47 @@ class AgentSink(TextSink):
                 f"max {_MAX_SOCKET_PATH_LENGTH - 1}).",
                 hint="Unix domain socket paths have a 104-byte limit. Use a shorter path.",
             )
-        
-        # Reject paths directly in /tmp (but allow private subdirectories like /tmp/myapp/)
-        # This catches unix:/tmp and /tmp/agent.sock but allows /tmp/private-dir/agent.sock
-        resolved_parts = resolved.parts
-        if len(resolved_parts) == 2 and resolved_parts[0] == "/" and resolved_parts[1] == "tmp":
-            # Path is exactly /tmp (no filename)
+
+        # Reject paths directly in /tmp or /private/tmp (macOS) or /private/var/tmp
+        # Compare resolved paths so macOS symlinks are caught
+        tmp_resolved = Path("/tmp").resolve()
+        var_tmp_resolved = Path("/var/tmp").resolve() if Path("/var/tmp").exists() else None
+
+        # Also check /private/tmp and /private/var/tmp directly (macOS canonical paths)
+        private_tmp = Path("/private/tmp") if Path("/private/tmp").exists() else None
+        private_var_tmp = Path("/private/var/tmp") if Path("/private/var/tmp").exists() else None
+
+        # Check if socket path itself is /tmp or if its parent is /tmp
+        if resolved == tmp_resolved or resolved.parent == tmp_resolved:
             raise ConfigError(
-                f"agent_target path {path_str!r} is /tmp, which is world-writable.",
+                f"agent_target path {path_str!r} is /tmp or directly in /tmp, "
+                "which is world-writable.",
+                hint="Use a private subdirectory like /tmp/myapp/ or a directory in your home.",
+            )
+        # Also check if path is in /private/tmp (macOS canonical path)
+        elif private_tmp and (resolved == private_tmp or resolved.parent == private_tmp):
+            raise ConfigError(
+                f"agent_target path {path_str!r} is /private/tmp or directly in /private/tmp, "
+                "which is world-writable.",
                 hint="Use a private subdirectory or a directory in your home.",
             )
-        elif len(resolved_parts) == 3 and resolved_parts[0] == "/" and resolved_parts[1] == "tmp":
-            # Path is /tmp/<filename> (socket directly in /tmp root)
+        # Check /var/tmp
+        elif var_tmp_resolved and (
+            resolved == var_tmp_resolved or resolved.parent == var_tmp_resolved
+        ):
             raise ConfigError(
-                f"agent_target path {path_str!r} is directly in /tmp, which is world-writable.",
-                hint="Use a private subdirectory like /tmp/myapp/ or a directory in your home.",
+                f"agent_target path {path_str!r} is /var/tmp or directly in /var/tmp, "
+                "which is world-writable.",
+                hint="Use a private subdirectory or a directory in your home.",
+            )
+        # Also check /private/var/tmp (macOS canonical path)
+        elif private_var_tmp and (
+            resolved == private_var_tmp or resolved.parent == private_var_tmp
+        ):
+            raise ConfigError(
+                f"agent_target path {path_str!r} is /private/var/tmp or "
+                "directly in /private/var/tmp, which is world-writable.",
+                hint="Use a private subdirectory or a directory in your home.",
             )
 
     def _validate_socket_security(self, socket_path: Path) -> None:
@@ -162,15 +192,15 @@ class AgentSink(TextSink):
         # Socket must exist (use lstat to detect symlinks)
         try:
             socket_stat = socket_path.lstat()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             raise LocalFlowError(
                 f"agent socket does not exist: {socket_path}",
                 hint="Make sure poppy-desk is running and has created the socket.",
-            )
+            ) from exc
         except OSError as exc:
             raise LocalFlowError(
                 f"agent socket cannot be accessed: {socket_path}: {exc}",
-            )
+            ) from exc
 
         # Socket must be a real socket, not a symlink or regular file
         if not stat.S_ISSOCK(socket_stat.st_mode):
@@ -182,7 +212,8 @@ class AgentSink(TextSink):
         # Socket itself must be owned by current user
         if socket_stat.st_uid != current_uid:
             raise LocalFlowError(
-                f"agent socket is owned by uid {socket_stat.st_uid}, not current user ({current_uid})",
+                f"agent socket is owned by uid {socket_stat.st_uid}, "
+                f"not current user ({current_uid})",
                 hint="The socket must be owned by you. Remove it and restart poppy-desk.",
             )
 
@@ -190,14 +221,14 @@ class AgentSink(TextSink):
         parent_dir = socket_path.parent
         try:
             parent_stat = parent_dir.lstat()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             raise LocalFlowError(
                 f"agent socket parent directory does not exist: {parent_dir}",
-            )
+            ) from exc
         except OSError as exc:
             raise LocalFlowError(
                 f"agent socket parent directory cannot be accessed: {parent_dir}: {exc}",
-            )
+            ) from exc
 
         # Parent must be a real directory, not a symlink
         if not stat.S_ISDIR(parent_stat.st_mode):
@@ -209,7 +240,8 @@ class AgentSink(TextSink):
         # Parent directory must be owned by current user
         if parent_stat.st_uid != current_uid:
             raise LocalFlowError(
-                f"agent socket parent directory is owned by uid {parent_stat.st_uid}, not current user ({current_uid})",
+                f"agent socket parent directory is owned by uid {parent_stat.st_uid}, "
+                f"not current user ({current_uid})",
                 hint="The socket directory must be owned by you for security.",
             )
 
@@ -218,42 +250,56 @@ class AgentSink(TextSink):
         if mode != 0o700:
             raise LocalFlowError(
                 f"agent socket parent directory {parent_dir} has mode {oct(mode)}, not 0700",
-                hint="The socket directory must have mode 0700 (chmod 700) to prevent command interception.",
+                hint=(
+                    "The socket directory must have mode 0700 (chmod 700) "
+                    "to prevent command interception."
+                ),
             )
-        
+
         # Check all ancestors up to root (T2: prevent writable ancestor attacks)
-        # Walk up the directory tree and ensure each ancestor is either:
-        # 1. Not group/world writable, OR
-        # 2. Has the sticky bit set (like /tmp)
-        # Even if we own a world-writable directory, other users can manipulate its contents
+        # Walk up the directory tree and ensure each ancestor is:
+        # 1. Not group/world writable (unless sticky bit set), AND
+        # 2. Owned by root or current user (non-root users can rename directories they own)
         current_dir = parent_dir.parent
         checked_dirs = set()  # Avoid infinite loops on .. or symlinks
         while current_dir != current_dir.parent:  # Stop at root
             if current_dir in checked_dirs:
                 break
             checked_dirs.add(current_dir)
-            
+
             try:
                 dir_stat = current_dir.lstat()
-            except (FileNotFoundError, OSError):
-                # Can't stat ancestor - this is unusual but not necessarily an attack
-                # Log and continue
-                break
-            
+            except (FileNotFoundError, OSError) as exc:
+                # Can't stat ancestor - treat as security failure
+                raise LocalFlowError(
+                    f"agent socket ancestor directory {current_dir} cannot be accessed: {exc}",
+                    hint="Socket path ancestors must be readable and secure.",
+                ) from exc
+
+            # Check ownership: must be owned by root (0) or current user
+            if dir_stat.st_uid not in (0, current_uid):
+                raise LocalFlowError(
+                    f"agent socket ancestor directory {current_dir} "
+                    f"is owned by uid {dir_stat.st_uid} "
+                    f"(not root or current user {current_uid})",
+                    hint="Socket path ancestors must be owned by you or root for security.",
+                )
+
             # Check if group/world writable without sticky bit
             dir_mode = stat.S_IMODE(dir_stat.st_mode)
             has_group_write = bool(dir_mode & stat.S_IWGRP)
             has_world_write = bool(dir_mode & stat.S_IWOTH)
             has_sticky = bool(dir_mode & stat.S_ISVTX)
-            
-            # Reject if writable by others without sticky bit, even if we own it
+
+            # Reject if writable by others without sticky bit
             if (has_group_write or has_world_write) and not has_sticky:
                 raise LocalFlowError(
                     f"agent socket ancestor directory {current_dir} is writable by others "
                     f"(mode {oct(dir_mode)}) without sticky bit",
-                    hint="Socket path ancestors must be either not group/world writable, or have the sticky bit set (like /tmp).",
+                    hint="Socket path ancestors must be either not group/world writable, "
+                    "or have the sticky bit set (like /tmp).",
                 )
-            
+
             current_dir = current_dir.parent
 
     def _verify_peer_uid(self, sock: socket.socket) -> None:
@@ -266,39 +312,56 @@ class AgentSink(TextSink):
         # Platform-specific peer credential checks
         if sys.platform == "darwin":
             # macOS: LOCAL_PEERCRED returns xucred structure
+            # CPython defines LOCAL_PEERCRED but not SOL_LOCAL, so use getattr
+            sol_local = getattr(socket, "SOL_LOCAL", 0)  # SOL_LOCAL is 0 on Darwin
+            local_peercred = getattr(socket, "LOCAL_PEERCRED", 0x001)
             try:
-                # LOCAL_PEERCRED = 0x001 on macOS
-                creds = sock.getsockopt(socket.SOL_LOCAL, 0x001, struct.calcsize("=IIIi"))
+                creds = sock.getsockopt(sol_local, local_peercred, struct.calcsize("=IIIi"))
                 # xucred: uint32_t version, uid_t uid, short ngroups, gid_t groups[1]
                 _, peer_uid, _, _ = struct.unpack("=IIIi", creds[:16])
                 if peer_uid != current_uid:
                     raise LocalFlowError(
-                        f"agent socket peer is owned by uid {peer_uid}, not current user ({current_uid})",
+                        f"agent socket peer is owned by uid {peer_uid}, "
+                        f"not current user ({current_uid})",
                         hint="The socket peer must be your process. Restart poppy-desk.",
                     )
             except OSError as exc:
-                # LOCAL_PEERCRED not supported or failed
-                logger.debug("agent: LOCAL_PEERCRED check unavailable: %s", exc)
+                # Credential check failed - fail closed (reject the connection)
+                raise LocalFlowError(
+                    f"agent socket peer credential check failed: {exc}",
+                    hint="Cannot verify peer identity. Make sure poppy-desk is running correctly.",
+                ) from exc
         elif sys.platform.startswith("linux"):
             # Linux: SO_PEERCRED returns ucred structure
             try:
-                # SO_PEERCRED = 17 on Linux
-                creds = sock.getsockopt(socket.SOL_SOCKET, 17, struct.calcsize("3i"))
+                so_peercred = socket.SO_PEERCRED
+                creds = sock.getsockopt(socket.SOL_SOCKET, so_peercred, struct.calcsize("3i"))
                 peer_pid, peer_uid, peer_gid = struct.unpack("3i", creds)
                 if peer_uid != current_uid:
                     raise LocalFlowError(
-                        f"agent socket peer is owned by uid {peer_uid}, not current user ({current_uid})",
+                        f"agent socket peer is owned by uid {peer_uid}, "
+                        f"not current user ({current_uid})",
                         hint="The socket peer must be your process. Restart poppy-desk.",
                     )
             except OSError as exc:
-                # SO_PEERCRED not supported or failed
-                logger.debug("agent: SO_PEERCRED check unavailable: %s", exc)
+                # Credential check failed - fail closed (reject the connection)
+                raise LocalFlowError(
+                    f"agent socket peer credential check failed: {exc}",
+                    hint="Cannot verify peer identity. Make sure poppy-desk is running correctly.",
+                ) from exc
 
     def insert(self, text: str) -> None:
         """Send ``text`` to poppy-desk as a JSON message over the configured Unix socket.
 
         :raises LocalFlowError: if connection or send fails
         """
+        if not text:
+            # Empty text - track that nothing was sent
+            self._last_insert_had_text = False
+            logger.warning("agent: insert called with empty text, nothing sent")
+            return
+
+        self._last_insert_had_text = True
         message = {"version": 1, "text": text}
         payload = json.dumps(message).encode("utf-8") + b"\n"
 
@@ -314,7 +377,7 @@ class AgentSink(TextSink):
             raise LocalFlowError(
                 f"failed to send command to poppy-desk at {self.target}",
                 hint="Make sure poppy-desk is running and the socket path is correct.",
-            )
+            ) from exc
         except LocalFlowError as exc:
             # LocalFlowError already has good messages, log the full details
             logger.warning(
@@ -337,19 +400,23 @@ class AgentSink(TextSink):
         try:
             sock.settimeout(2.0)
             sock.connect(str(socket_path))
-            
+
             # Re-validate post-connect to detect TOCTOU attacks (T1)
             # If the directory was swapped after validation but before connect,
             # this will catch it
             self._validate_socket_security(socket_path)
-            
+
             # Verify peer UID after connection (protects against other-UID attackers)
             self._verify_peer_uid(sock)
-            
+
             sock.sendall(payload)
         finally:
             sock.close()
 
     def press_key(self, key: str) -> None:
-        """No-op: agent commands are sent as-is, not as simulated keystrokes."""
-        pass
+        """Log warning if only key actions (no text was sent to agent)."""
+        if not self._last_insert_had_text:
+            logger.warning(
+                "agent: key action %r requested but no text was sent to agent",
+                key
+            )

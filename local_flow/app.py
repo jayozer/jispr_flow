@@ -1443,8 +1443,12 @@ def _handle_utterance(
     reporter.notify("processing")
     pending_path = None
     try:
+        # Don't persist agent audio to pending/ - keep it in memory only
+        # A crash between save and finally would leave it for recover
         pending_path = (
-            pending_store.save(pcm, sample_rate) if pending_store is not None else None
+            pending_store.save(pcm, sample_rate)
+            if (pending_store is not None and not skip_history)
+            else None
         )
         process_kwargs = {"sink_override": sink_override} if sink_override is not None else {}
         if normalize_audio:
@@ -1632,7 +1636,10 @@ def _build_run_dependencies(config: Config) -> RunDependencies:
         from local_flow.agent.sink import AgentSink, _get_default_agent_socket_path
 
         # Resolve empty agent_target to platform default
-        target = config.agent_target if config.agent_target else f"unix:{_get_default_agent_socket_path()}"
+        if config.agent_target:
+            target = config.agent_target
+        else:
+            target = f"unix:{_get_default_agent_socket_path()}"
         agent_sink = AgentSink(target)
 
     return RunDependencies(
@@ -1899,9 +1906,16 @@ def _run_loop(
         deps = dependencies if dependencies is not None else _build_run_dependencies(config)
     except LocalFlowError as exc:
         return _fail(exc)
-    pipeline, source, vad, pending_store, normalize_audio, max_utterance_min, scratchpad_sink, agent_sink = (
-        deps
-    )
+    (
+        pipeline,
+        source,
+        vad,
+        pending_store,
+        normalize_audio,
+        max_utterance_min,
+        scratchpad_sink,
+        agent_sink,
+    ) = deps
     if reporter.wants_audio_level:
         set_level_callback = getattr(source, "set_level_callback", None)
         if callable(set_level_callback):

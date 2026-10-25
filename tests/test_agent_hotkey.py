@@ -6,17 +6,20 @@ Mirrors `tests/test_scratchpad_hotkey.py`'s patterns.
 
 import json
 import os
+import shutil
 import socket
-import stat
+import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from local_flow.agent.sink import AgentSink, _get_default_agent_socket_path
 from local_flow.app import (
     RunDependencies,
-    _build_pipeline,
     _handle_utterance,
     _run_agent_listener,
     _run_loop,
@@ -34,6 +37,20 @@ from local_flow.status import StatusReporter
 
 def _config(**env):
     return load_config(env={f"LOCAL_FLOW_{k.upper()}": v for k, v in env.items()})
+
+
+@pytest.fixture
+def short_dir() -> Iterator[Path]:
+    """A short-path scratch dir so AF_UNIX paths fit in sun_path on every OS."""
+    base = tempfile.gettempdir()
+    if len(base) > 40 and os.path.isdir("/tmp"):
+        base = "/tmp"
+    path = Path(tempfile.mkdtemp(prefix="lfa-", dir=base)).resolve()
+    path.chmod(0o700)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 class FakeReporter(StatusReporter):
@@ -76,14 +93,14 @@ class TestAgentSinkValidation:
     def test_unknown_scheme_rejected(self):
         try:
             AgentSink("http://localhost:9876")
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "absolute" in exc.message or "unix:" in exc.message
 
     def test_unix_empty_path_rejected(self):
         try:
             AgentSink("unix:")
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "cannot be empty" in exc.message
 
@@ -126,6 +143,7 @@ class TestAgentSinkSecurityValidation:
 
     def test_socket_owned_by_another_user_rejected(self, tmp_path, caplog):
         import logging
+
         import pytest
         socket_dir = tmp_path / "private"
         socket_dir.mkdir(mode=0o700)
@@ -154,6 +172,7 @@ class TestAgentSinkSecurityValidation:
 
     def test_socket_in_world_writable_dir_rejected(self, tmp_path, caplog):
         import logging
+
         import pytest
         socket_dir = tmp_path / "world_writable"
         socket_dir.mkdir(mode=0o777)  # World writable
@@ -169,6 +188,7 @@ class TestAgentSinkSecurityValidation:
 
     def test_socket_nonexistent_logs_warning(self, tmp_path, caplog):
         import logging
+
         import pytest
         socket_path = tmp_path / "nonexistent.sock"
         sink = AgentSink(f"unix:{socket_path}")
@@ -312,15 +332,15 @@ class TestConfigFields:
         assert config.agent_hotkey == "f10"
 
     def test_agent_target_env_override(self):
-        config = load_config(env={"LOCAL_FLOW_AGENT_TARGET": "tcp://127.0.0.1:9999"})
-        assert config.agent_target == "tcp://127.0.0.1:9999"
+        config = load_config(env={"LOCAL_FLOW_AGENT_TARGET": "unix:/tmp/test/agent.sock"})
+        assert config.agent_target == "unix:/tmp/test/agent.sock"
 
     def test_agent_hotkey_collides_with_main_hotkey(self):
         try:
             load_config(
                 env={"LOCAL_FLOW_HOTKEY": "f9", "LOCAL_FLOW_AGENT_HOTKEY": "f9"}
             )
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "agent_hotkey" in exc.message
             assert "distinct" in exc.hint
@@ -334,7 +354,7 @@ class TestConfigFields:
                     "LOCAL_FLOW_AGENT_HOTKEY": "f6",
                 }
             )
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "agent_hotkey" in exc.message
 
@@ -347,7 +367,7 @@ class TestConfigFields:
                     "LOCAL_FLOW_AGENT_HOTKEY": "f7",
                 }
             )
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "agent_hotkey" in exc.message
 
@@ -360,7 +380,7 @@ class TestConfigFields:
                     "LOCAL_FLOW_AGENT_HOTKEY": "f8",
                 }
             )
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "agent_hotkey" in exc.message
 
@@ -369,7 +389,7 @@ class TestConfigFields:
             load_config(
                 env={"LOCAL_FLOW_HOTKEY": "F9", "LOCAL_FLOW_AGENT_HOTKEY": "f9"}
             )
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "agent_hotkey" in exc.message
 
@@ -468,7 +488,11 @@ class TestRunLoopAgentHotkeyUnsupportedKey:
         socket_dir = tmp_path / "agent"
         socket_dir.mkdir(mode=0o700)
         agent_sink = AgentSink(f"unix:{socket_dir}/test.sock")
-        config = _config(hotkey="f9", agent_hotkey="fn", agent_target=f"unix:{socket_dir}/test.sock")
+        config = _config(
+            hotkey="f9",
+            agent_hotkey="fn",
+            agent_target=f"unix:{socket_dir}/test.sock",
+        )
         reporter = FakeReporter()
         main_listener_ran = threading.Event()
 
@@ -621,7 +645,7 @@ class TestBlockingIssueRegressions:
 
     def test_issue_1_agent_sink_available_in_all_entry_points(self):
         """Issue 1: agent_sink is built by _build_run_dependencies when hotkey is set.
-        
+
         This is a documentation test - the fix is in _build_run_dependencies at line 1630-1636
         and the unpacking at line 1902-1904. No separate on-demand build needed.
         """
@@ -637,7 +661,7 @@ class TestBlockingIssueRegressions:
 
         pending_store = PendingAudioStore(tmp_path)
         normal_sink = FakeTextSink()
-        
+
         # Create a pipeline that will raise a non-LocalFlowError
         class FailingTranscriber:
             def transcribe(self, pcm, sample_rate):
@@ -664,7 +688,8 @@ class TestBlockingIssueRegressions:
         assert len(pending_store.pending()) == 0
 
     def test_issue_3_agent_commands_not_in_last_transcript(self, tmp_path):
-        """Issue 3: agent utterances became last_transcript, allowing command mode to insert them."""
+        """Issue 3: agent utterances became last_transcript,
+        allowing command mode to insert them."""
         normal_sink = FakeTextSink()
         pipeline = _pipeline(
             tmp_path, normal_sink, llm=MockChatClient(["agent command"]),
@@ -689,14 +714,14 @@ class TestBlockingIssueRegressions:
         # Null byte rejected at construction
         try:
             AgentSink("unix:/tmp/test\x00.sock")
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "null byte" in exc.message
 
         # Relative path rejected
         try:
             AgentSink("unix:relative/path.sock")
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "absolute" in exc.message
 
@@ -707,12 +732,13 @@ class TestBlockingIssueRegressions:
         long_path = tmp_path / long_name / "agent.sock"
         try:
             AgentSink(f"unix:{long_path}")
-            assert False, "should have raised"
+            raise AssertionError("should have raised")
         except ConfigError as exc:
             assert "too long" in exc.message or "104" in exc.message
 
     def test_issue_5_parent_must_be_exactly_0700(self, tmp_path):
-        """Issue 5: Parent directory mode must be exactly 0700, not just "not group/world writable"."""
+        """Issue 5: Parent directory mode must be exactly 0700,
+        not just "not group/world writable"."""
         # Create directory with mode 0755 (readable by others, but not writable)
         socket_dir = tmp_path / "agent_755"
         socket_dir.mkdir(mode=0o755)
@@ -722,7 +748,7 @@ class TestBlockingIssueRegressions:
         # Make it a socket (approximate - just for testing the mode check)
         # In real scenario, we'd need to create actual socket, but for this test
         # we'll just verify the rejection happens
-        sink = AgentSink(f"unix:{socket_path}")
+        AgentSink(f"unix:{socket_path}")
         # The validation will fail when trying to send
         # (can't fully test without creating actual socket)
 
@@ -733,10 +759,10 @@ class TestBlockingIssueRegressions:
         real_dir.mkdir(mode=0o700)
         symlink_dir = tmp_path / "symlink"
         symlink_dir.symlink_to(real_dir)
-        
+
         socket_path = symlink_dir / "agent.sock"
         # Create the socket file (we can't create actual socket in test)
         socket_path.touch()
-        
-        sink = AgentSink(f"unix:{socket_path}")
+
+        AgentSink(f"unix:{socket_path}")
         # Validation will detect symlink parent when trying to send

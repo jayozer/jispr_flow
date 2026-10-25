@@ -1,18 +1,17 @@
-"""Review tests for the agent hotkey (PR #14, reviewed at a35969a).
+"""Review tests for the agent hotkey (PR #14, re-reviewed at 8cfd8ab).
 
-Drop-in for ``tests/``. Tests whose name starts with ``test_bug_`` pin a
-blocking bug and FAIL until it is fixed. ``test_nb_`` tests pin non-blocking
-gaps and also FAIL until addressed. Every other test documents behavior that
-already holds and should keep passing.
+Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` in the
+"Round 3" section at the bottom pin open issues and FAIL until fixed.
+Older ``test_bug_*`` names (B1, B2, B3, B5, T1, T2) are kept as regression
+tests: those bugs are fixed at 8cfd8ab and the tests pass.
 
-Bug IDs (see the PR review):
-  B1  app.py:2434 discards the built agent sink when dependencies=None
-  B2  agent audio left in pending/ on error -> `recover` pastes + records it
-  B3  agent command becomes pipeline.last_transcript (command mode reuses it)
-  B5  TCP port parsing: 0/>65535/non-ASCII digits accepted; OverflowError and
-      NUL-byte ValueError escape insert()
-  T1  TOCTOU: path checked, then re-walked by connect(); no post-connect check
-  T2  only the immediate parent dir is checked, not its ancestors
+Open issues (see the PR review):
+  N1  sink.py:271 uses ``socket.SOL_LOCAL``, which CPython does not define, so
+      every send on macOS raises AttributeError after connect (nothing delivered)
+  B2b agent audio is still written to pending/ before processing; a crash or
+      force-quit mid-utterance leaves it for ``local-flow recover``
+  NB  peer-credential failure fails open; ancestor owner not checked;
+      ``/private/tmp`` (what macOS resolves ``/tmp`` to) not rejected
 """
 
 from __future__ import annotations
@@ -21,12 +20,14 @@ import logging
 import os
 import shutil
 import socket
+import struct
 import sys
 import tempfile
 import threading
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -508,3 +509,147 @@ class TestQuietFailure:
         _handle_utterance(p, reporter, PCM, 16000, sink_override=agent, skip_history=True)
         assert normal.events == []
         assert not any(state == "inserted" for state, _ in reporter.events)
+
+
+# --- Round 3 (8cfd8ab) -------------------------------------------------------
+
+
+@POSIX_ONLY
+class TestRound3:
+    def test_bug_N1_macos_peer_check_uses_undefined_SOL_LOCAL(self, short_dir, monkeypatch):
+        """N1 (sink.py:271): CPython exposes LOCAL_PEERCRED but not SOL_LOCAL, so
+        on macOS ``socket.SOL_LOCAL`` raises AttributeError. It is not an
+        OSError, so it escapes ``insert()`` and nothing is delivered. Fix: use
+        ``getattr(socket, "SOL_LOCAL", 0)`` and ``socket.LOCAL_PEERCRED``."""
+        monkeypatch.setattr(sink_mod, "sys", SimpleNamespace(platform="darwin"))
+        monkeypatch.delattr(socket, "SOL_LOCAL", raising=False)
+
+        # Mock getsockopt to return valid credentials (simulate macOS success)
+        current_uid = os.getuid()
+
+        def mock_getsockopt(self, level, option, bufsize):
+            # Return valid xucred structure: version=0, uid=current, ngroups=0, groups[0]=0
+            return struct.pack("=IIIi", 0, current_uid, 0, 0)
+
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        try:
+            with monkeypatch.context() as m:
+                m.setattr(socket.socket, "getsockopt", mock_getsockopt)
+                AgentSink(f"unix:{server.path}").insert("open safari")
+        except AttributeError as exc:
+            pytest.fail(f"macOS peer check crashed: {exc}")
+        finally:
+            data = server.close()
+        assert b"open safari" in data
+
+    def test_bug_B2b_agent_audio_is_never_written_to_pending(self, tmp_path, short_dir):
+        """B2b (app.py:1446-1448): the WAV is saved before processing and only
+        deleted in ``finally``. A crash, SIGKILL or force-quit in between leaves
+        an agent command for ``local-flow recover`` (which types it with
+        history on). Don't save when ``skip_history``."""
+        saved: list[Path] = []
+
+        class SpyStore(PendingAudioStore):
+            def save(self, pcm: bytes, sample_rate: int) -> Path:
+                path = super().save(pcm, sample_rate)
+                saved.append(path)
+                return path
+
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        p = _pipeline(tmp_path, FakeTextSink())
+        _handle_utterance(
+            p,
+            FakeReporter(),
+            PCM,
+            16000,
+            SpyStore(tmp_path),
+            sink_override=AgentSink(f"unix:{server.path}"),
+            skip_history=True,
+        )
+        server.close()
+        assert saved == [], "agent audio was written to pending/"
+
+    @pytest.mark.parametrize("failure", ["local_flow_error", "unexpected"])
+    def test_agent_failure_reports_error_types_nothing_and_cleans_pending(
+        self, tmp_path, short_dir, monkeypatch, failure
+    ):
+        """LocalFlowError (and any other error) from AgentSink.insert: the error
+        is reported, not 'inserted'; nothing reaches the normal sink; history
+        stays empty; no pending WAV is left behind."""
+        agent = AgentSink(f"unix:{_private_dir(short_dir)}/missing.sock")
+        if failure == "unexpected":
+
+            def boom(self, payload):
+                raise RuntimeError("unexpected")
+
+            monkeypatch.setattr(AgentSink, "_send_unix", boom)
+        normal = FakeTextSink()
+        p = _pipeline(tmp_path, normal)
+        pending = PendingAudioStore(tmp_path)
+        reporter = FakeReporter()
+        _handle_utterance(p, reporter, PCM, 16000, pending, sink_override=agent, skip_history=True)
+        states = [state for state, _ in reporter.events]
+        assert "error" in states
+        assert "inserted" not in states
+        assert normal.events == []
+        assert _history(p) == []
+        assert pending.pending() == []
+
+    def test_unix_connect_timeout_raises_local_flow_error(self, short_dir, caplog, monkeypatch):
+        """Replaces the dropped TCP timeout test for the Unix path."""
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+
+        def timed_out(self, addr):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(socket.socket, "connect", timed_out)
+        with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
+            with pytest.raises(LocalFlowError):
+                AgentSink(f"unix:{server.path}").insert("open safari")
+        server.close()
+        assert _warned(caplog, "failed to send")
+
+    def test_nb_peer_credential_failure_fails_open(self, short_dir, monkeypatch):
+        """NB (sink.py:279-281, 293-295): if getsockopt fails, the peer check is
+        skipped at debug level and the command is sent anyway. On macOS and
+        Linux the call is expected to work, so fail closed."""
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+
+        def no_creds(self, *args):
+            raise OSError("getsockopt failed")
+
+        monkeypatch.setattr(socket.socket, "getsockopt", no_creds)
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
+        assert server.close() == b""
+
+    def test_nb_ancestor_owned_by_other_user_not_checked(self, short_dir, monkeypatch):
+        """NB (sink.py:229-257): ancestors are checked for group/world write but
+        not for owner. A 0755 ancestor owned by another non-root user lets that
+        user rename the private dir away. Require owner in {0, getuid()}."""
+        ancestor = short_dir.resolve()
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        real_lstat = Path.lstat
+
+        def lstat(self):
+            st = real_lstat(self)
+            if self == ancestor:
+                fields = list(st)
+                fields[4] = os.getuid() + 1000  # st_uid
+                return os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
+        assert server.close() == b""
+
+    def test_nb_macos_private_tmp_not_rejected_at_construction(self):
+        """NB (sink.py:135-149): on macOS ``/tmp`` resolves to ``/private/tmp``,
+        so the literal-/tmp check never fires there. The send-time 0700 check
+        still blocks it, but the fail-fast config error does not."""
+        if not Path("/private").exists():
+            pytest.skip("/private doesn't exist (not macOS)")
+
+        with pytest.raises(ConfigError):
+            AgentSink("unix:/private/tmp/agent.sock")

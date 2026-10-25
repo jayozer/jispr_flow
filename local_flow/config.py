@@ -212,16 +212,16 @@ class Config:
     # Agent command hotkey (see README "Agent commands"): tap this key (push-to-
     # talk mode only, like the transform/command hotkeys) to route the next
     # dictation to poppy-desk (a local voice-driven desktop agent) via Unix
-    # socket or localhost TCP. Agent commands are NEVER written to history and
+    # domain socket. Agent commands are NEVER written to history and
     # NEVER pasted into the focused app -- they are sent directly to the agent
     # via IPC. Empty (default) disables the feature entirely. Must be distinct
     # from hotkey/transform_hotkey/command_hotkey/scratchpad_hotkey.
     agent_hotkey: str = ""
 
-    # IPC target for agent commands: unix:/path/to/socket or tcp://127.0.0.1:PORT.
-    # Unix sockets must be in a user-owned private directory with secure permissions
-    # (0700-style, not group/world writable). Socket and parent dir must be owned by
-    # current user. TCP only allows 127.0.0.1 (localhost).
+    # IPC target for agent commands: unix:/path/to/socket or just /path/to/socket.
+    # Must be an absolute path in a user-owned private directory with mode 0700.
+    # Socket and parent directory must be owned by current user.
+    # Empty (default) uses platform-specific default path.
     agent_target: str = ""  # Resolved to platform default in _build_run_dependencies
 
 
