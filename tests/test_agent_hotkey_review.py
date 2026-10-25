@@ -1,17 +1,12 @@
-"""Review tests for the agent hotkey (PR #14, re-reviewed at 8cfd8ab).
+"""Review tests for the agent hotkey (PR #14, re-reviewed at c6a16d5).
 
-Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` in the
-"Round 3" section at the bottom pin open issues and FAIL until fixed.
-Older ``test_bug_*`` names (B1, B2, B3, B5, T1, T2) are kept as regression
-tests: those bugs are fixed at 8cfd8ab and the tests pass.
+Drop-in for ``tests/``. Tests named ``test_bug_`` / ``test_nb_`` pin issues;
+older ones (B1, B2, B2b, B3, B5, T1, T2, N1, and the round-3 NB items) are
+fixed at c6a16d5 and are kept as regression tests. Open items at c6a16d5 are
+in the "Round 4" section at the bottom and FAIL until addressed.
 
-Open issues (see the PR review):
-  N1  sink.py:271 uses ``socket.SOL_LOCAL``, which CPython does not define, so
-      every send on macOS raises AttributeError after connect (nothing delivered)
-  B2b agent audio is still written to pending/ before processing; a crash or
-      force-quit mid-utterance leaves it for ``local-flow recover``
-  NB  peer-credential failure fails open; ancestor owner not checked;
-      ``/private/tmp`` (what macOS resolves ``/tmp`` to) not rejected
+macOS-only code paths (LOCAL_PEERCRED, /tmp -> /private/tmp) are simulated
+with mocks so they run on every OS.
 """
 
 from __future__ import annotations
@@ -221,12 +216,12 @@ class _SilentSource:
 
 
 class TestProductionWiring:
-    def test_bug_B1_run_loop_discards_built_agent_sink(self, tmp_path, monkeypatch):
+    def test_bug_B1_run_loop_discards_built_agent_sink(self, short_dir, monkeypatch):
         """B1 (app.py:2434): `_run_loop` re-reads `dependencies.agent_sink`,
         which is None for `local-flow run` / pill / --with-dictation, so the
         sink built by `_build_run_dependencies` is thrown away."""
-        agent = AgentSink(f"unix:{_private_dir(tmp_path)}/test.sock")
-        p = _pipeline(tmp_path, FakeTextSink())
+        agent = AgentSink(f"unix:{_private_dir(short_dir)}/test.sock")
+        p = _pipeline(short_dir, FakeTextSink())
         monkeypatch.setattr(
             "local_flow.app._build_run_dependencies",
             lambda config: RunDependencies(p, _SilentSource(), None, agent_sink=agent),
@@ -517,30 +512,23 @@ class TestQuietFailure:
 @POSIX_ONLY
 class TestRound3:
     def test_bug_N1_macos_peer_check_uses_undefined_SOL_LOCAL(self, short_dir, monkeypatch):
-        """N1 (sink.py:271): CPython exposes LOCAL_PEERCRED but not SOL_LOCAL, so
-        on macOS ``socket.SOL_LOCAL`` raises AttributeError. It is not an
-        OSError, so it escapes ``insert()`` and nothing is delivered. Fix: use
-        ``getattr(socket, "SOL_LOCAL", 0)`` and ``socket.LOCAL_PEERCRED``."""
+        """N1 (fixed at c6a16d5, sink.py:315-317): CPython exposes LOCAL_PEERCRED
+        but not SOL_LOCAL. Simulates macOS: no ``socket.SOL_LOCAL`` and a
+        kernel that answers level 0 / LOCAL_PEERCRED (1) with a truncated xucred.
+        (Adapted at c6a16d5: the peer check now fails closed, so Linux's real
+        getsockopt can no longer stand in for macOS.)"""
         monkeypatch.setattr(sink_mod, "sys", SimpleNamespace(platform="darwin"))
         monkeypatch.delattr(socket, "SOL_LOCAL", raising=False)
-
-        # Mock getsockopt to return valid credentials (simulate macOS success)
-        current_uid = os.getuid()
-
-        def mock_getsockopt(self, level, option, bufsize):
-            # Return valid xucred structure: version=0, uid=current, ngroups=0, groups[0]=0
-            return struct.pack("=IIIi", 0, current_uid, 0, 0)
-
+        calls = _fake_macos_peercred(monkeypatch, os.getuid())
         server = _Server(_private_dir(short_dir) / "agent.sock")
         try:
-            with monkeypatch.context() as m:
-                m.setattr(socket.socket, "getsockopt", mock_getsockopt)
-                AgentSink(f"unix:{server.path}").insert("open safari")
+            AgentSink(f"unix:{server.path}").insert("open safari")
         except AttributeError as exc:
             pytest.fail(f"macOS peer check crashed: {exc}")
         finally:
             data = server.close()
         assert b"open safari" in data
+        assert calls == [(0, 1)], "expected getsockopt(SOL_LOCAL=0, LOCAL_PEERCRED=1)"
 
     def test_bug_B2b_agent_audio_is_never_written_to_pending(self, tmp_path, short_dir):
         """B2b (app.py:1446-1448): the WAV is saved before processing and only
@@ -644,12 +632,137 @@ class TestRound3:
             AgentSink(f"unix:{server.path}").insert("open safari")
         assert server.close() == b""
 
-    def test_nb_macos_private_tmp_not_rejected_at_construction(self):
-        """NB (sink.py:135-149): on macOS ``/tmp`` resolves to ``/private/tmp``,
-        so the literal-/tmp check never fires there. The send-time 0700 check
-        still blocks it, but the fail-fast config error does not."""
-        if not Path("/private").exists():
-            pytest.skip("/private doesn't exist (not macOS)")
-
+    @pytest.mark.parametrize(
+        "target", ["unix:/tmp", "unix:/tmp/agent.sock", "unix:/private/tmp/agent.sock"]
+    )
+    def test_nb_macos_private_tmp_not_rejected_at_construction(self, monkeypatch, target):
+        """Round-3 NB (fixed at c6a16d5, sink.py:139-160). Simulates macOS, where
+        /tmp is a symlink to /private/tmp. (Adapted at c6a16d5: the fix depends
+        on /private/tmp existing, so a plain call on Linux can't exercise it.)"""
+        monkeypatch.setattr(sink_mod, "Path", _MacTmpPath)
         with pytest.raises(ConfigError):
-            AgentSink("unix:/private/tmp/agent.sock")
+            AgentSink(target)
+
+    def test_macos_private_subdir_of_tmp_allowed_at_construction(self, monkeypatch):
+        monkeypatch.setattr(sink_mod, "Path", _MacTmpPath)
+        AgentSink("unix:/tmp/myapp/agent.sock")
+
+
+class _MacTmpPath(type(Path())):
+    """A Path that resolves /tmp like macOS does (/tmp -> /private/tmp)."""
+
+    def resolve(self, strict: bool = False):
+        text = str(self)
+        if text == "/tmp" or text.startswith("/tmp/"):
+            return type(self)("/private" + text)
+        if text == "/var/tmp" or text.startswith("/var/tmp/"):
+            return type(self)("/private" + text)
+        return type(self)(super().resolve(strict))
+
+    def exists(self, *args, **kwargs) -> bool:
+        if str(self) in ("/private/tmp", "/private/var/tmp"):
+            return True
+        return super().exists(*args, **kwargs)
+
+
+def _xucred(uid: int) -> bytes:
+    """struct xucred: u_int cr_version; uid_t cr_uid; short cr_ngroups;
+    (2 bytes padding); gid_t cr_groups[16]  -> 76 bytes."""
+    return struct.pack("=IIhxx16I", 0, uid, 1, 20, *([0] * 15))
+
+
+def _fake_macos_peercred(monkeypatch, uid: int, reply: bytes | None = None):
+    """Mimic xnu: LOCAL_PEERCRED copies min(buflen, sizeof(xucred)) bytes."""
+    calls: list[tuple[int, int]] = []
+
+    def getsockopt(self, level, option, buflen=0):
+        calls.append((level, option))
+        data = _xucred(uid) if reply is None else reply
+        return data[:buflen]
+
+    monkeypatch.setattr(socket.socket, "getsockopt", getsockopt)
+    return calls
+
+
+# --- Round 4 (c6a16d5) -------------------------------------------------------
+
+
+@POSIX_ONLY
+class TestRound4MacOSSimulation:
+    @pytest.fixture(autouse=True)
+    def _darwin(self, monkeypatch):
+        monkeypatch.setattr(sink_mod, "sys", SimpleNamespace(platform="darwin"))
+        monkeypatch.delattr(socket, "SOL_LOCAL", raising=False)
+
+    def test_xucred_layout_is_76_bytes_with_uid_at_offset_4(self):
+        cred = _xucred(501)
+        assert len(cred) == 76
+        assert struct.unpack_from("=I", cred, 4)[0] == 501
+
+    def test_macos_peer_with_other_uid_rejected(self, short_dir, monkeypatch):
+        _fake_macos_peercred(monkeypatch, os.getuid() + 1)
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
+        assert server.close() == b""
+
+    def test_nb_short_peercred_reply_escapes_as_struct_error(self, short_dir, monkeypatch):
+        """NB (sink.py:321): fewer than 16 bytes back makes ``struct.unpack``
+        raise ``struct.error``, which isn't an OSError, so it escapes insert()
+        as a generic exception. It still fails closed (nothing sent, the error is
+        reported), but check ``len(creds) >= 8`` and ``cr_version == 0`` and
+        raise LocalFlowError."""
+        _fake_macos_peercred(monkeypatch, os.getuid(), reply=b"\x00" * 4)
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        with pytest.raises(LocalFlowError):
+            AgentSink(f"unix:{server.path}").insert("open safari")
+        assert server.close() == b""
+
+    def test_macos_default_layout_accepted(self, short_dir, monkeypatch):
+        """~/Library/Application Support/poppy-desk/agent.sock with macOS-like
+        modes: /Users root 0755, ~ 0750, ~/Library 0700, Application Support
+        0755, poppy-desk 0700. Root ownership of /Users is simulated."""
+        users = short_dir / "Users"
+        home = users / "jay"
+        app_support = home / "Library" / "Application Support"
+        app_support.mkdir(parents=True)
+        users.chmod(0o755)
+        home.chmod(0o750)
+        (home / "Library").chmod(0o700)
+        app_support.chmod(0o755)
+        sock_dir = _private_dir(app_support, "poppy-desk")
+        monkeypatch.setattr("platform.system", lambda: "Darwin")
+        monkeypatch.setenv("HOME", str(home))
+        default = _get_default_agent_socket_path()
+        assert default == str(sock_dir / "agent.sock")
+        server = _Server(sock_dir / "agent.sock")
+        real_lstat = Path.lstat
+
+        def lstat(self):
+            st = real_lstat(self)
+            if self == users:
+                fields = list(st)
+                fields[4] = 0  # st_uid: root, like macOS /Users
+                return os.stat_result(fields)
+            return st
+
+        monkeypatch.setattr(Path, "lstat", lstat)
+        _fake_macos_peercred(monkeypatch, os.getuid())
+        AgentSink(f"unix:{default}").insert("open safari")
+        assert b"open safari" in server.close()
+
+
+@POSIX_ONLY
+class TestRound4:
+    def test_nb_key_only_utterance_after_text_is_silent(self, tmp_path, short_dir, caplog):
+        """NB (sink.py:363, 415-421): ``_last_insert_had_text`` is never reset
+        between utterances. After one normal agent command, a key-only
+        utterance ("press enter") sends nothing and logs nothing. Reset the
+        flag per utterance, or warn whenever press_key is called on AgentSink."""
+        server = _Server(_private_dir(short_dir) / "agent.sock")
+        agent = AgentSink(f"unix:{server.path}")
+        agent.insert("open safari")
+        server.close()
+        with caplog.at_level(logging.WARNING, logger="local_flow.agent.sink"):
+            agent.press_key("enter")
+        assert _warned(caplog, "key action")

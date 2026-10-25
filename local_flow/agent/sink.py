@@ -82,7 +82,6 @@ class AgentSink(TextSink):
         """
         self.target = target
         self._validate_target_format()
-        self._last_insert_had_text = False  # Track if text was sent
 
     def _validate_target_format(self) -> None:
         """Ensure ``target`` has a valid format (detailed security checks happen at send time)."""
@@ -316,9 +315,27 @@ class AgentSink(TextSink):
             sol_local = getattr(socket, "SOL_LOCAL", 0)  # SOL_LOCAL is 0 on Darwin
             local_peercred = getattr(socket, "LOCAL_PEERCRED", 0x001)
             try:
-                creds = sock.getsockopt(sol_local, local_peercred, struct.calcsize("=IIIi"))
-                # xucred: uint32_t version, uid_t uid, short ngroups, gid_t groups[1]
-                _, peer_uid, _, _ = struct.unpack("=IIIi", creds[:16])
+                creds = sock.getsockopt(sol_local, local_peercred, 76)  # Request full xucred
+                # Check we got at least 8 bytes (version + uid)
+                if len(creds) < 8:
+                    raise LocalFlowError(
+                        f"agent socket peer credential reply too short ({len(creds)} bytes)",
+                        hint=(
+                            "Cannot verify peer identity. "
+                            "Make sure poppy-desk is running correctly."
+                        ),
+                    )
+                # xucred: uint32_t cr_version, uid_t cr_uid, ...
+                cr_version, peer_uid = struct.unpack("=II", creds[:8])
+                # Check version is 0 (XUCRED_VERSION)
+                if cr_version != 0:
+                    raise LocalFlowError(
+                        f"agent socket peer credential version {cr_version} not supported",
+                        hint=(
+                            "Cannot verify peer identity. "
+                            "Make sure poppy-desk is running correctly."
+                        ),
+                    )
                 if peer_uid != current_uid:
                     raise LocalFlowError(
                         f"agent socket peer is owned by uid {peer_uid}, "
@@ -356,12 +373,10 @@ class AgentSink(TextSink):
         :raises LocalFlowError: if connection or send fails
         """
         if not text:
-            # Empty text - track that nothing was sent
-            self._last_insert_had_text = False
+            # Empty text - nothing to send
             logger.warning("agent: insert called with empty text, nothing sent")
             return
 
-        self._last_insert_had_text = True
         message = {"version": 1, "text": text}
         payload = json.dumps(message).encode("utf-8") + b"\n"
 
@@ -414,9 +429,8 @@ class AgentSink(TextSink):
             sock.close()
 
     def press_key(self, key: str) -> None:
-        """Log warning if only key actions (no text was sent to agent)."""
-        if not self._last_insert_had_text:
-            logger.warning(
-                "agent: key action %r requested but no text was sent to agent",
-                key
-            )
+        """Log warning when key actions are called (agent commands don't support keystrokes)."""
+        logger.warning(
+            "agent: key action %r requested but agent commands don't support keystrokes",
+            key,
+        )
