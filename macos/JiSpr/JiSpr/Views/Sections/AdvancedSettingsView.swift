@@ -32,8 +32,13 @@ struct AdvancedSettingsView: View {
 
             SectionCard("Specialist Hotkeys") {
                 textRow("Scratchpad hotkey", key: "scratchpad_hotkey", placeholder: "Disabled")
+                textRow("Agent command hotkey", key: "agent_hotkey", placeholder: "Disabled")
                 textRow("Mouse Enter button", key: "mouse_enter_button", placeholder: "Disabled")
                 integerRow("Space hold threshold (ms)", key: "hotkey_space_hold_ms")
+            }
+
+            SectionCard("Agent IPC") {
+                textRow("Agent target", key: "agent_target", placeholder: "Default: ~/Library/Application Support/poppy-desk/agent.sock")
             }
         }
     }

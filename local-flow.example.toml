@@ -119,5 +119,20 @@ auto_transform = ""
 # this key to toggle routing live dictation into the scratchpad's active
 # note instead of the configured insertion sink; tap again to resume normal
 # insertion. Empty (default) disables it entirely. Must be distinct from
-# hotkey, transform_hotkey, and command_hotkey.
+# hotkey, transform_hotkey, command_hotkey, and agent_hotkey.
 scratchpad_hotkey = ""
+
+# Agent command hotkey (see README "Agent commands"): tap this key to route
+# the next dictation to poppy-desk (a local voice-driven desktop agent) via
+# Unix socket instead of pasting it. Agent commands are NEVER written to
+# history or pasted into the focused app. Empty (default) disables it entirely.
+# Must be distinct from hotkey, transform_hotkey, command_hotkey, and scratchpad_hotkey.
+agent_hotkey = ""
+
+# IPC target for agent commands: unix:/path/to/socket or just /path/to/socket.
+# Must be an absolute path in a user-owned private directory with mode 0700.
+# Empty (default) uses the platform default:
+#   macOS: ~/Library/Application Support/poppy-desk/agent.sock
+#   Linux: $XDG_RUNTIME_DIR/poppy-desk/agent.sock (fallback: ~/.local/state/poppy-desk/agent.sock)
+# Used when agent_hotkey is set.
+agent_target = ""

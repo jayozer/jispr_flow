@@ -89,6 +89,7 @@ class DictationPipeline:
         silence_ms: int = 600,
         sink_override: TextSink | None = None,
         normalize_segments: bool = False,
+        skip_history: bool = False,
     ) -> DictationResult:
         """Transcribe a PCM buffer (VAD-segmented when a VAD is given).
 
@@ -113,6 +114,7 @@ class DictationPipeline:
             rough,
             duration_s=duration_s,
             sink_override=sink_override,
+            skip_history=skip_history,
         )
         if pcm and not rough:
             result.warnings.append("no speech detected; nothing inserted")
@@ -123,6 +125,7 @@ class DictationPipeline:
         rough: str,
         duration_s: float = 0.0,
         sink_override: TextSink | None = None,
+        skip_history: bool = False,
     ) -> DictationResult:
         """Run the text half of the pipeline and insert the result.
 
@@ -192,9 +195,12 @@ class DictationPipeline:
             duration_s=duration_s,
         )
         for term in dictionary_additions:
-            if self.store.add_dictionary_term(term):
+            # Skip dictionary additions for agent commands (same rationale as
+            # skip_history: agent commands are transient instructions, not
+            # dictation to be learned from).
+            if not skip_history and self.store.add_dictionary_term(term):
                 result.warnings.append(f"added '{term}' to dictionary")
-            else:
+            elif not skip_history:
                 result.warnings.append(f"'{term}' already in dictionary")
 
         if (
@@ -238,13 +244,19 @@ class DictationPipeline:
             for action in actions:
                 sink.press_key(action)
             result.inserted = True
-            if text:
+            # Agent commands (skip_history=True) must not become last_transcript:
+            # command mode would then be able to insert them, leaking transient
+            # agent instructions into normal dictation.
+            if text and not skip_history:
                 self.last_transcript = text
 
-        if dict_counts and self.store is not None:
+        if dict_counts and self.store is not None and not skip_history:
+            # Skip recording term usage for agent commands (same rationale as
+            # skip_history: statistics should reflect normal dictation patterns,
+            # not one-off agent instructions).
             self.store.record_term_uses(dict_counts)
 
-        if rough and self.history is not None:
+        if rough and self.history is not None and not skip_history:
             # A chat client was configured (so the user expects LLM polish)
             # but it was never actually used -- either it raised/was
             # unreachable, or something else skipped it. At
