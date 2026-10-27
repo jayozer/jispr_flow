@@ -230,6 +230,34 @@ does not expose a usable caret. Set `pill_position = "caret"` in TOML or
 `"bottom"`; the Python `local-flow run` recording pill keeps its bottom-center
 position. Living Caret shows status and microphone activity throughout dictation.
 
+### Teach Me Once
+
+In the native app, choose **Teach Me Once…** from JiSpr's menu after a dictation.
+Edit the wording in its review window and click **Review Changes**. JiSpr offers
+short word or phrase replacements; click **Remember** only for the ones you want
+to reuse. **This app** limits a correction to the dictation's destination app;
+**Everywhere** applies it across apps. A new dictation leaves your current edits
+in place and offers **Load latest**.
+
+Remembered corrections take effect on the next dictation without restarting.
+Use **Undo last learn**, **Forget**, or **Undo last forget** to reverse a decision.
+Learning affects future output; **Copy corrected text** lets you reuse the edited
+version yourself. Verbatim cleanup (`cleanup_level = "none"`) keeps learned
+replacements off.
+
+This first version learns exact words and short phrases from changes made in
+JiSpr's review window. It does not watch edits in other apps. Recent review text
+is held in memory independently of saved history and is cleared when the engine
+host exits. Only approved phrase rules are saved in `corrections.json` in the
+local data directory. Dictionary entries, snippets, and settings keep their
+existing files. Insertions, deletions, number-only changes, and ambiguous edits
+are not offered as reusable rules. Reviews of very long passages are rejected
+with an explanation; use a shorter dictation for learning. In sentence-streaming
+mode the review shows the most recent inserted chunk.
+
+The [Teach Me Once implementation and test notes](docs/testing/teach-me-once-v1.md)
+include its manual checklist and branch rollback instructions.
+
 LM Studio does **not** run Whisper. JiSpr runs MLX/faster-whisper directly for
 speech recognition and uses LM Studio only for optional text cleanup and
 transforms.

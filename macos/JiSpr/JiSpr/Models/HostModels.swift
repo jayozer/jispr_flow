@@ -24,11 +24,29 @@ struct HostSnapshot: Codable, Equatable, Sendable {
     let transforms: [String]
     let dictionary: [DictionaryEntry]
     let aliases: [String: String]
+    let corrections: [CorrectionRule]
+    let correctionsError: String?
 
     enum CodingKeys: String, CodingKey {
         case configPath = "config_path"
         case dataDir = "data_dir"
-        case settings, options, presets, styles, transforms, dictionary, aliases
+        case settings, options, presets, styles, transforms, dictionary, aliases, corrections
+        case correctionsError = "corrections_error"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        configPath = try values.decodeIfPresent(String.self, forKey: .configPath)
+        dataDir = try values.decode(String.self, forKey: .dataDir)
+        settings = try values.decode([String: SettingValue].self, forKey: .settings)
+        options = try values.decode([String: [String]].self, forKey: .options)
+        presets = try values.decode([String: [String: JSONValue]].self, forKey: .presets)
+        styles = try values.decode([String].self, forKey: .styles)
+        transforms = try values.decode([String].self, forKey: .transforms)
+        dictionary = try values.decode([DictionaryEntry].self, forKey: .dictionary)
+        aliases = try values.decode([String: String].self, forKey: .aliases)
+        corrections = try values.decodeIfPresent([CorrectionRule].self, forKey: .corrections) ?? []
+        correctionsError = try values.decodeIfPresent(String.self, forKey: .correctionsError)
     }
 }
 
@@ -42,6 +60,7 @@ struct HostMessage: Codable, Equatable, Sendable {
     let detail: String?
     let level: Double?
     let snapshot: HostSnapshot?
+    let dictation: DictationRecord?
     let result: [String: JSONValue]?
     let message: String?
     let hint: String?

@@ -347,6 +347,8 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
     to avoid loading ASR they never use.
     """
     from local_flow.commands.command_mode import CommandMode
+    from local_flow.context.frontmost import create_frontmost_provider
+    from local_flow.personalization.corrections import CorrectionStore
     from local_flow.pipeline import DictationPipeline
     from local_flow.polish.polisher import TranscriptPolisher
 
@@ -389,6 +391,8 @@ def _build_pipeline(config: Config, chat_client, sink, transcriber: Transcriber 
         router=_build_router(config, store),
         auto_transform_prompt=auto_transform_prompt,
         field_text=_build_field_text(config),
+        corrections=CorrectionStore(config.data_dir),
+        frontmost=create_frontmost_provider(),
     )
 
 

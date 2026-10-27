@@ -33,6 +33,13 @@ struct MenuBarContent: View {
         }
         .disabled(!store.isHostOnline)
 
+        Button {
+            openWindow(id: "teach-me-once")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Teach Me Once…", systemImage: "text.badge.checkmark")
+        }
+
         Divider()
 
         if let snapshot = store.snapshot, !snapshot.styles.isEmpty {

@@ -22,6 +22,10 @@ final class AppStore {
 
     private let engine = EngineProcessService()
     @ObservationIgnored private lazy var floatingPill = FloatingPillController()
+    @ObservationIgnored private(set) lazy var teachMeOnce = TeachMeOnceStore {
+        [weak self] command, payload in
+        self?.engine.send(command: command, payload: payload) ?? UUID().uuidString
+    }
     private var pendingActions: [String: PendingAction] = [:]
     private(set) var drafts: [String: JSONValue] = [:]
     private(set) var dirtyFields: Set<String> = []
@@ -128,6 +132,7 @@ final class AppStore {
 
     func quit() {
         isQuitting = true
+        teachMeOnce.endSession()
         floatingPill.close()
         engine.stop()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
@@ -137,6 +142,7 @@ final class AppStore {
 
     func applicationWillTerminate() {
         isQuitting = true
+        teachMeOnce.endSession()
         floatingPill.close()
         engine.stop(forceAfter: 0.2)
     }
@@ -347,11 +353,14 @@ final class AppStore {
         switch message.event {
         case "ready":
             isHostOnline = true
+            teachMeOnce.setOnline(true)
             bannerMessage = nil
             let id = engine.send(command: "start")
             pendingActions[id] = .start
         case "snapshot":
             if let snapshot = message.snapshot { apply(snapshot) }
+        case "dictation":
+            teachMeOnce.receiveDictation(message.dictation)
         case "state":
             if let rawState = message.state {
                 state = DictationState(hostValue: rawState)
@@ -371,6 +380,7 @@ final class AppStore {
             receiveReply(message)
         case "error":
             let text = [message.message, message.hint].compactMap { $0 }.joined(separator: " ")
+            if let id = message.id, teachMeOnce.receiveError(id: id, message: text) { return }
             bannerMessage = text
             if message.id == nil {
                 state = .error
@@ -383,6 +393,7 @@ final class AppStore {
     }
 
     private func receiveReply(_ message: HostMessage) {
+        if let id = message.id, teachMeOnce.receiveReply(id: id, result: message.result) { return }
         guard let id = message.id, let action = pendingActions.removeValue(forKey: id) else {
             return
         }
@@ -437,6 +448,8 @@ final class AppStore {
 
     private func apply(_ snapshot: HostSnapshot) {
         self.snapshot = snapshot
+        teachMeOnce.updateRules(snapshot.corrections, error: snapshot.correctionsError)
+        teachMeOnce.setVerbatim(snapshot.settings["cleanup_level"]?.value.stringValue == "none")
         for (key, setting) in snapshot.settings where !dirtyFields.contains(key) {
             drafts[key] = setting.value
         }
@@ -478,6 +491,7 @@ final class AppStore {
     }
 
     private func engineTerminated(status: Int32) {
+        teachMeOnce.endSession()
         isHostOnline = false
         dictationEnabled = false
         pendingActions.removeAll()

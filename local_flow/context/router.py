@@ -23,6 +23,7 @@ class ResolvedContext:
     app_id: str = ""
     style: str | None = None  # None -> polisher default
     sink: TextSink | None = None  # None -> pipeline default sink
+    app_name: str = ""
 
 
 class ContextRouter:
@@ -56,7 +57,7 @@ class ContextRouter:
         info = self.provider.current()
         rule = match_app_rule(self.rules, info.app_id, info.title)
         if rule is None:
-            return ResolvedContext(app_id=info.app_id)
+            return ResolvedContext(app_id=info.app_id, app_name=info.title)
         style = rule.style or None
         sink = self.sinks_by_method.get(rule.insert) if rule.insert else None
-        return ResolvedContext(app_id=info.app_id, style=style, sink=sink)
+        return ResolvedContext(app_id=info.app_id, style=style, sink=sink, app_name=info.title)

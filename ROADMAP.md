@@ -234,6 +234,12 @@ as a real desktop tool (not just a CLI) from early on.
       passed TextEdit, Safari, screen edges, a second monitor, cancellation,
       styles, and engine recovery; ChatGPT used bottom fallback. See
       [the QA record](docs/testing/living-caret-v1-live-qa.md).
+- [x] ✅ **Teach Me Once v1** — a native review window proposes exact phrase
+      corrections from edits the user makes there. Each remembered rule has
+      app or global scope; Undo and Forget reverse decisions. Rules stay in a
+      separate local file and apply to subsequent dictations. The implementation
+      is isolated on `codex/teach-me-once`, stacked on `codex/living-caret`;
+      [manual acceptance](docs/testing/teach-me-once-v1.md) is still pending.
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses

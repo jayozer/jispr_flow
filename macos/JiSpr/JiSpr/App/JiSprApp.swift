@@ -47,6 +47,12 @@ struct JiSprApp: App {
         }
         .menuBarExtraStyle(.menu)
 
+        Window("Teach Me Once", id: "teach-me-once") {
+            TeachMeOnceView(model: store.teachMeOnce)
+        }
+        .defaultSize(width: 800, height: 700)
+        .windowResizability(.contentMinSize)
+
         Window("JiSpr Settings", id: "settings") {
             SettingsRootView(store: store)
         }
