@@ -51,6 +51,7 @@ SETTINGS_FIELDS: frozenset[str] = frozenset(
         "scratchpad_hotkey",
         "floating_pill",
         "pill_style",
+        "pill_position",
         "vad_backend",
         "vad_aggressiveness",
         "vad_frame_ms",

@@ -91,6 +91,12 @@ def test_host_emits_ready_snapshot_and_lifecycle_replies(tmp_path):
     snapshot = next(message["snapshot"] for message in messages if message["event"] == "snapshot")
     assert snapshot["settings"]["mode"]["editable"] is True
     assert snapshot["settings"]["asr_backend"]["value"] == "mlx-parakeet"
+    assert snapshot["settings"]["pill_position"] == {
+        "value": "bottom",
+        "source": "default",
+        "editable": True,
+    }
+    assert snapshot["options"]["pill_position"] == ["bottom", "caret"]
     assert snapshot["styles"]
     assert snapshot["transforms"]
     replies = {message["id"]: message for message in messages if message["event"] == "reply"}
@@ -145,7 +151,11 @@ def test_save_live_choices_and_personalization_crud(tmp_path):
 
     commands = [
         _request("start", "start"),
-        _request("save", "save_settings", {"changes": {"cleanup_level": "light"}}),
+        _request(
+            "save",
+            "save_settings",
+            {"changes": {"cleanup_level": "light", "pill_position": "caret"}},
+        ),
         _request("style", "set_style", {"name": "casual"}),
         _request("language", "set_language", {"code": "fr"}),
         _request("dict-add", "dictionary_add", {"term": "JiSpr"}),
@@ -175,6 +185,11 @@ def test_save_live_choices_and_personalization_crud(tmp_path):
         message["snapshot"] for message in messages if message["event"] == "snapshot"
     ][-1]
     assert final_snapshot["settings"]["cleanup_level"]["value"] == "light"
+    assert final_snapshot["settings"]["pill_position"] == {
+        "value": "caret",
+        "source": "toml",
+        "editable": True,
+    }
     assert final_snapshot["settings"]["style"]["value"] == "casual"
     assert final_snapshot["settings"]["asr_language"]["value"] == "fr"
     assert final_snapshot["dictionary"] == []

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 final class EngineProcessService: @unchecked Sendable {
@@ -9,6 +10,7 @@ final class EngineProcessService: @unchecked Sendable {
     private var process: Process?
     private var inputHandle: FileHandle?
     private var outputBuffer = Data()
+    private var diagnosticBuffer = EngineDiagnosticBuffer()
     private let decoder = JSONDecoder()
     private var onMessage: MessageHandler?
     private var onDiagnostic: DiagnosticHandler?
@@ -39,6 +41,7 @@ final class EngineProcessService: @unchecked Sendable {
         process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = errorPipe
+        try Self.makeNonblocking(errorPipe.fileHandleForReading)
 
         queue.sync {
             self.onMessage = onMessage
@@ -47,34 +50,49 @@ final class EngineProcessService: @unchecked Sendable {
             self.process = process
             self.inputHandle = inputPipe.fileHandleForWriting
             self.outputBuffer.removeAll(keepingCapacity: true)
+            self.diagnosticBuffer.reset()
         }
 
         outputPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            self?.queue.async { self?.consume(data) }
+            self?.queue.async { [weak self] in
+                guard let self, self.process === process else { return }
+                self.consume(data)
+            }
         }
         errorPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
-            self?.queue.async { self?.onDiagnostic?(text.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            self?.queue.async { [weak self] in
+                guard let self, self.process === process else { return }
+                self.readDiagnostics(from: handle)
+            }
         }
         process.terminationHandler = { [weak self] process in
-            self?.queue.async {
+            self?.queue.async { [weak self] in
+                guard let self, self.process === process else { return }
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 errorPipe.fileHandleForReading.readabilityHandler = nil
-                self?.process = nil
-                self?.inputHandle = nil
-                self?.onTermination?(process.terminationStatus)
+                // A termination callback can precede the final readability
+                // callback. Read remaining bytes on the same queue before
+                // flushing, without waiting for a descendant to close stderr.
+                self.readDiagnostics(from: errorPipe.fileHandleForReading)
+                self.flushDiagnostics()
+                try? errorPipe.fileHandleForReading.close()
+                self.process = nil
+                self.inputHandle = nil
+                self.onTermination?(process.terminationStatus)
             }
         }
 
         do {
             try process.run()
         } catch {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            errorPipe.fileHandleForReading.readabilityHandler = nil
             queue.sync {
                 self.process = nil
                 self.inputHandle = nil
+                self.diagnosticBuffer.reset()
             }
             throw error
         }
@@ -150,6 +168,49 @@ final class EngineProcessService: @unchecked Sendable {
                 let raw = String(data: line, encoding: .utf8) ?? "(unreadable)"
                 onDiagnostic?("Invalid engine message: \(error.localizedDescription) — \(raw)")
             }
+        }
+    }
+
+    private static func makeNonblocking(_ handle: FileHandle) throws {
+        let descriptor = handle.fileDescriptor
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags != -1, fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    /// Called only on `queue`, including the final drain after process exit.
+    private func readDiagnostics(from handle: FileHandle) {
+        var bytes = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = bytes.withUnsafeMutableBytes { storage in
+                Darwin.read(handle.fileDescriptor, storage.baseAddress, storage.count)
+            }
+            if count > 0 {
+                for line in diagnosticBuffer.append(Data(bytes.prefix(count))) {
+                    onDiagnostic?(line)
+                }
+            } else if count == 0 {
+                handle.readabilityHandler = nil
+                flushDiagnostics()
+                return
+            } else {
+                let errorCode = errno
+                if errorCode == EINTR { continue }
+                if errorCode != EAGAIN, errorCode != EWOULDBLOCK {
+                    handle.readabilityHandler = nil
+                    flushDiagnostics()
+                    let error = POSIXError(POSIXErrorCode(rawValue: errorCode) ?? .EIO)
+                    onDiagnostic?("Could not read engine diagnostics: \(error.localizedDescription)")
+                }
+                return
+            }
+        }
+    }
+
+    private func flushDiagnostics() {
+        for line in diagnosticBuffer.finish() {
+            onDiagnostic?(line)
         }
     }
 }

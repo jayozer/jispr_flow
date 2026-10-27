@@ -38,6 +38,7 @@ SETTING_OPTIONS: dict[str, list[str]] = {
     "insert_method": ["auto", "paste", "type", "clipboard"],
     "streaming": ["off", "sentence", "live-preview"],
     "pill_style": ["compact", "expanded"],
+    "pill_position": ["bottom", "caret"],
     "vad_backend": ["energy", "webrtc"],
     "vad_preset": ["normal", "whisper"],
     "history_retention": ["forever", "24h", "off"],

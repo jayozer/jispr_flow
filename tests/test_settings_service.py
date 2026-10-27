@@ -99,6 +99,42 @@ def test_default_target_is_created_and_reloaded(tmp_path):
     assert snapshot.config.floating_pill is False
 
 
+def test_pill_position_round_trips_without_changing_style(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('pill_style = "expanded"\n')
+    service = SettingsService(env={"LOCAL_FLOW_CONFIG": str(path)})
+
+    snapshot = service.save({"pill_position": "caret"})
+
+    assert snapshot.config.pill_position == "caret"
+    assert snapshot.config.pill_style == "expanded"
+    assert snapshot.sources["pill_position"] == "toml"
+    assert service.load().config.pill_position == "caret"
+    original = path.read_text()
+    with pytest.raises(ConfigError, match="pill_position"):
+        service.save({"pill_position": "mouse"})
+    assert path.read_text() == original
+
+
+def test_environment_owned_pill_position_is_locked(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('pill_position = "bottom"\n')
+    service = SettingsService(
+        env={
+            "LOCAL_FLOW_CONFIG": str(path),
+            "LOCAL_FLOW_PILL_POSITION": "caret",
+        }
+    )
+
+    snapshot = service.load()
+    assert snapshot.config.pill_position == "caret"
+    assert snapshot.sources["pill_position"] == "environment"
+    assert not is_settings_editable(snapshot.sources["pill_position"])
+    with pytest.raises(ConfigError, match="overridden by environment"):
+        service.save({"pill_position": "bottom"})
+    assert tomllib.loads(path.read_text())["pill_position"] == "bottom"
+
+
 def test_service_rejects_non_ui_field(tmp_path):
     service = SettingsService(env={}, default_path=tmp_path / "config.toml")
 

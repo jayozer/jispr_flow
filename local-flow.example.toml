@@ -40,6 +40,10 @@ cancel_hotkey = "esc"          # discards the in-flight dictation
 floating_pill = true
 # compact = persistent minimal bar; expanded = original labeled 280x56 pill
 pill_style = "compact"
+# Native JiSpr app: bottom (default) | caret (Living Caret). Caret mode hides
+# while idle and falls back to bottom center if caret bounds are unavailable.
+# The Python CLI recording pill continues to use bottom-center placement.
+pill_position = "bottom"
 # Priority-ordered, comma-separated microphone name substrings (case-
 # insensitive), e.g. "AirPods, USB"; empty (default) means system default.
 mic_priority = ""

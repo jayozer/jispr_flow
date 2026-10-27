@@ -203,7 +203,7 @@ final class AppStore {
         } else {
             dirtyFields.insert(key)
         }
-        if key == "floating_pill" || key == "pill_style" || key == "hotkey" {
+        if ["floating_pill", "pill_style", "pill_position", "hotkey"].contains(key) {
             refreshFloatingPill()
         }
     }
@@ -446,13 +446,15 @@ final class AppStore {
         guard !diagnostic.isEmpty else { return }
         if diagnostic.contains("Fn hotkey listener active") {
             // Ground truth from the engine: the event tap was created, so the Fn
-            // hotkey is live. Clear the permission warning if it was showing —
-            // don't touch any other banner.
-            if needsPermissionAttention {
-                state = .idle
-                stateDetail = "Ready for your hotkey"
-                bannerMessage = nil
-            }
+            // hotkey is live. Its start reply may already have changed the
+            // warning state to idle while leaving the permission banner behind.
+            refreshPermissions()
+            let feedback = FnHotkeyFeedback.listenerActivated(
+                state: state, detail: stateDetail, banner: bannerMessage
+            )
+            if state != feedback.state { state = feedback.state }
+            if stateDetail != feedback.detail { stateDetail = feedback.detail }
+            bannerMessage = feedback.banner
             return
         }
         if diagnostic.contains("Could not create the macOS event tap") {
@@ -509,7 +511,10 @@ final class AppStore {
                 state: state,
                 detail: stateDetail,
                 audioLevel: audioLevel,
-                hotkey: stringValue("hotkey").isEmpty ? "fn" : stringValue("hotkey")
+                hotkey: stringValue("hotkey").isEmpty ? "fn" : stringValue("hotkey"),
+                position: stringValue("pill_position").isEmpty
+                    ? "bottom"
+                    : stringValue("pill_position")
             )
         )
     }

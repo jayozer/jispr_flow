@@ -5,12 +5,14 @@ struct AppearanceSettingsView: View {
 
     private var pillEnabled: Bool { store.boolValue("floating_pill") }
     private var pillStyle: String { store.stringValue("pill_style") }
+    private var pillPosition: String { store.stringValue("pill_position") }
+    private var followsCaret: Bool { pillPosition == "caret" }
 
     var body: some View {
         DetailPage("Appearance", subtitle: "Shape the visual feedback you see while speaking.") {
             SectionCard(
                 "On-screen feedback",
-                subtitle: "A small indicator near the bottom center of your display"
+                subtitle: "Choose where JiSpr shows listening and processing status"
             ) {
                 HStack(spacing: 14) {
                     ZStack {
@@ -43,6 +45,30 @@ struct AppearanceSettingsView: View {
                 if pillEnabled {
                     Divider()
 
+                    SettingRow(
+                        "Position",
+                        help: positionHelp,
+                        source: store.source("pill_position"),
+                        editable: store.isEditable("pill_position")
+                    ) {
+                        Picker("Position", selection: store.stringBinding("pill_position")) {
+                            Text("Bottom of screen").tag("bottom")
+                            Text("Living Caret").tag("caret")
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 240)
+                    }
+
+                    if !store.isEditable("pill_position") {
+                        Text(
+                            "Position is controlled by \(store.source("pill_position")). "
+                                + "Remove or migrate that override to change it here."
+                        )
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text("Style")
@@ -68,7 +94,7 @@ struct AppearanceSettingsView: View {
             SectionCard(
                 "Live preview",
                 subtitle: pillEnabled
-                    ? "Switch styles above to compare them instantly"
+                    ? "Switch position or style above to compare them instantly"
                     : "Turn on the recording pill to preview it"
             ) {
                 ZStack {
@@ -78,9 +104,13 @@ struct AppearanceSettingsView: View {
                         .stroke(JiSprTheme.border.opacity(0.8), lineWidth: 1)
 
                     if pillEnabled {
-                        FloatingPillView(configuration: previewConfiguration)
-                            .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
-                            .transition(.scale(scale: 0.96).combined(with: .opacity))
+                        if followsCaret {
+                            caretPreview
+                        } else {
+                            FloatingPillView(configuration: previewConfiguration)
+                                .shadow(color: .black.opacity(0.16), radius: 12, y: 5)
+                                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                        }
                     } else {
                         VStack(spacing: 10) {
                             Image(systemName: "eye.slash")
@@ -98,10 +128,17 @@ struct AppearanceSettingsView: View {
                 .frame(height: 190)
                 .animation(.easeInOut(duration: 0.18), value: pillEnabled)
                 .animation(.easeInOut(duration: 0.18), value: pillStyle)
+                .animation(.easeInOut(duration: 0.18), value: pillPosition)
 
                 HStack(spacing: 18) {
-                    Label("Bottom center", systemImage: "macwindow")
-                    Label("Sage when ready", systemImage: "circle.fill")
+                    Label(
+                        followsCaret ? "Near your text cursor" : "Bottom center",
+                        systemImage: followsCaret ? "character.cursor.ibeam" : "macwindow"
+                    )
+                    Label(
+                        followsCaret ? "Hidden while idle" : "Sage when ready",
+                        systemImage: "circle.fill"
+                    )
                         .foregroundStyle(JiSprTheme.sage)
                     Label("Orange when active", systemImage: "circle.fill")
                         .foregroundStyle(JiSprTheme.orange)
@@ -110,6 +147,36 @@ struct AppearanceSettingsView: View {
                 .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var positionHelp: String {
+        followsCaret
+            ? "Living Caret stays near your text cursor and hides while idle. "
+                + "If the app cannot share its caret, it appears at the bottom of the screen."
+            : "Keep the recording indicator at the bottom center of your display."
+    }
+
+    private var caretPreview: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("A message you're writing")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 2) {
+                Text("Let's pick up from here")
+                    .font(.system(size: 15))
+                    .foregroundStyle(JiSprTheme.ink)
+                Rectangle()
+                    .fill(JiSprTheme.ink)
+                    .frame(width: 2, height: 20)
+                    .overlay(alignment: .topLeading) {
+                        FloatingPillView(configuration: previewConfiguration)
+                            .fixedSize()
+                            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+                            .offset(x: 10, y: 25)
+                    }
+            }
+        }
+        .padding(.bottom, 30)
     }
 
     private var previewConfiguration: FloatingPillConfiguration {
@@ -121,7 +188,8 @@ struct AppearanceSettingsView: View {
             audioLevel: 0.68,
             hotkey: store.stringValue("hotkey").isEmpty
                 ? "fn"
-                : store.stringValue("hotkey")
+                : store.stringValue("hotkey"),
+            position: pillPosition.isEmpty ? "bottom" : pillPosition
         )
     }
 }

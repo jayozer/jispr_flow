@@ -221,6 +221,15 @@ recording, shows processing after release, briefly confirms success, and then
 returns to idle. Use `--no-pill` to hide it or set
 `LOCAL_FLOW_PILL_STYLE=expanded` for the larger labeled version.
 
+In the native macOS app, **Settings → Appearance → Position → Living Caret**
+moves the indicator beside your text cursor while recording, processing, and
+confirming insertion, then hides it while idle. It uses macOS Accessibility
+to locate the caret and falls back to the bottom of the screen when an app
+does not expose a usable caret. Set `pill_position = "caret"` in TOML or
+`LOCAL_FLOW_PILL_POSITION=caret` to select it outside Settings. The default is
+`"bottom"`; the Python `local-flow run` recording pill keeps its bottom-center
+position. Living Caret shows status and microphone activity throughout dictation.
+
 LM Studio does **not** run Whisper. JiSpr runs MLX/faster-whisper directly for
 speech recognition and uses LM Studio only for optional text cleanup and
 transforms.
@@ -497,6 +506,7 @@ overrides application defaults.
 | `LOCAL_FLOW_HOTKEY` | `fn`, `space`, `f9`, or another supported key |
 | `LOCAL_FLOW_CLEANUP_LEVEL` | `none`, `light`, `medium`, or `high` |
 | `LOCAL_FLOW_INSERT_METHOD` | `auto`, `paste`, `type`, or `clipboard` |
+| `LOCAL_FLOW_PILL_POSITION` | native macOS app: `bottom` or `caret` (Living Caret) |
 | `LOCAL_FLOW_MIC_PRIORITY` | comma-separated device-name preferences |
 | `LOCAL_FLOW_VAD_PRESET` | `normal` or `whisper` for quiet speech |
 | `LOCAL_FLOW_DATA_DIR` | personalization, history, notes, and recovery data |
@@ -527,6 +537,30 @@ parent-process overrides always remain read-only.
 - Process interrupted after capture: run `uv run local-flow recover`.
 - Wayland: use hands-free mode and clipboard insertion; global hotkeys and
   synthetic typing are commonly blocked by the compositor.
+
+### Living Caret manual checks
+
+These checks require the native macOS app and real Accessibility access;
+headless tests do not establish app compatibility or permission behavior.
+The [2026-10-27 live QA results](docs/testing/living-caret-v1-live-qa.md) cover
+TextEdit, Safari, a second display, cancellation, and engine recovery, with
+bottom fallback observed in the ChatGPT window.
+
+1. In **Appearance**, enable the recording pill, select **Living Caret**, and
+   save. Confirm the preview changes and the idle indicator disappears.
+2. In TextEdit, place the caret in a document, hold Fn, and speak. Confirm the
+   indicator appears near the caret, responds to your voice, shows processing
+   after release, confirms insertion, and hides again without taking focus.
+3. Repeat in a browser text field and a supported editor. Move the caret and
+   test near all screen edges and on a second display; the indicator should
+   stay visible without covering the insertion point or capturing clicks.
+4. Try a terminal, an app without readable caret bounds, and denied
+   Accessibility access. Confirm fallback feedback appears at the bottom of
+   the screen and the app remains responsive. Dictation still needs its usual
+   microphone, hotkey, and insertion permissions.
+5. Switch between compact/expanded styles, cancel with Esc, pause/restart the
+   engine, and return to **Bottom of screen**. Confirm each state clears and
+   bottom placement retains its usual idle behavior after relaunch.
 
 ## Documentation
 

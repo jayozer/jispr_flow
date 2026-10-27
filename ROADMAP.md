@@ -226,6 +226,14 @@ as a real desktop tool (not just a CLI) from early on.
       bar expands into recording/processing/success states, with the original
       labeled pill available through `pill_style = "expanded"`; includes a live
       mic meter, `--pill`/`--no-pill`, and graceful console fallback.
+- [x] ✅ **Living Caret status** — the native macOS app can place its recording
+      indicator beside an Accessibility-readable text cursor, with screen-edge
+      clamping and bottom-center fallback when caret bounds are unavailable.
+      Opt in through Appearance (`pill_position = "caret"`); it hides while idle.
+      The Python CLI pill keeps bottom-center placement. Live QA on 2026-10-27
+      passed TextEdit, Safari, screen edges, a second monitor, cancellation,
+      styles, and engine recovery; ChatGPT used bottom fallback. See
+      [the QA record](docs/testing/living-caret-v1-live-qa.md).
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses

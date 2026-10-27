@@ -8,6 +8,31 @@ struct FloatingPillConfiguration: Equatable {
     let detail: String
     let audioLevel: Double
     let hotkey: String
+    let position: String
+
+    init(
+        enabled: Bool,
+        style: String,
+        state: DictationState,
+        detail: String,
+        audioLevel: Double,
+        hotkey: String,
+        position: String = "bottom"
+    ) {
+        self.enabled = enabled
+        self.style = style
+        self.state = state
+        self.detail = detail
+        self.audioLevel = audioLevel
+        self.hotkey = hotkey
+        self.position = position
+    }
+
+    var showsLivingCaret: Bool {
+        position == "caret"
+            && (state == .recording || state == .preview
+                || state == .processing || state == .inserted)
+    }
 }
 
 struct FloatingPillPresentation: Equatable {
@@ -66,7 +91,10 @@ struct FloatingPillPresentation: Equatable {
         }
 
         showsMeter = configuration.state == .recording || configuration.state == .preview
-        if expanded {
+        if configuration.showsLivingCaret {
+            width = expanded ? 160 : 72
+            height = expanded ? 32 : 28
+        } else if expanded {
             width = 360
             height = 66
         } else {
@@ -92,6 +120,12 @@ enum PillTransition: Equatable {
     case coalesceIdle
 }
 
+/// Even an accidental call to makeKey() must leave the editor as first responder.
+final class DictationStatusPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
 @MainActor
 final class FloatingPillController {
     private let panel: NSPanel
@@ -99,8 +133,11 @@ final class FloatingPillController {
     private var displayedConfiguration: FloatingPillConfiguration?
     private var transitionRevision = 0
     private var pendingIdleConfiguration: FloatingPillConfiguration?
+    private let caretTracker: CaretTracker
+    private var caretBounds: CGRect?
 
-    init() {
+    init(caretProvider: any CaretBoundsProviding = AccessibilityCaretBoundsProvider()) {
+        caretTracker = CaretTracker(provider: caretProvider)
         let initial = FloatingPillConfiguration(
             enabled: false,
             style: "compact",
@@ -112,7 +149,7 @@ final class FloatingPillController {
         hostingController = NSHostingController(
             rootView: FloatingPillView(configuration: initial)
         )
-        panel = NSPanel(
+        panel = DictationStatusPanel(
             contentRect: .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -131,6 +168,11 @@ final class FloatingPillController {
             .fullScreenAuxiliary,
         ]
         panel.setAccessibilityLabel("JiSpr dictation status")
+        caretTracker.onChange = { [weak self] bounds in
+            guard let self else { return }
+            self.caretBounds = bounds
+            self.positionPanel()
+        }
     }
 
     /// Pure decision for `update(_:)`: `inserted`/`warning`/`error` are held
@@ -145,6 +187,7 @@ final class FloatingPillController {
         idlePending: Bool
     ) -> PillTransition {
         guard configuration.enabled else { return .hide }
+        if let displayed, displayed.position != configuration.position { return .apply }
         if configuration.state == .idle,
            let displayed,
            displayed.state == .inserted
@@ -165,6 +208,8 @@ final class FloatingPillController {
             transitionRevision += 1
             pendingIdleConfiguration = nil
             displayedConfiguration = nil
+            caretTracker.stop()
+            caretBounds = nil
             panel.orderOut(nil)
         case .coalesceIdle:
             // Keep the running timer (and its revision); only refresh the
@@ -191,39 +236,102 @@ final class FloatingPillController {
         transitionRevision += 1
         pendingIdleConfiguration = nil
         displayedConfiguration = nil
+        caretTracker.stop()
+        caretBounds = nil
         panel.orderOut(nil)
         panel.close()
     }
 
     private func apply(_ configuration: FloatingPillConfiguration) {
-        let presentation = FloatingPillPresentation(configuration: configuration)
-        hostingController.rootView = FloatingPillView(configuration: configuration)
-        hostingController.view.frame = NSRect(
-            origin: .zero,
-            size: NSSize(width: presentation.width, height: presentation.height)
-        )
+        displayedConfiguration = configuration
+        if configuration.position == "caret", configuration.state.isBusy {
+            if !caretTracker.isRunning {
+                caretBounds = nil
+            }
+            caretTracker.start()
+        } else {
+            // Keep the last position for the brief success confirmation.
+            caretTracker.stop()
+            if configuration.state != .inserted {
+                caretBounds = nil
+            }
+        }
+        if Self.hidesAtRest(configuration) {
+            panel.orderOut(nil)
+            return
+        }
 
+        positionPanel()
+    }
+
+    nonisolated static func hidesAtRest(_ configuration: FloatingPillConfiguration) -> Bool {
+        configuration.position == "caret"
+            && (configuration.state == .idle || configuration.state == .offline)
+    }
+
+    private func positionPanel() {
+        guard let configuration = displayedConfiguration,
+              configuration.enabled,
+              !Self.hidesAtRest(configuration) else { return }
+        let presentation = FloatingPillPresentation(configuration: configuration)
+        let size = NSSize(width: presentation.width, height: presentation.height)
+        let screens = NSScreen.screens
+        let caretFrame: CGRect?
+        if configuration.showsLivingCaret, let caretBounds, let primary = screens.first {
+            caretFrame = CaretPlacement.frame(
+                caretBounds: caretBounds,
+                size: size,
+                screens: screens.map(\.frame),
+                visibleFrames: screens.map(\.visibleFrame),
+                primaryScreenHeight: primary.frame.height
+            )
+        } else {
+            caretFrame = nil
+        }
+        if let caretFrame {
+            setPanelFrame(caretFrame, configuration: configuration)
+            return
+        }
+
+        // An unavailable/unsafe caret gets the full existing status pill.
+        let fallback = FloatingPillConfiguration(
+            enabled: configuration.enabled,
+            style: configuration.style,
+            state: configuration.state,
+            detail: configuration.detail,
+            audioLevel: configuration.audioLevel,
+            hotkey: configuration.hotkey
+        )
+        let fallbackPresentation = FloatingPillPresentation(configuration: fallback)
+        let fallbackSize = NSSize(
+            width: fallbackPresentation.width,
+            height: fallbackPresentation.height
+        )
         let mouseLocation = NSEvent.mouseLocation
-        let pointerScreen = NSScreen.screens.first { $0.frame.contains(mouseLocation) }
+        let pointerScreen = screens.first { $0.frame.contains(mouseLocation) }
         let screen = pointerScreen ?? NSApp.keyWindow?.screen ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else {
             panel.orderOut(nil)
             return
         }
-        let size = NSSize(width: presentation.width, height: presentation.height)
         let frame = NSRect(
-            x: visibleFrame.midX - size.width / 2,
+            x: visibleFrame.midX - fallbackSize.width / 2,
             y: visibleFrame.minY + 18,
-            width: size.width,
-            height: size.height
+            width: fallbackSize.width,
+            height: fallbackSize.height
         )
+        setPanelFrame(frame, configuration: fallback)
+    }
+
+    private func setPanelFrame(_ frame: NSRect, configuration: FloatingPillConfiguration) {
+        hostingController.rootView = FloatingPillView(configuration: configuration)
+        hostingController.view.frame = NSRect(origin: .zero, size: frame.size)
         // NSPanel frame animation snapshots the old backing surface while the
         // SwiftUI host is already rendering the new size. During the compact
         // active -> idle transition that briefly looks like two stacked pills.
         // Switch the borderless window atomically; SwiftUI still animates the
         // live microphone meter inside the single panel.
         panel.setFrame(frame, display: true, animate: false)
-        displayedConfiguration = configuration
         panel.orderFrontRegardless()
     }
 }
@@ -237,7 +345,9 @@ struct FloatingPillView: View {
 
     var body: some View {
         Group {
-            if configuration.style == "expanded" {
+            if configuration.showsLivingCaret {
+                LivingCaretView(configuration: configuration)
+            } else if configuration.style == "expanded" {
                 expandedPill
             } else if presentation.kind == .idle {
                 idlePill
