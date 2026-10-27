@@ -40,9 +40,11 @@ in other apps, infer broad writing-style policies, or automatically replace
 previously inserted text. **Copy corrected text** is an explicit clipboard action.
 
 App identity is resolved near insertion even when per-app styles are disabled
-or no app-style rules exist. On macOS, a fresh Accessibility focused-application
-query supplies the process ID; the long-lived host must not use a cached
-`NSWorkspace.frontmostApplication` value. An unavailable identity leaves global scope as the
+or no app-style rules exist. On macOS, public Process Manager calls supply the
+current foreground process ID; the long-lived host must not use a cached
+`NSWorkspace.frontmostApplication` value. This small platform adapter uses
+deprecated APIs that remain available in the supported SDK, and degrades to an
+empty identity on failure. An unavailable identity leaves global scope as the
 only choice. App-scoped rules take precedence over global rules for the same
 source. Matching is case-insensitive with word boundaries; replacement text is
 literal and cannot invoke spoken commands. Rules run after transforms and are
@@ -78,7 +80,7 @@ The implementation includes domain, host/pipeline integration, native state and
 decoding tests, and offscreen AppKit light/dark review previews with pixel checks
 that reject blank captures. Validation passed:
 
-- **1,375 Python tests**, including 64 correction-domain, 24 bridge/pipeline
+- **1,380 Python tests**, including 64 correction-domain, 24 bridge/pipeline
   integration cases, and focused-app switching/failure regression coverage.
 - **97 native tests**, including backward-compatible decoding, stale replies,
   null/latest records, edited-draft preservation, and Undo state.

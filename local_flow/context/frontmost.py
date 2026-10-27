@@ -1,4 +1,4 @@
-"""Frontmost-app adapters: macOS Accessibility, Windows ctypes, Linux xprop.
+"""Frontmost-app adapters: macOS Process Manager, Windows ctypes, Linux xprop.
 
 Context awareness is best-effort. Unlike the hotkey backends, nothing here
 may ever raise out of ``current()``: a missing dependency, a denied OS call,
@@ -50,28 +50,24 @@ class MockFrontmostApp(FrontmostAppProvider):
 
 
 class MacFrontmostApp(FrontmostAppProvider):
-    """Read a fresh focused-app PID without relying on a Cocoa event loop.
+    """Read a fresh foreground PID without a Cocoa event loop or AX permission.
 
     NSWorkspace can retain the initial frontmost app in the long-lived Python
-    host, which has no pumped Cocoa main loop. Accessibility supplies a fresh
-    focused application for each query; a failed query must never reuse an old
-    app identity. Leave the shared system-wide AX timeout unchanged.
+    host, which has no pumped Cocoa main loop. The public Process Manager APIs
+    used here were deprecated in macOS 10.9 but still query the current process
+    directly. This avoids adding an Accessibility permission dependency just to
+    identify an app. A failed query returns no identity, with no cached fallback.
     """
 
     def current(self) -> AppInfo:
         try:
             import AppKit
-            import ApplicationServices as ax
+            import ApplicationServices as process_manager
 
-            system = ax.AXUIElementCreateSystemWide()
-            if system is None:
+            error, serial_number = process_manager.GetFrontProcess(None)
+            if error != 0 or serial_number is None:
                 return AppInfo()
-            error, focused = ax.AXUIElementCopyAttributeValue(
-                system, ax.kAXFocusedApplicationAttribute, None
-            )
-            if error != 0 or focused is None:
-                return AppInfo()
-            error, pid = ax.AXUIElementGetPid(focused, None)
+            error, pid = process_manager.GetProcessPID(serial_number, None)
             if error != 0 or type(pid) is not int or pid <= 0:
                 return AppInfo()
             app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
