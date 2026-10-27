@@ -23,8 +23,10 @@ The self-contained local test app is
 `build/TeachMeOnceLive/JiSpr Teach Me Once.app`, with identifier
 `com.acrobat.jispr.teachmeonce`. Quit the Living Caret app before opening it;
 the two versions share the engine's single-instance lock. The test app uses
-normal macOS permission prompts under its own distinct name. It has not yet
-completed the manual acceptance checklist below.
+normal macOS permission prompts under its own distinct name. The user accepted
+the experiment on 2026-10-27 and deferred the remaining manual checks below.
+This is acceptance to continue the feature stack, not a claim that every live
+check passed.
 
 ## First-version behavior
 
@@ -98,15 +100,18 @@ xcodebuild -project macos/JiSpr/JiSpr.xcodeproj -scheme JiSpr \
 git diff --check
 ```
 
-## Manual acceptance checklist — pending
+## Manual checks — remaining steps deferred
 
 These checks require the native app, real dictation, and user approval of learned
 rules. Automated results do not establish live acceptance.
+The user chose to retain the feature and continue before completing this list;
+the exact observations and limitations are in the live QA record.
 
-1. Dictate "We utilize this approach" into TextEdit. Open Teach Me Once and edit
-   "utilize" to "use". Review Changes should propose that pair without saving it.
+1. Dictate "The copper lantern is ready" into TextEdit. Open Teach Me Once and
+   edit "lantern" to "moonlamp". Review Changes should propose that pair without
+   saving it. This pair avoids incidental wording cleanup by the polish model.
 2. Remember the pair for **This app**. Dictate the original phrase again into
-   TextEdit; confirm "use" appears. Dictate it into Safari; confirm the TextEdit
+   TextEdit; confirm "moonlamp" appears. Dictate it into Safari; confirm the TextEdit
    rule does not affect Safari.
 3. Undo the learn. Dictate again and confirm the previous wording returns.
 4. Remember a pair for **Everywhere**. Confirm it applies across both apps, then

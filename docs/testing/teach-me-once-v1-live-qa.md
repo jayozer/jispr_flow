@@ -1,6 +1,7 @@
 # Teach Me Once v1 — live QA
 
-Date: 2026-10-27 (America/Los_Angeles). Status: in progress.
+Date: 2026-10-27 (America/Los_Angeles). Status: accepted by the user to continue
+the feature stack; remaining live checks are deferred, not recorded as passed.
 
 Test branch: `codex/teach-me-once`, initially tested at source revision `f52bc37`,
 stacked on `codex/living-caret` at `fae6ce7`. The scope repair remains on the
@@ -22,10 +23,10 @@ polish from normalizing the source phrase before the learning check.
   beside the text cursor while recording and hides afterward.
 - Review: identifies TextEdit and previews `lantern` → `moonlamp` with This app
   selected, before Remember is used.
-- App scope: **unexpected result under investigation**. After Remember with
+- First app-scope attempt: **failed live check (historical)**. After Remember with
   This app selected, the user reported `moonlamp` in Safari as well. A targeted
   read of the synthetic test rule confirmed its stored `app_id` is
-  `com.apple.TextEdit`, not global. Scope acceptance remains pending.
+  `com.apple.TextEdit`, not global. This attempt did not establish scope acceptance.
   Synthetic test history recorded `lantern` as input and `moonlamp` as output
   with one replacement in both apps. A controlled foreground-app probe then
   reproduced the cause: a long-lived Python process's `NSWorkspace` kept its
@@ -80,7 +81,32 @@ Latest validation: 1,380 headless Python tests passed, plus Ruff, the mocked
 demo, and `git diff --check`. The native UI remains unchanged from its 97-test
 build.
 
-## Remaining acceptance checks
+The exact staged app's embedded Python runtime then ran the same production
+adapter and temporary-rule probe, with the same three correct identities and
+words. Its isolated host-protocol smoke and strict bundle signature checks
+also passed. The app was packaged at source revision `cbcfeec`.
+
+After quitting the first-repair app, the verified bundle replaced it at the
+original test path. To avoid repeated Finder removal/re-addition, the supported
+`tccutil reset` command cleared only Accessibility, ListenEvent, and Microphone
+decisions for `com.acrobat.jispr.teachmeonce`. All three targeted resets succeeded.
+The current app was reopened for normal user authorization; no grants to other
+apps or saved correction rules were changed.
+
+## User acceptance
+
+After the current build was opened for authorization, the user said "lets
+consider this working. what is next?" The Teach Me Once experiment is retained
+as the accepted base for the next stacked feature. The remaining live checks
+below are deferred at the user's request; final permission readiness and a
+spoken end-to-end scope/Undo signoff for `cbcfeec` were not confirmed. Automated
+and packaged-runtime probe results remain as recorded above.
+
+The temporary TextEdit rule `lantern` → `moonlamp` remains saved. Its final
+cleanup was not performed. No additional rebuild or permission changes were
+made when recording this acceptance.
+
+## Deferred live checks
 
 - This app applies in TextEdit and does not apply in Safari.
 - Undo last learn restores the original wording.

@@ -239,7 +239,8 @@ as a real desktop tool (not just a CLI) from early on.
       app or global scope; Undo and Forget reverse decisions. Rules stay in a
       separate local file and apply to subsequent dictations. The implementation
       is isolated on `codex/teach-me-once`, stacked on `codex/living-caret`;
-      [manual acceptance](docs/testing/teach-me-once-v1.md) is still pending.
+      accepted by the user on 2026-10-27 to continue the stack, with remaining
+      [live checks deferred](docs/testing/teach-me-once-v1-live-qa.md).
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses
