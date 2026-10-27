@@ -40,7 +40,9 @@ in other apps, infer broad writing-style policies, or automatically replace
 previously inserted text. **Copy corrected text** is an explicit clipboard action.
 
 App identity is resolved near insertion even when per-app styles are disabled
-or no app-style rules exist. An unavailable identity leaves global scope as the
+or no app-style rules exist. On macOS, a fresh Accessibility focused-application
+query supplies the process ID; the long-lived host must not use a cached
+`NSWorkspace.frontmostApplication` value. An unavailable identity leaves global scope as the
 only choice. App-scoped rules take precedence over global rules for the same
 source. Matching is case-insensitive with word boundaries; replacement text is
 literal and cannot invoke spoken commands. Rules run after transforms and are
@@ -76,8 +78,8 @@ The implementation includes domain, host/pipeline integration, native state and
 decoding tests, and offscreen AppKit light/dark review previews with pixel checks
 that reject blank captures. Validation passed:
 
-- **1,356 Python tests**, including 64 correction-domain and 24 bridge/pipeline
-  integration cases.
+- **1,375 Python tests**, including 64 correction-domain, 24 bridge/pipeline
+  integration cases, and focused-app switching/failure regression coverage.
 - **97 native tests**, including backward-compatible decoding, stale replies,
   null/latest records, edited-draft preservation, and Undo state.
 - Ruff, mocked demo, and `git diff --check`.
@@ -117,3 +119,6 @@ rules. Automated results do not establish live acceptance.
 
 Use the completed [Living Caret live QA](living-caret-v1-live-qa.md) as the baseline
 when deciding whether to keep this stacked experiment.
+
+Live acceptance progress and the app-scope defect found in the first run are
+recorded separately in [Teach Me Once live QA](teach-me-once-v1-live-qa.md).
