@@ -43,13 +43,20 @@ base behavior.
 Completion/defer preferences belong to native UserDefaults; no new engine
 configuration fields or environment variables were added.
 
-The self-contained local test build is
-`build/GuidedSetupLive/JiSpr Guided Setup.app`, with bundle identifier
+The updated self-contained QA candidate was
+`build/GuidedSetupFixed/JiSpr Guided Setup.app`, with bundle identifier
 `com.acrobat.jispr.guidedsetup`. It has separate first-run completion preferences
 and normal macOS permission entries. Quit another JiSpr version before starting
 its live test, since the engine uses one shared-instance lock for the selected
 data directory. Building this app does not replace the saved Living Caret or
 Teach Me Once test bundles.
+
+The original `build/GuidedSetupLive/JiSpr Guided Setup.app` was kept unchanged to
+preserve its live-session permission grants. That QA candidate embeds the
+preset-transition fix from `65e0c57`; its strict signature and an isolated
+embedded-engine regression check pass. It has not been launched for hardware
+testing. The continuing live session uses the original signed app with the
+corrected engine source, as detailed below.
 
 ## Download and cache behavior
 
@@ -79,10 +86,10 @@ automatic model updates are not included in this version.
 
 Validation passed:
 
-- **1,443 Python tests**, including 30 download-domain and 22 guided host/config
+- **1,455 Python tests**, including 30 download-domain and 22 guided host/config
   tests covering integrity/cancellation, offline inventory, cache reuse and
   repair, atomic configuration, environment locks, and failed-save recovery,
-  plus 11 settings regression cases added during live testing.
+  plus 23 settings regression cases added during live testing and review.
 - **126 native tests**, including 29 new setup cases covering stale replies,
   download progress/cancellation, language compatibility, permissions, practice
   gating, and actual offscreen AppKit previews of all five stages in light/dark.
@@ -93,6 +100,9 @@ Validation passed:
   redirects and byte-size headers. No model weights were downloaded.
 - Visual inspection of the setup previews, including the fixed footer's
   Download/Verify/Cancel/Apply actions.
+- An isolated preset-to-custom configuration regression through the updated
+  standalone bundle's embedded engine, without external source overrides or
+  changes to the user's settings. Strict signature verification passed.
 
 ```sh
 uv run pytest
@@ -108,7 +118,7 @@ git diff --check
 ## Live session — October 28, 2026
 
 The user opened the frozen `JiSpr Guided Setup` test build from `c866758` after
-quitting the Teach Me Once test app. Confirmed so far:
+quitting the Teach Me Once test app. The requested live checks passed:
 
 - Welcome/model choices appeared with no automatic download.
 - Whisper Small · English showed advancing transfer bytes. Cancel stopped it,
@@ -129,17 +139,54 @@ Settings compared the requested backend with the old preset's effective backend,
 then omitted the equal value from TOML. After saving `custom`, the backend fell
 back to `faster-whisper` although the selected local model needed `mlx-whisper`.
 The fix persists explicit editable ASR choices when leaving a preset; six
-regression cases reproduced the failure before the fix. All 1,443 Python tests,
+regression cases reproduced the failure before the fix. All 1,455 Python tests,
 Ruff, and the mocked demo pass. Three existing CLI tests now explicitly select
 the writing backend they mock, keeping their assertions independent of the
 user's newly selected Local rules preference.
+
+The pre-PR review extended the fix to ordinary Models settings, whose sparse
+payloads can supply only a model edit or a switch to Custom. Editable effective
+backend/model values are retained while leaving a preset with the same backend;
+explicit backend switches keep their existing model-selection semantics.
+Environment ownership and atomic invalid-save behavior have regression coverage.
+The full Python suite, Ruff, demo, and all 126 native tests passed again before PR.
 
 For continuing live checks, the unchanged signed app was reopened with
 `PYTHONPATH` pointing to this branch's corrected engine source. Its interpreter
 still lives inside the signed bundle, and strict signature verification passes;
 the existing permission grants can be retained. The original frozen bundle's
-embedded engine remains at `c866758`. Practice is awaiting reapplication of the
-model selection; no practice or completion/relaunch result has been claimed yet.
+embedded engine remains at `c866758`. Reapplication saved the matching verified
+local English model, `mlx-whisper` backend, English language, and Local rules.
+Other settings and remembered corrections still matched their original hashes.
+
+The user then confirmed:
+
+- Typing alone left Finish setup disabled.
+- A real Fn dictation inserted one copy, completed both evidence checks, and
+  enabled Finish setup.
+- Living Caret appeared beside the practice cursor and hid afterward.
+- Finish setup closed the window. The saved completion preference was `true`.
+
+The same signed app was quit and reopened with the corrected engine source.
+The user confirmed Welcome stayed dismissed and Fn dictation worked in TextEdit
+without choosing Start Dictation again: one insertion, Living Caret beside the
+cursor, and the indicator hidden afterward. The saved completion preference
+remained true. Final configuration checks confirmed the matching local model
+and backend, with other settings and remembered corrections unchanged.
+
+The separately packaged updated app passed its embedded-engine regression
+and strict signature checks; its own hardware launch was not part of this
+session. Historical test-bundle paths above record QA provenance. Following
+the user's consolidation request, the intended installed app is
+`/Applications/JiSpr.app`, and the branch-specific bundles are disposable after
+the current build is installed. User settings, model downloads, and history
+remain in their existing locations.
+
+Extended hardware coverage remains for forced network loss, verification with
+network access disabled, environment-locked settings in the UI, Later/closing
+during downloads, other languages and capture modes, and a fresh Teach Me Once
+scope/Undo round. These were not claimed as passed in this session; relevant
+failure and state transitions have headless coverage.
 
 ## Manual acceptance checklist
 
