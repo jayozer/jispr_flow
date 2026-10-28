@@ -99,6 +99,7 @@ class TestTranscribePolish:
     def test_polish_runs_text_through_mock_chat_client(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
         monkeypatch.setenv("LOCAL_FLOW_ASR_BACKEND", "mock")
+        monkeypatch.setenv("LOCAL_FLOW_POLISH_BACKEND", "lmstudio")
         wav = tmp_path / "memo.wav"
         _write_wav(wav)
 

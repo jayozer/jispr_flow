@@ -79,9 +79,10 @@ automatic model updates are not included in this version.
 
 Validation passed:
 
-- **1,432 Python tests**, including 30 download-domain and 22 guided host/config
+- **1,443 Python tests**, including 30 download-domain and 22 guided host/config
   tests covering integrity/cancellation, offline inventory, cache reuse and
-  repair, atomic configuration, environment locks, and failed-save recovery.
+  repair, atomic configuration, environment locks, and failed-save recovery,
+  plus 11 settings regression cases added during live testing.
 - **126 native tests**, including 29 new setup cases covering stale replies,
   download progress/cancellation, language compatibility, permissions, practice
   gating, and actual offscreen AppKit previews of all five stages in light/dark.
@@ -104,7 +105,43 @@ xcodebuild -project macos/JiSpr/JiSpr.xcodeproj -scheme JiSpr \
 git diff --check
 ```
 
-## Manual acceptance — pending
+## Live session — October 28, 2026
+
+The user opened the frozen `JiSpr Guided Setup` test build from `c866758` after
+quitting the Teach Me Once test app. Confirmed so far:
+
+- Welcome/model choices appeared with no automatic download.
+- Whisper Small · English showed advancing transfer bytes. Cancel stopped it,
+  left Apply unavailable, and removed its temporary job directory.
+- Retry completed and enabled Apply with **Ready offline**. Independent
+  inventory also recognized the installed, verified managed model.
+- Browsing, cancellation, and completed downloads left the saved configuration
+  byte-for-byte unchanged.
+- The existing Whisper Large v3 Turbo cache verified to **Ready offline** with
+  no transfer.
+- Applying reached the permissions page. Accessibility, Input Monitoring, and
+  Microphone all showed **Granted**, enabling Continue.
+- Other settings and remembered-correction data retained their original hashes
+  after Apply.
+
+A configuration check caught a preset-to-custom transition bug before practice:
+Settings compared the requested backend with the old preset's effective backend,
+then omitted the equal value from TOML. After saving `custom`, the backend fell
+back to `faster-whisper` although the selected local model needed `mlx-whisper`.
+The fix persists explicit editable ASR choices when leaving a preset; six
+regression cases reproduced the failure before the fix. All 1,443 Python tests,
+Ruff, and the mocked demo pass. Three existing CLI tests now explicitly select
+the writing backend they mock, keeping their assertions independent of the
+user's newly selected Local rules preference.
+
+For continuing live checks, the unchanged signed app was reopened with
+`PYTHONPATH` pointing to this branch's corrected engine source. Its interpreter
+still lives inside the signed bundle, and strict signature verification passes;
+the existing permission grants can be retained. The original frozen bundle's
+embedded engine remains at `c866758`. Practice is awaiting reapplication of the
+model selection; no practice or completion/relaunch result has been claimed yet.
+
+## Manual acceptance checklist
 
 1. Open a fresh named test build. Confirm Welcome appears and no model download
    or microphone capture starts before an explicit action.

@@ -10,6 +10,7 @@ from dataclasses import fields
 from pathlib import Path
 
 from local_flow.config import (
+    ASR_PROFILE_MODELS,
     Config,
     ConfigSnapshot,
     load_config,
@@ -65,6 +66,10 @@ SETTINGS_FIELDS: frozenset[str] = frozenset(
         "history_retention",
     }
 )
+
+_ASR_SELECTION_FIELDS = frozenset({
+    "asr_backend", "asr_model", "asr_language", "asr_device", "asr_compute_type",
+})
 
 
 def _toml_string(value: str) -> str:
@@ -147,13 +152,18 @@ class SettingsService:
                 f"Settings cannot write unsupported fields: {', '.join(unknown)}"
             )
         snapshot = self.load()
+        leaving_asr_preset = (
+            changes.get("asr_profile") == "custom"
+            and snapshot.config.asr_profile in ASR_PROFILE_MODELS
+        )
         config_names = {field.name for field in fields(Config)}
         changed: dict[str, object] = {}
         for name, value in changes.items():
             if name not in config_names:
                 raise ConfigError(f"Unknown config field: {name}")
             current = getattr(snapshot.config, name)
-            if value != current and is_environment_owned(snapshot.sources[name]):
+            environment_owned = is_environment_owned(snapshot.sources[name])
+            if value != current and environment_owned:
                 raise ConfigError(
                     f"{name} is overridden by {snapshot.sources[name]}.",
                     hint=(
@@ -161,7 +171,13 @@ class SettingsService:
                         "in Settings."
                     ),
                 )
-            if value != current:
+            # A preset's effective backend/model can differ from the saved
+            # TOML values. Once custom removes that preset, every explicit ASR
+            # choice must survive even when it matched the old effective value.
+            # Environment-owned matches remain outside Settings' ownership.
+            if value != current or (
+                leaving_asr_preset and name in _ASR_SELECTION_FIELDS and not environment_owned
+            ):
                 changed[name] = value
 
         if not changed:
