@@ -156,9 +156,20 @@ class SettingsService:
             changes.get("asr_profile") == "custom"
             and snapshot.config.asr_profile in ASR_PROFILE_MODELS
         )
+        effective_changes = dict(changes)
+        if (leaving_asr_preset
+                and changes.get("asr_backend", snapshot.config.asr_backend)
+                == snapshot.config.asr_backend):
+            # Native Settings sends only dirty fields. Editing a model or
+            # choosing Custom must keep the backend/model currently displayed,
+            # rather than revealing older raw TOML/default values. A deliberate
+            # backend switch retains its existing unsupplied-model semantics.
+            for name in ("asr_backend", "asr_model"):
+                if not is_environment_owned(snapshot.sources[name]):
+                    effective_changes.setdefault(name, getattr(snapshot.config, name))
         config_names = {field.name for field in fields(Config)}
         changed: dict[str, object] = {}
-        for name, value in changes.items():
+        for name, value in effective_changes.items():
             if name not in config_names:
                 raise ConfigError(f"Unknown config field: {name}")
             current = getattr(snapshot.config, name)

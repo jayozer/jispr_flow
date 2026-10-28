@@ -108,7 +108,9 @@ def test_custom_profile_persists_explicit_model_equal_to_old_effective_preset(tm
     }
 
 
-def test_custom_profile_does_not_persist_unsupplied_settings_or_matching_environment(tmp_path):
+def test_custom_profile_preserves_effective_model_without_copying_environment_or_unrelated_fields(
+    tmp_path,
+):
     path = tmp_path / "config.toml"
     path.write_text('asr_profile = "accuracy"\npill_position = "caret"\n')
     service = SettingsService(env={
@@ -121,7 +123,100 @@ def test_custom_profile_does_not_persist_unsupplied_settings_or_matching_environ
     assert saved.sources["asr_backend"] == "environment"
     assert tomllib.loads(path.read_text()) == {
         "asr_profile": "custom", "pill_position": "caret",
+        "asr_model": "mlx-community/whisper-large-v3-turbo",
     }
+
+
+@pytest.mark.parametrize("profile", ["fast", "accuracy"])
+@pytest.mark.parametrize("raw_backend", [None, "faster-whisper"])
+def test_sparse_native_model_edit_keeps_the_visible_mlx_backend(tmp_path, profile, raw_backend):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'asr_profile = "{profile}"\nasr_model = "small.en"\n'
+        + (f'asr_backend = "{raw_backend}"\n' if raw_backend is not None else "")
+    )
+    service = SettingsService(env={"LOCAL_FLOW_CONFIG": str(path)})
+    payload = {"asr_profile": "custom", "asr_model": str(tmp_path / "local-mlx-model")}
+
+    saved = service.save(payload)
+
+    assert payload == {"asr_profile": "custom", "asr_model": str(tmp_path / "local-mlx-model")}
+    assert saved.config.asr_backend == "mlx-whisper"
+    assert saved.config.asr_model == payload["asr_model"]
+    assert tomllib.loads(path.read_text())["asr_backend"] == "mlx-whisper"
+    assert service.load() == saved
+
+
+@pytest.mark.parametrize("profile", ["fast", "accuracy"])
+def test_selecting_custom_alone_preserves_visible_backend_and_model(tmp_path, profile):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'asr_profile = "{profile}"\nasr_backend = "faster-whisper"\nasr_model = "small.en"\n'
+    )
+    service = SettingsService(env={"LOCAL_FLOW_CONFIG": str(path)})
+    before = service.load().config
+
+    saved = service.save({"asr_profile": "custom"})
+
+    assert saved.config.asr_profile == "custom"
+    assert saved.config.asr_backend == before.asr_backend
+    assert saved.config.asr_model == before.asr_model
+    assert tomllib.loads(path.read_text()) == {
+        "asr_profile": "custom", "asr_backend": before.asr_backend,
+        "asr_model": before.asr_model,
+    }
+
+
+@pytest.mark.parametrize("new_backend", ["faster-whisper", "mlx-parakeet"])
+@pytest.mark.parametrize("raw_model", [None, "base.en"])
+def test_explicit_backend_switch_does_not_copy_the_previous_backends_model(
+    tmp_path, new_backend, raw_model
+):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        'asr_profile = "accuracy"\n'
+        + (f'asr_model = "{raw_model}"\n' if raw_model is not None else "")
+    )
+    service = SettingsService(env={"LOCAL_FLOW_CONFIG": str(path)})
+
+    saved = service.save({"asr_profile": "custom", "asr_backend": new_backend})
+
+    assert saved.config.asr_backend == new_backend
+    assert saved.config.asr_model == (raw_model or "small.en")
+    assert ("asr_model" in tomllib.loads(path.read_text())) == (raw_model is not None)
+
+
+def test_sparse_custom_choice_does_not_materialize_environment_owned_asr_fields(tmp_path):
+    path = tmp_path / "config.toml"
+    path.write_text('asr_profile = "accuracy"\npill_position = "caret"\n')
+    service = SettingsService(env={
+        "LOCAL_FLOW_CONFIG": str(path), "LOCAL_FLOW_ASR_BACKEND": "mlx-whisper",
+        "LOCAL_FLOW_ASR_MODEL": "private/custom-model",
+    })
+
+    saved = service.save({"asr_profile": "custom"})
+
+    assert saved.config.asr_backend == "mlx-whisper"
+    assert saved.config.asr_model == "private/custom-model"
+    assert tomllib.loads(path.read_text()) == {
+        "asr_profile": "custom", "pill_position": "caret",
+    }
+
+
+def test_invalid_sparse_custom_edit_preserves_original_atomically(tmp_path):
+    path = tmp_path / "config.toml"
+    original = 'asr_profile = "accuracy"\nasr_model = "small.en"\n'
+    path.write_text(original)
+    service = SettingsService(env={"LOCAL_FLOW_CONFIG": str(path)})
+
+    with pytest.raises(ConfigError, match="cleanup_level"):
+        service.save({
+            "asr_profile": "custom", "asr_model": "new-local-model",
+            "cleanup_level": "invalid",
+        })
+
+    assert path.read_text() == original
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 @pytest.mark.parametrize("overrides", [
