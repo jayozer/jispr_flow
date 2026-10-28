@@ -22,14 +22,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppStore.shared.refreshPermissions()
         guard !handledInitialActivation else { return }
         handledInitialActivation = true
-        AppStore.shared.requestSettingsWindow()
+        AppStore.shared.requestPrimaryWindow()
     }
 
     func applicationShouldHandleReopen(
         _ sender: NSApplication,
         hasVisibleWindows flag: Bool
     ) -> Bool {
-        AppStore.shared.requestSettingsWindow()
+        AppStore.shared.requestPrimaryWindow()
         return true
     }
 }
@@ -46,6 +46,12 @@ struct JiSprApp: App {
             MenuBarLabel(store: store)
         }
         .menuBarExtraStyle(.menu)
+
+        Window("Welcome to JiSpr", id: "guided-setup") {
+            GuidedSetupWindow(store: store)
+        }
+        .defaultSize(width: 860, height: 740)
+        .windowResizability(.contentMinSize)
 
         Window("Teach Me Once", id: "teach-me-once") {
             TeachMeOnceView(model: store.teachMeOnce)
@@ -78,8 +84,10 @@ private struct MenuBarLabel: View {
                 let isRunningTests = ProcessInfo.processInfo.environment[
                     "XCTestConfigurationFilePath"
                 ] != nil
-                if !isRunningTests,
-                   store.settingsRequestID > 0
+                guard !isRunningTests else { return }
+                if store.shouldPresentGuidedSetup {
+                    openSetup()
+                } else if store.settingsRequestID > 0
                     || !UserDefaults.standard.bool(forKey: "hasOpenedJiSprSettings") {
                     UserDefaults.standard.set(true, forKey: "hasOpenedJiSprSettings")
                     openSettings()
@@ -88,11 +96,28 @@ private struct MenuBarLabel: View {
             .onChange(of: store.settingsRequestID) {
                 openSettings()
             }
+            .onChange(of: store.setupRequestID) { openSetup() }
     }
 
     private func openSettings() {
         UserDefaults.standard.set(true, forKey: "hasOpenedJiSprSettings")
         openWindow(id: "settings")
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func openSetup() {
+        openWindow(id: "guided-setup")
+        NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+private struct GuidedSetupWindow: View {
+    let store: AppStore
+    @Environment(\.dismissWindow) private var dismissWindow
+
+    var body: some View {
+        SetupView(model: store.setup)
+            .onChange(of: store.setupDismissID) { dismissWindow(id: "guided-setup") }
+            .onDisappear { store.setupWindowClosed() }
     }
 }

@@ -61,6 +61,8 @@ struct HostMessage: Codable, Equatable, Sendable {
     let level: Double?
     let snapshot: HostSnapshot?
     let dictation: DictationRecord?
+    let download: DownloadProgress?
+    let running: Bool?
     let result: [String: JSONValue]?
     let message: String?
     let hint: String?

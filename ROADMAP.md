@@ -245,7 +245,15 @@ as a real desktop tool (not just a CLI) from early on.
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses
       LM Studio / ASR / audio / clipboard. *(First-run model download with
-      a progress bar is still open.)*
+      a progress bar is implemented in the native guided-setup branch; live
+      first-run acceptance remains pending.)*
+- [x] ✅ **Native guided setup and speech model downloads** — implemented on
+      `codex/guided-setup-model-downloads`, stacked on `codex/teach-me-once`.
+      Includes language/model choice, explicit pinned and verified downloads,
+      cache reuse, progress, cancellation/retry, three permission checks, and
+      a real insertion-gated practice field. First launch waits for setup;
+      reopening and Later preserve user control. See
+      [the validation and manual checklist](docs/testing/guided-setup-model-downloads-v1.md).
 - [x] ✅ **Scratchpad** *(beyond the original roadmap, E13)* — floating
       always-on-top markdown notepad (`local-flow pad --window`), plain
       files under the data dir, and a `scratchpad_hotkey` that routes live
@@ -273,8 +281,8 @@ final candidate rather than another superseded intermediate build:
    visibly respond, and confirm every disabled field has a real provenance
    explanation. Migrate legacy dotenv configuration into TOML before judging
    whether a control is implemented or locked.
-3. [ ] **Finish model onboarding and real-model validation** — add first-run
-   model-download progress, document HF_TOKEN and fully offline installs, and
+3. [ ] **Finish model onboarding and real-model validation** — validate the new
+   native first-run/download flow, document HF_TOKEN and fully offline installs, and
    complete private real-voice Parakeet/Whisper plus local polish evaluation.
 4. [ ] **Protect user state** — preserve/restore the clipboard around insertion
    and add dictionary, alias, and settings import/export for beta backup and

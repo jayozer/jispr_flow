@@ -26,6 +26,7 @@ from local_flow.personalization.corrections import (
 from local_flow.personalization.review import MAX_REVIEW_CHARS, DictationReviews
 from local_flow.settings.controller import ASR_PRESETS, SettingsController
 from local_flow.settings.service import SETTINGS_FIELDS, is_settings_editable
+from local_flow.settings.setup import GuidedSetup
 from local_flow.status import State, StatusReporter
 
 PROTOCOL_VERSION = 1
@@ -192,6 +193,7 @@ class AppHost:
         output_stream: IO[str],
         controller: SettingsController | None = None,
         session_factory: SessionFactory = RuntimeSession,
+        model_manager_factory=None,
     ) -> None:
         self.input_stream = input_stream
         self.writer = JSONLWriter(output_stream)
@@ -199,6 +201,9 @@ class AppHost:
         self.session_factory = session_factory
         self.session: Session | None = None
         self.state: State = "idle"
+        self.setup = GuidedSetup(
+            self.controller, self._publish_download, manager_factory=model_manager_factory
+        )
         self.reviews = DictationReviews()
         self._undo_changes: OrderedDict[str, tuple[Path, CorrectionChange]] = OrderedDict()
         self.reporter = JSONLReporter(
@@ -210,6 +215,13 @@ class AppHost:
     def _publish_dictation(self, result: DictationResult) -> None:
         review = self.reviews.add(result)
         self.writer.send("dictation", dictation=asdict(review) if review is not None else None)
+
+    def _publish_download(self, progress: dict) -> None:
+        try:
+            self.writer.send("model_download", download=progress)
+        except (BrokenPipeError, OSError):
+            # The app may have closed while the download worker was unwinding.
+            pass
 
     def _corrections(self) -> CorrectionStore:
         return CorrectionStore(self.controller.service.load().config.data_dir)
@@ -333,7 +345,33 @@ class AppHost:
             raise ValueError("command must be a string")
         payload = self._payload(message)
 
-        if command == "review_latest":
+        if command == "setup_catalog":
+            self._reply(request_id, self.setup.catalog())
+        elif command == "model_download":
+            progress = self.setup.manager().start(self._required_string(payload, "model_id"))
+            self._reply(request_id, {"download": progress})
+        elif command == "model_cancel":
+            progress = self.setup.manager().cancel(self._required_string(payload, "job_id"))
+            self._reply(request_id, {"download": progress})
+        elif command == "setup_apply":
+            if self.state in ("recording", "processing", "preview"):
+                raise ConfigError("Finish or cancel the current dictation before changing models.")
+            changes = self.setup.prepare_apply(
+                self._required_string(payload, "model_id"),
+                self._required_string(payload, "language"),
+                self._required_string(payload, "polish_backend"),
+            )
+            if self.session is not None and not self.session.stop():
+                raise ConfigError("The engine did not stop. Model settings were left unchanged.")
+            self.session = None
+            self.writer.send("runtime", running=False)
+            self.controller.save(changes)
+            self.reporter.notify(
+                "idle", "Speech model saved. Start the practice dictation when ready."
+            )
+            self.emit_snapshot()
+            self._reply(request_id, {"applied": True})
+        elif command == "review_latest":
             review = self.reviews.latest()
             self._reply(request_id, {"dictation": asdict(review) if review is not None else None})
         elif command == "correction_preview":
@@ -419,6 +457,7 @@ class AppHost:
             self._reply(request_id)
         elif command == "set_language":
             code = self._required_string(payload, "code")
+            self.setup.validate_current_language(code)
             self.controller.save({"asr_language": code})
             if self.session is not None:
                 self.session.set_language(code)
@@ -464,6 +503,7 @@ class AppHost:
             self.emit_snapshot()
             self._reply(request_id, {"changed": changed})
         elif command == "shutdown":
+            self.setup.close()
             stopped = True if self.session is None else self.session.stop()
             self._reply(request_id, {"stopped": stopped})
             return False
@@ -472,6 +512,12 @@ class AppHost:
         return True
 
     def run(self) -> int:
+        try:
+            return self._run_commands()
+        finally:
+            self.setup.close()
+
+    def _run_commands(self) -> int:
         self.writer.send("ready", protocol=PROTOCOL_VERSION)
         try:
             self.emit_snapshot()

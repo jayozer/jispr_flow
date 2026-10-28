@@ -230,6 +230,31 @@ does not expose a usable caret. Set `pill_position = "caret"` in TOML or
 `"bottom"`; the Python `local-flow run` recording pill keeps its bottom-center
 position. Living Caret shows status and microphone activity throughout dictation.
 
+### Guided setup and model downloads
+
+On first launch, the native app opens **Welcome to JiSpr**. Choose your language
+and speech model, then explicitly download its files or verify a compatible
+existing cache. Model cards show hardware requirements, size, and readiness;
+downloads show byte progress with Cancel and Retry. Audio and text stay local.
+
+Choose **Apply and continue** to save the verified local model and language.
+Browsing and downloading leave your preferences unchanged. New setups can use
+local rules for cleanup without configuring LM Studio. The next pages walk
+through Accessibility, Input Monitoring, and Microphone access, then a practice
+dictation. Finish becomes available after your actual dictated words arrive in
+the practice field.
+
+Choose **Later** to pause setup. Reopen it through **JiSpr → Guided Setup &
+Models…**, or use **Settings → Models → Manage Models…** for downloads. Deferred
+setup does not start the engine automatically; Start Dictation remains available
+in the menu. A completed setup resumes normal startup on the next launch.
+
+Downloaded models live under the local data directory's `models/` folder. Model
+files are pinned and verified before use. A cancelled transfer is discarded and
+Retry starts a fresh transfer; compatible complete caches can be reused offline.
+See the [setup and download test notes](docs/testing/guided-setup-model-downloads-v1.md)
+for supported models, failure behavior, and the manual checklist.
+
 ### Teach Me Once
 
 In the native app, choose **Teach Me Once…** from JiSpr's menu after a dictation.
