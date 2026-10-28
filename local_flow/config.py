@@ -35,6 +35,7 @@ VALID_VAD_PRESETS = ("normal", "whisper")
 VALID_MOUSE_BUTTONS = ("", "middle", "x1", "x2")
 VALID_MOUSE_MODES = ("hold", "toggle")
 VALID_PILL_STYLES = ("compact", "expanded")
+VALID_PILL_POSITIONS = ("bottom", "caret")
 VALID_POLISH_BACKENDS = ("lmstudio", "rules")
 
 
@@ -105,6 +106,9 @@ class Config:
     # compact = Apple/Wispr-inspired persistent line; expanded = the original
     # labeled 280x56 status pill.
     pill_style: str = "compact"
+    # Native JiSpr app only: bottom = display edge; caret = Living Caret.
+    # The Python CLI pill continues to use its bottom-center placement.
+    pill_position: str = "bottom"
 
     # Comma-separated, priority-ordered microphone name substrings (case-
     # insensitive), e.g. "AirPods, USB". The first input device whose name
@@ -493,6 +497,12 @@ def load_config_snapshot(
         raise ConfigError(
             f"Invalid pill_style: {config.pill_style!r}",
             hint=f"Valid values: {', '.join(VALID_PILL_STYLES)}.",
+        )
+
+    if config.pill_position not in VALID_PILL_POSITIONS:
+        raise ConfigError(
+            f"Invalid pill_position: {config.pill_position!r}",
+            hint=f"Valid values: {', '.join(VALID_PILL_POSITIONS)}.",
         )
 
     _mouse_hint = (

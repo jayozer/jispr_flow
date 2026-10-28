@@ -10,19 +10,30 @@ from __future__ import annotations
 
 import json
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
-from dataclasses import fields
+from dataclasses import asdict, fields
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO, TYPE_CHECKING, Protocol
 
 from local_flow.config import Config
-from local_flow.errors import LocalFlowError
+from local_flow.errors import ConfigError, LocalFlowError
+from local_flow.personalization.corrections import (
+    CorrectionChange,
+    CorrectionStore,
+    suggest_corrections,
+)
+from local_flow.personalization.review import MAX_REVIEW_CHARS, DictationReviews
 from local_flow.settings.controller import ASR_PRESETS, SettingsController
 from local_flow.settings.service import SETTINGS_FIELDS, is_settings_editable
+from local_flow.settings.setup import GuidedSetup
 from local_flow.status import State, StatusReporter
 
 PROTOCOL_VERSION = 1
 _JOIN_TIMEOUT = 3.0
+
+if TYPE_CHECKING:
+    from local_flow.pipeline import DictationResult
 
 SETTING_OPTIONS: dict[str, list[str]] = {
     "mode": ["push-to-talk", "hands-free"],
@@ -38,6 +49,7 @@ SETTING_OPTIONS: dict[str, list[str]] = {
     "insert_method": ["auto", "paste", "type", "clipboard"],
     "streaming": ["off", "sentence", "live-preview"],
     "pill_style": ["compact", "expanded"],
+    "pill_position": ["bottom", "caret"],
     "vad_backend": ["energy", "webrtc"],
     "vad_preset": ["normal", "whisper"],
     "history_retention": ["forever", "24h", "off"],
@@ -77,9 +89,15 @@ class JSONLReporter(StatusReporter):
         writer: JSONLWriter,
         *,
         state_callback: Callable[[State], None] | None = None,
+        dictation_callback: Callable[[DictationResult], None] | None = None,
     ) -> None:
         self._writer = writer
         self._state_callback = state_callback
+        self._dictation_callback = dictation_callback
+
+    def dictation_completed(self, result: DictationResult) -> None:
+        if self._dictation_callback is not None:
+            self._dictation_callback(result)
 
     def notify(self, state: State, detail: str = "") -> None:
         if self._state_callback is not None:
@@ -114,6 +132,7 @@ class RuntimeSession:
         self.config = config
         self.reporter = reporter
         self._deps = _build_run_dependencies(config)
+        self._deps.pipeline.on_dictation = getattr(reporter, "dictation_completed", None)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -174,6 +193,7 @@ class AppHost:
         output_stream: IO[str],
         controller: SettingsController | None = None,
         session_factory: SessionFactory = RuntimeSession,
+        model_manager_factory=None,
     ) -> None:
         self.input_stream = input_stream
         self.writer = JSONLWriter(output_stream)
@@ -181,7 +201,51 @@ class AppHost:
         self.session_factory = session_factory
         self.session: Session | None = None
         self.state: State = "idle"
-        self.reporter = JSONLReporter(self.writer, state_callback=self._set_state)
+        self.setup = GuidedSetup(
+            self.controller, self._publish_download, manager_factory=model_manager_factory
+        )
+        self.reviews = DictationReviews()
+        self._undo_changes: OrderedDict[str, tuple[Path, CorrectionChange]] = OrderedDict()
+        self.reporter = JSONLReporter(
+            self.writer,
+            state_callback=self._set_state,
+            dictation_callback=self._publish_dictation,
+        )
+
+    def _publish_dictation(self, result: DictationResult) -> None:
+        review = self.reviews.add(result)
+        self.writer.send("dictation", dictation=asdict(review) if review is not None else None)
+
+    def _publish_download(self, progress: dict) -> None:
+        try:
+            self.writer.send("model_download", download=progress)
+        except (BrokenPipeError, OSError):
+            # The app may have closed while the download worker was unwinding.
+            pass
+
+    def _corrections(self) -> CorrectionStore:
+        return CorrectionStore(self.controller.service.load().config.data_dir)
+
+    def _remember_change(
+        self, store: CorrectionStore, change: CorrectionChange | None
+    ) -> str | None:
+        if change is None:
+            return None
+        # Undo is explicit and session-local. An older token must not undo a
+        # later decision, including an edit made through a second review.
+        self._undo_changes.clear()
+        self._undo_changes[change.token] = (store.path.parent, change)
+        return change.token
+
+    def _review_correction(self, payload: Mapping[str, object]):
+        review_id = self._required_string(payload, "dictation_id")
+        review = self.reviews.get(review_id)
+        corrected = payload.get("corrected_text")
+        if not isinstance(corrected, str):
+            raise ConfigError("Corrected text must be a string.")
+        if len(corrected) > MAX_REVIEW_CHARS:
+            raise ConfigError("Corrections can review up to 32,000 characters at once.")
+        return review, corrected, suggest_corrections(review.text, corrected)
 
     def _set_state(self, state: State) -> None:
         self.state = state
@@ -189,6 +253,11 @@ class AppHost:
     def snapshot_payload(self) -> dict[str, object]:
         view_model = self.controller.load()
         config = view_model.snapshot.config
+        corrections_error = None
+        try:
+            corrections = [asdict(rule) for rule in CorrectionStore(config.data_dir).list_rules()]
+        except (ConfigError, OSError) as exc:
+            corrections, corrections_error = [], str(exc)
         settings: dict[str, object] = {}
         for field in fields(config):
             name = field.name
@@ -212,6 +281,8 @@ class AppHost:
             "transforms": view_model.transforms,
             "dictionary": view_model.dictionary_entries,
             "aliases": view_model.aliases,
+            "corrections": corrections,
+            "corrections_error": corrections_error,
         }
 
     def emit_snapshot(self) -> None:
@@ -274,7 +345,85 @@ class AppHost:
             raise ValueError("command must be a string")
         payload = self._payload(message)
 
-        if command == "start":
+        if command == "setup_catalog":
+            self._reply(request_id, self.setup.catalog())
+        elif command == "model_download":
+            progress = self.setup.manager().start(self._required_string(payload, "model_id"))
+            self._reply(request_id, {"download": progress})
+        elif command == "model_cancel":
+            progress = self.setup.manager().cancel(self._required_string(payload, "job_id"))
+            self._reply(request_id, {"download": progress})
+        elif command == "setup_apply":
+            if self.state in ("recording", "processing", "preview"):
+                raise ConfigError("Finish or cancel the current dictation before changing models.")
+            changes = self.setup.prepare_apply(
+                self._required_string(payload, "model_id"),
+                self._required_string(payload, "language"),
+                self._required_string(payload, "polish_backend"),
+            )
+            if self.session is not None and not self.session.stop():
+                raise ConfigError("The engine did not stop. Model settings were left unchanged.")
+            self.session = None
+            self.writer.send("runtime", running=False)
+            self.controller.save(changes)
+            self.reporter.notify(
+                "idle", "Speech model saved. Start the practice dictation when ready."
+            )
+            self.emit_snapshot()
+            self._reply(request_id, {"applied": True})
+        elif command == "review_latest":
+            review = self.reviews.latest()
+            self._reply(request_id, {"dictation": asdict(review) if review is not None else None})
+        elif command == "correction_preview":
+            review, _, suggestions = self._review_correction(payload)
+            self._reply(request_id, {
+                "dictation_id": review.id,
+                "suggestions": [asdict(suggestion) for suggestion in suggestions],
+            })
+        elif command == "correction_learn":
+            review, _, suggestions = self._review_correction(payload)
+            source = self._required_string(payload, "source")
+            replacement = self._required_string(payload, "replacement")
+            if not any(
+                suggestion.source == source and suggestion.replacement == replacement
+                for suggestion in suggestions
+            ):
+                raise ConfigError("Review this text change before remembering it.")
+            scope = payload.get("scope")
+            if scope not in ("app", "global"):
+                raise ConfigError("Choose this app or everywhere for the correction.")
+            if scope == "app" and not review.app_id:
+                raise ConfigError("This dictation has no app identity; choose Everywhere.")
+            store = self._corrections()
+            change = store.learn(
+                source, replacement, app_id=review.app_id if scope == "app" else ""
+            )
+            token = self._remember_change(store, change)
+            self.emit_snapshot()
+            self._reply(request_id, {
+                "changed": change is not None,
+                "undo_token": token,
+                "rule": asdict(change.after) if change and change.after else None,
+            })
+        elif command == "correction_forget":
+            store = self._corrections()
+            change = store.forget(self._required_string(payload, "rule_id"))
+            token = self._remember_change(store, change)
+            self.emit_snapshot()
+            self._reply(request_id, {"changed": change is not None, "undo_token": token})
+        elif command == "correction_undo":
+            token = self._required_string(payload, "token")
+            saved = self._undo_changes.get(token)
+            if saved is None:
+                raise ConfigError("This Undo is no longer available.")
+            data_dir, change = saved
+            changed = CorrectionStore(data_dir).undo(change)
+            if not changed:
+                raise ConfigError("The correction has changed; review it before undoing.")
+            self._undo_changes.pop(token, None)
+            self.emit_snapshot()
+            self._reply(request_id, {"changed": True})
+        elif command == "start":
             session = self._ensure_session()
             session.start()
             self._reply(request_id, {"running": session.running})
@@ -308,6 +457,7 @@ class AppHost:
             self._reply(request_id)
         elif command == "set_language":
             code = self._required_string(payload, "code")
+            self.setup.validate_current_language(code)
             self.controller.save({"asr_language": code})
             if self.session is not None:
                 self.session.set_language(code)
@@ -353,6 +503,7 @@ class AppHost:
             self.emit_snapshot()
             self._reply(request_id, {"changed": changed})
         elif command == "shutdown":
+            self.setup.close()
             stopped = True if self.session is None else self.session.stop()
             self._reply(request_id, {"stopped": stopped})
             return False
@@ -361,6 +512,12 @@ class AppHost:
         return True
 
     def run(self) -> int:
+        try:
+            return self._run_commands()
+        finally:
+            self.setup.close()
+
+    def _run_commands(self) -> int:
         self.writer.send("ready", protocol=PROTOCOL_VERSION)
         try:
             self.emit_snapshot()

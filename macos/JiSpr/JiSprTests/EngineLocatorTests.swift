@@ -3,21 +3,28 @@ import XCTest
 
 final class EngineLocatorTests: XCTestCase {
     @MainActor
-    func testFirstActivationRequestsSettingsOnce() {
+    func testFirstActivationRequestsTheAppropriatePrimaryWindowOnce() {
         let delegate = AppDelegate()
-        let initialRequest = AppStore.shared.settingsRequestID
+        let store = AppStore.shared
+        let initialSettings = store.settingsRequestID
+        let initialSetup = store.setupRequestID
+        let needsSetup = store.shouldPresentGuidedSetup
         let notification = Notification(name: NSApplication.didBecomeActiveNotification)
 
         delegate.applicationDidBecomeActive(notification)
         delegate.applicationDidBecomeActive(notification)
 
-        XCTAssertEqual(AppStore.shared.settingsRequestID, initialRequest + 1)
+        XCTAssertEqual(store.settingsRequestID, initialSettings + (needsSetup ? 0 : 1))
+        XCTAssertEqual(store.setupRequestID, initialSetup + (needsSetup ? 1 : 0))
     }
 
     @MainActor
-    func testReopenRequestsSettingsWindow() {
+    func testReopenRequestsTheAppropriatePrimaryWindow() {
         let delegate = AppDelegate()
-        let initialRequest = AppStore.shared.settingsRequestID
+        let store = AppStore.shared
+        let initialSettings = store.settingsRequestID
+        let initialSetup = store.setupRequestID
+        let needsSetup = store.shouldPresentGuidedSetup
 
         XCTAssertTrue(
             delegate.applicationShouldHandleReopen(
@@ -25,7 +32,8 @@ final class EngineLocatorTests: XCTestCase {
                 hasVisibleWindows: false
             )
         )
-        XCTAssertEqual(AppStore.shared.settingsRequestID, initialRequest + 1)
+        XCTAssertEqual(store.settingsRequestID, initialSettings + (needsSetup ? 0 : 1))
+        XCTAssertEqual(store.setupRequestID, initialSetup + (needsSetup ? 1 : 0))
     }
 
     func testEngineEnvironmentIncludesHomebrewAndPreservesExistingPath() {

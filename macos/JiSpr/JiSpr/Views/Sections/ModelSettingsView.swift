@@ -2,9 +2,23 @@ import SwiftUI
 
 struct ModelSettingsView: View {
     let store: AppStore
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         DetailPage("Models", subtitle: "Local speech recognition and writing polish.") {
+            SectionCard("Speech Model Downloads", subtitle: "Choose, download, and verify a local model") {
+                HStack {
+                    Text("Manage installed models or return to guided setup.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Manage Models…") {
+                        store.requestSetupWindow(modelsOnly: true)
+                        openWindow(id: "guided-setup")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
             SectionCard("Speech Recognition", subtitle: "Audio never leaves this Mac") {
                 pickerRow("Preset", key: "asr_profile")
                 pickerRow("Backend", key: "asr_backend", marksCustom: true)

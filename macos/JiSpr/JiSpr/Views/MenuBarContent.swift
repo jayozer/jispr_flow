@@ -33,6 +33,21 @@ struct MenuBarContent: View {
         }
         .disabled(!store.isHostOnline)
 
+        Button {
+            store.requestSetupWindow()
+            openWindow(id: "guided-setup")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Guided Setup & Models…", systemImage: "checklist")
+        }
+
+        Button {
+            openWindow(id: "teach-me-once")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Teach Me Once…", systemImage: "text.badge.checkmark")
+        }
+
         Divider()
 
         if let snapshot = store.snapshot, !snapshot.styles.isEmpty {

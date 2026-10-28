@@ -5,7 +5,8 @@ final class FloatingPillControllerTests: XCTestCase {
     private func config(
         state: DictationState,
         enabled: Bool = true,
-        audioLevel: Double = 0
+        audioLevel: Double = 0,
+        position: String = "bottom"
     ) -> FloatingPillConfiguration {
         FloatingPillConfiguration(
             enabled: enabled,
@@ -13,7 +14,8 @@ final class FloatingPillControllerTests: XCTestCase {
             state: state,
             detail: "",
             audioLevel: audioLevel,
-            hotkey: "fn"
+            hotkey: "fn",
+            position: position
         )
     }
 
@@ -95,5 +97,73 @@ final class FloatingPillControllerTests: XCTestCase {
             ),
             .hide
         )
+    }
+
+    func testLivingCaretHidesAtRestButKeepsErrorsVisible() {
+        for state in [DictationState.idle, .offline] {
+            XCTAssertTrue(FloatingPillController.hidesAtRest(config(state: state, position: "caret")))
+            XCTAssertFalse(FloatingPillController.hidesAtRest(config(state: state)))
+        }
+        for state in [DictationState.recording, .preview, .processing, .inserted, .warning, .error] {
+            XCTAssertFalse(FloatingPillController.hidesAtRest(config(state: state, position: "caret")))
+        }
+    }
+
+    func testLivingCaretSuccessRetainsTheConfirmationBeforeIdleHidesIt() {
+        XCTAssertEqual(
+            FloatingPillController.transition(
+                for: config(state: .idle, position: "caret"),
+                displayed: config(state: .inserted, position: "caret"),
+                idlePending: false
+            ),
+            .delayIdle
+        )
+        XCTAssertEqual(
+            FloatingPillController.transition(
+                for: config(state: .recording, position: "caret"),
+                displayed: config(state: .inserted, position: "caret"),
+                idlePending: true
+            ),
+            .apply
+        )
+    }
+
+    func testSwitchingPlacementImmediatelyOverridesAPendingConfirmation() {
+        XCTAssertEqual(
+            FloatingPillController.transition(
+                for: config(state: .idle, position: "caret"),
+                displayed: config(state: .inserted),
+                idlePending: true
+            ),
+            .apply
+        )
+    }
+
+    func testOnlyActiveAndSuccessfulStatesUseTheSmallCaretSurface() {
+        for state in [DictationState.recording, .preview, .processing, .inserted] {
+            let configuration = config(state: state, position: "caret")
+            XCTAssertTrue(configuration.showsLivingCaret)
+            let presentation = FloatingPillPresentation(configuration: configuration)
+            XCTAssertEqual(presentation.width, 72)
+            XCTAssertEqual(presentation.height, 28)
+        }
+        for state in [DictationState.warning, .error] {
+            let configuration = config(state: state, position: "caret")
+            XCTAssertFalse(configuration.showsLivingCaret)
+            XCTAssertEqual(FloatingPillPresentation(configuration: configuration).width, 280)
+        }
+    }
+
+    @MainActor
+    func testStatusPanelCannotTakeKeyboardFocus() {
+        let panel = DictationStatusPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: true
+        )
+        XCTAssertFalse(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        panel.close()
     }
 }

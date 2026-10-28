@@ -91,64 +91,177 @@ class TestFactory:
 
 
 class _FakeApp:
+    def __init__(self, app_id="com.apple.Terminal", title="Terminal"):
+        self.app_id = app_id
+        self.title = title
+
     def bundleIdentifier(self):
-        return "com.apple.Terminal"
+        return self.app_id
 
     def localizedName(self):
-        return "Terminal"
+        return self.title
 
 
-class _FakeWorkspace:
-    @staticmethod
-    def sharedWorkspace():
-        return _FakeWorkspace()
+class _FakeProcessManager:
+    def __init__(self):
+        self.front_result = (0, (0, 1111))
+        self.pid_result = (0, 111)
+        self.calls = []
+        self.ax_calls = []
 
-    def frontmostApplication(self):
-        return _FakeApp()
+    def GetFrontProcess(self, output):
+        self.calls.append(("front", output))
+        return self.front_result
 
+    def GetProcessPID(self, serial_number, output):
+        self.calls.append(("pid", serial_number, output))
+        return self.pid_result
 
-class _FakeAppKit:
-    NSWorkspace = _FakeWorkspace
-
-
-class _NoAppWorkspace:
-    @staticmethod
-    def sharedWorkspace():
-        return _NoAppWorkspace()
-
-    def frontmostApplication(self):
-        return None
-
-
-class _NoAppAppKit:
-    NSWorkspace = _NoAppWorkspace
-
-
-class _BoomWorkspace:
-    @staticmethod
-    def sharedWorkspace():
-        raise RuntimeError("AppKit boom")
-
-
-class _BoomAppKit:
-    NSWorkspace = _BoomWorkspace
+    def AXUIElementCreateSystemWide(self):
+        self.ax_calls.append("system")
+        raise AssertionError("Frontmost identity must not depend on AX permission")
 
 
 class TestMacFrontmostApp:
-    def test_maps_appkit_fields(self, monkeypatch):
-        monkeypatch.setitem(sys.modules, "AppKit", _FakeAppKit())
+    @pytest.fixture(autouse=True)
+    def fake_backend(self, monkeypatch):
+        self.process_manager = _FakeProcessManager()
+        self.apps = {111: _FakeApp()}
+        self.workspace_calls = []
+        self.running_app_calls = []
+
+        def stale_workspace():
+            self.workspace_calls.append("workspace")
+            return SimpleNamespace(frontmostApplication=lambda: _FakeApp("stale", "Stale"))
+
+        def running_app(pid):
+            self.running_app_calls.append(pid)
+            return self.apps.get(pid)
+
+        self.appkit = SimpleNamespace(
+            NSRunningApplication=SimpleNamespace(
+                runningApplicationWithProcessIdentifier_=running_app
+            ),
+            NSWorkspace=SimpleNamespace(sharedWorkspace=stale_workspace),
+        )
+        monkeypatch.setitem(sys.modules, "ApplicationServices", self.process_manager)
+        monkeypatch.setitem(sys.modules, "AppKit", self.appkit)
+        yield
+        assert self.workspace_calls == []
+        assert self.process_manager.ax_calls == []
+
+    def test_maps_appkit_fields(self):
         assert MacFrontmostApp().current() == AppInfo("com.apple.Terminal", "Terminal")
+        assert self.process_manager.calls == [
+            ("front", None),
+            ("pid", (0, 1111), None),
+        ]
+        assert self.running_app_calls == [111]
+
+    def test_same_provider_follows_focus_changes_without_a_cocoa_run_loop(self):
+        self.apps = {
+            111: _FakeApp("com.apple.TextEdit", "TextEdit"),
+            222: _FakeApp("com.apple.Safari", "Safari"),
+        }
+        provider = MacFrontmostApp()
+
+        assert provider.current() == AppInfo("com.apple.TextEdit", "TextEdit")
+        self.process_manager.front_result = (0, (0, 2222))
+        self.process_manager.pid_result = (0, 222)
+        assert provider.current() == AppInfo("com.apple.Safari", "Safari")
+        self.process_manager.front_result = (0, (0, 1111))
+        self.process_manager.pid_result = (0, 111)
+        assert provider.current() == AppInfo("com.apple.TextEdit", "TextEdit")
+        assert self.running_app_calls == [111, 222, 111]
+        assert self.process_manager.calls == [
+            ("front", None), ("pid", (0, 1111), None),
+            ("front", None), ("pid", (0, 2222), None),
+            ("front", None), ("pid", (0, 1111), None),
+        ]
+
+    def test_failure_after_success_never_returns_previous_app(self):
+        provider = MacFrontmostApp()
+        assert provider.current().app_id == "com.apple.Terminal"
+
+        self.process_manager.front_result = (-600, None)
+
+        assert provider.current() == AppInfo()
+        assert self.running_app_calls == [111]
 
     def test_missing_appkit_yields_empty(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "AppKit", None)  # simulates ImportError
         assert MacFrontmostApp().current() == AppInfo()
 
-    def test_no_frontmost_application_yields_empty(self, monkeypatch):
-        monkeypatch.setitem(sys.modules, "AppKit", _NoAppAppKit())
+    def test_missing_application_services_yields_empty(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "ApplicationServices", None)
         assert MacFrontmostApp().current() == AppInfo()
 
-    def test_backend_raising_yields_empty(self, monkeypatch):
-        monkeypatch.setitem(sys.modules, "AppKit", _BoomAppKit())
+    @pytest.mark.parametrize("result", [(-600, None), (-50, (0, 1111)), (0, None)])
+    def test_missing_or_failed_front_process_yields_empty(self, result):
+        self.process_manager.front_result = result
+        assert MacFrontmostApp().current() == AppInfo()
+        assert self.running_app_calls == []
+        assert self.process_manager.calls == [("front", None)]
+
+    @pytest.mark.parametrize("pid", [None, 0, -1, True, "111", 111.0])
+    def test_invalid_pid_yields_empty(self, pid):
+        self.process_manager.pid_result = (0, pid)
+        assert MacFrontmostApp().current() == AppInfo()
+        assert self.running_app_calls == []
+
+    def test_failed_pid_query_yields_empty_even_with_a_positive_pid(self):
+        self.process_manager.pid_result = (-600, 111)
+        assert MacFrontmostApp().current() == AppInfo()
+        assert self.running_app_calls == []
+
+    def test_missing_running_application_yields_empty(self):
+        self.apps.clear()
+        assert MacFrontmostApp().current() == AppInfo()
+
+    def test_missing_app_metadata_is_empty(self):
+        self.apps[111] = _FakeApp(None, None)
+        assert MacFrontmostApp().current() == AppInfo()
+
+    @pytest.mark.parametrize(
+        "call",
+        ["GetFrontProcess", "GetProcessPID"],
+    )
+    def test_process_manager_raising_yields_empty(self, monkeypatch, call):
+        def fail(*_args):
+            raise RuntimeError("Process Manager call failed")
+
+        monkeypatch.setattr(self.process_manager, call, fail)
+        assert MacFrontmostApp().current() == AppInfo()
+
+    def test_running_application_lookup_raising_yields_empty(self, monkeypatch):
+        def fail(*_args):
+            raise RuntimeError("AppKit call failed")
+
+        monkeypatch.setattr(
+            self.appkit.NSRunningApplication, "runningApplicationWithProcessIdentifier_", fail
+        )
+        assert MacFrontmostApp().current() == AppInfo()
+
+    def test_app_metadata_raising_yields_empty(self):
+        class BadApp:
+            def bundleIdentifier(self):
+                raise RuntimeError("AppKit metadata failed")
+
+        self.apps[111] = BadApp()
+        assert MacFrontmostApp().current() == AppInfo()
+
+    def test_localized_name_raising_yields_empty(self):
+        class BadNameApp(_FakeApp):
+            def localizedName(self):
+                raise RuntimeError("AppKit name failed")
+
+        self.apps[111] = BadNameApp()
+        assert MacFrontmostApp().current() == AppInfo()
+
+    @pytest.mark.parametrize("field", ["front_result", "pid_result"])
+    @pytest.mark.parametrize("result", [None, (0,), (0, 111, "extra")])
+    def test_malformed_process_result_yields_empty(self, field, result):
+        setattr(self.process_manager, field, result)
         assert MacFrontmostApp().current() == AppInfo()
 
 

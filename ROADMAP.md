@@ -226,11 +226,36 @@ as a real desktop tool (not just a CLI) from early on.
       bar expands into recording/processing/success states, with the original
       labeled pill available through `pill_style = "expanded"`; includes a live
       mic meter, `--pill`/`--no-pill`, and graceful console fallback.
+- [x] ✅ **Living Caret status** — the native macOS app can place its recording
+      indicator beside an Accessibility-readable text cursor, with screen-edge
+      clamping and bottom-center fallback when caret bounds are unavailable.
+      Opt in through Appearance (`pill_position = "caret"`); it hides while idle.
+      The Python CLI pill keeps bottom-center placement. Live QA on 2026-10-27
+      passed TextEdit, Safari, screen edges, a second monitor, cancellation,
+      styles, and engine recovery; ChatGPT used bottom fallback. See
+      [the QA record](docs/testing/living-caret-v1-live-qa.md).
+- [x] ✅ **Teach Me Once v1** — a native review window proposes exact phrase
+      corrections from edits the user makes there. Each remembered rule has
+      app or global scope; Undo and Forget reverse decisions. Rules stay in a
+      separate local file and apply to subsequent dictations. The implementation
+      is isolated on `codex/teach-me-once`, stacked on `codex/living-caret`;
+      accepted by the user on 2026-10-27 to continue the stack, with remaining
+      [live checks deferred](docs/testing/teach-me-once-v1-live-qa.md).
 - [x] ✅ **Onboarding wizard** — shipped (E6): `local-flow setup` writes a
       validated config interactively, probes LM Studio connectivity, and
       prints the macOS permission steps; `local-flow check` diagnoses
       LM Studio / ASR / audio / clipboard. *(First-run model download with
-      a progress bar is still open.)*
+      a progress bar is implemented in the native guided-setup branch; the core
+      first-run flow passed live acceptance on 2026-10-28.)*
+- [x] ✅ **Native guided setup and speech model downloads** — implemented on
+      `codex/guided-setup-model-downloads`, stacked on `codex/teach-me-once`.
+      Includes language/model choice, explicit pinned and verified downloads,
+      cache reuse, progress, cancellation/retry, three permission checks, and
+      a real insertion-gated practice field. First launch waits for setup;
+      reopening and Later preserve user control. Live checks on 2026-10-28 passed
+      download/cancel/retry, cache verification, permissions, real practice,
+      completion/relaunch, and Living Caret preservation. See
+      [the validation and manual checklist](docs/testing/guided-setup-model-downloads-v1.md).
 - [x] ✅ **Scratchpad** *(beyond the original roadmap, E13)* — floating
       always-on-top markdown notepad (`local-flow pad --window`), plain
       files under the data dir, and a `scratchpad_hotkey` that routes live
@@ -258,8 +283,9 @@ final candidate rather than another superseded intermediate build:
    visibly respond, and confirm every disabled field has a real provenance
    explanation. Migrate legacy dotenv configuration into TOML before judging
    whether a control is implemented or locked.
-3. [ ] **Finish model onboarding and real-model validation** — add first-run
-   model-download progress, document HF_TOKEN and fully offline installs, and
+3. [ ] **Extend model onboarding and real-model validation** — the core native
+   first-run/download flow passed live checks on 2026-10-28; extend failure-mode
+   coverage, document HF_TOKEN and fully offline installs, and
    complete private real-voice Parakeet/Whisper plus local polish evaluation.
 4. [ ] **Protect user state** — preserve/restore the clipboard around insertion
    and add dictionary, alias, and settings import/export for beta backup and

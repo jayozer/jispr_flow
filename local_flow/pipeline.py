@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from local_flow.asr.base import Transcriber
@@ -9,10 +10,12 @@ from local_flow.audio.gain import normalize_peak
 from local_flow.audio.vad import VoiceActivityDetector, split_segments
 from local_flow.commands.command_mode import CommandMode
 from local_flow.context.field_text import FieldTextProvider
+from local_flow.context.frontmost import FrontmostAppProvider
 from local_flow.context.router import ContextRouter, ResolvedContext
-from local_flow.errors import LMStudioError
+from local_flow.errors import ConfigError, LMStudioError
 from local_flow.history.store import HistoryStore
 from local_flow.insertion.base import TextSink
+from local_flow.personalization.corrections import CorrectionStore
 from local_flow.personalization.store import PersonalizationStore
 from local_flow.polish.polisher import TranscriptPolisher
 from local_flow.polish.rules import (
@@ -38,6 +41,9 @@ class DictationResult:
     warnings: list[str] = field(default_factory=list)
     inserted: bool = False
     duration_s: float = 0.0
+    app_id: str = ""
+    app_name: str = ""
+    corrections_applied: int = 0
 
 
 class DictationPipeline:
@@ -52,6 +58,9 @@ class DictationPipeline:
         router: ContextRouter | None = None,
         auto_transform_prompt: str | None = None,
         field_text: FieldTextProvider | None = None,
+        corrections: CorrectionStore | None = None,
+        frontmost: FrontmostAppProvider | None = None,
+        on_dictation: Callable[[DictationResult], None] | None = None,
     ) -> None:
         self.transcriber = transcriber
         self.polisher = polisher
@@ -79,6 +88,9 @@ class DictationPipeline:
         # byte-identical to before this feature existed.
         self.field_text = field_text
         self.last_transcript: str = ""
+        self.corrections = corrections
+        self.frontmost = frontmost
+        self.on_dictation = on_dictation
 
     def process_audio(
         self,
@@ -143,6 +155,13 @@ class DictationPipeline:
         the text never touches.
         """
         ctx = self.router.resolve() if self.router is not None else ResolvedContext()
+        app_id = ctx.app_id if sink_override is None else ""
+        app_name = ctx.app_name if sink_override is None else ""
+        # A style router is absent for most users. Review and scoped learning
+        # need their own best-effort origin, independent of per-app styles.
+        needs_origin = self.on_dictation is not None or (
+            self.corrections is not None and self.corrections.path.is_file()
+        )
 
         field_context = None
         if (
@@ -190,6 +209,8 @@ class DictationPipeline:
             used_llm=polish.used_llm,
             warnings=list(polish.warnings),
             duration_s=duration_s,
+            app_id=app_id,
+            app_name=app_name,
         )
         for term in dictionary_additions:
             if self.store.add_dictionary_term(term):
@@ -231,15 +252,42 @@ class DictationPipeline:
                 # still gets inserted, with a warning explaining why.
                 result.warnings.append(f"auto-transform skipped: {exc.message}")
 
+        # Polish may take time while the user switches apps. Scope corrections
+        # to the current insertion destination rather than the earlier style
+        # context; never substitute another app's rule when lookup fails.
+        if sink_override is None and self.frontmost is not None and needs_origin:
+            try:
+                origin = self.frontmost.current()
+                app_id, app_name = origin.app_id, origin.title
+            except Exception:
+                app_id, app_name = "", ""
+            result.app_id, result.app_name = app_id, app_name
+
+        # Learned replacements are literal output, after command extraction and
+        # transforms: a replacement containing "press enter" must not send keys.
+        if text and self.corrections is not None and self.polisher.level != "none":
+            try:
+                text, result.corrections_applied = self.corrections.apply(text, app_id=app_id)
+                result.final = text
+            except (ConfigError, OSError) as exc:
+                result.warnings.append(f"learned corrections unavailable: {exc}")
+
         sink = sink_override if sink_override is not None else (ctx.sink or self.sink)
         if text or actions:
             if text:
                 sink.insert(text)
+                result.inserted = True
+                self.last_transcript = text
+                # Review is transient and must not depend on history being on,
+                # or on later disk writes succeeding after the insertion.
+                if self.on_dictation is not None and sink_override is None:
+                    try:
+                        self.on_dictation(result)
+                    except Exception:
+                        result.warnings.append("Teach Me Once review could not be updated")
             for action in actions:
                 sink.press_key(action)
             result.inserted = True
-            if text:
-                self.last_transcript = text
 
         if dict_counts and self.store is not None:
             self.store.record_term_uses(dict_counts)
@@ -262,7 +310,7 @@ class DictationPipeline:
                 used_llm=result.used_llm,
                 app=ctx.app_id,
                 duration_s=duration_s,
-                replacements=dict_count + snippet_count + code_count,
+                replacements=dict_count + snippet_count + code_count + result.corrections_applied,
                 failed=failed,
             )
 

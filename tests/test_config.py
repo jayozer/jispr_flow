@@ -259,6 +259,19 @@ class TestFloatingPillField:
         assert "compact" in str(excinfo.value)
         assert "expanded" in str(excinfo.value)
 
+    def test_bottom_position_is_default(self):
+        assert load_config(env={}).pill_position == "bottom"
+
+    def test_caret_position_env_override(self):
+        config = load_config(env={"LOCAL_FLOW_PILL_POSITION": "caret"})
+        assert config.pill_position == "caret"
+
+    def test_invalid_position_is_rejected(self):
+        with pytest.raises(ConfigError, match="pill_position") as excinfo:
+            load_config(env={"LOCAL_FLOW_PILL_POSITION": "mouse"})
+        assert "bottom" in str(excinfo.value)
+        assert "caret" in str(excinfo.value)
+
 
 class TestLanguagesField:
     """`languages`: comma-separated codes for the tray's Language quick-switch."""

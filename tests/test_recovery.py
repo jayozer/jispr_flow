@@ -378,6 +378,7 @@ class TestRecoverCommand:
 class TestHistoryRetry:
     def test_retry_reprocesses_rough_with_a_fresh_pipeline(self, capsys, tmp_path, monkeypatch):
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_POLISH_BACKEND", "lmstudio")
         history = HistoryStore(tmp_path)
         history.append_new(rough="the rough words", final="Old final.", used_llm=False)
 
@@ -409,6 +410,7 @@ class TestHistoryRetry:
         extra -- must not block it.
         """
         monkeypatch.setenv("LOCAL_FLOW_DATA_DIR", str(tmp_path))
+        monkeypatch.setenv("LOCAL_FLOW_POLISH_BACKEND", "lmstudio")
         history = HistoryStore(tmp_path)
         history.append_new(rough="the rough words", final="Old final.", used_llm=False)
 

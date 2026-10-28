@@ -221,6 +221,68 @@ recording, shows processing after release, briefly confirms success, and then
 returns to idle. Use `--no-pill` to hide it or set
 `LOCAL_FLOW_PILL_STYLE=expanded` for the larger labeled version.
 
+In the native macOS app, **Settings → Appearance → Position → Living Caret**
+moves the indicator beside your text cursor while recording, processing, and
+confirming insertion, then hides it while idle. It uses macOS Accessibility
+to locate the caret and falls back to the bottom of the screen when an app
+does not expose a usable caret. Set `pill_position = "caret"` in TOML or
+`LOCAL_FLOW_PILL_POSITION=caret` to select it outside Settings. The default is
+`"bottom"`; the Python `local-flow run` recording pill keeps its bottom-center
+position. Living Caret shows status and microphone activity throughout dictation.
+
+### Guided setup and model downloads
+
+On first launch, the native app opens **Welcome to JiSpr**. Choose your language
+and speech model, then explicitly download its files or verify a compatible
+existing cache. Model cards show hardware requirements, size, and readiness;
+downloads show byte progress with Cancel and Retry. Audio and text stay local.
+
+Choose **Apply and continue** to save the verified local model and language.
+Browsing and downloading leave your preferences unchanged. New setups can use
+local rules for cleanup without configuring LM Studio. The next pages walk
+through Accessibility, Input Monitoring, and Microphone access, then a practice
+dictation. Finish becomes available after your actual dictated words arrive in
+the practice field.
+
+Choose **Later** to pause setup. Reopen it through **JiSpr → Guided Setup &
+Models…**, or use **Settings → Models → Manage Models…** for downloads. Deferred
+setup does not start the engine automatically; Start Dictation remains available
+in the menu. A completed setup resumes normal startup on the next launch.
+
+Downloaded models live under the local data directory's `models/` folder. Model
+files are pinned and verified before use. A cancelled transfer is discarded and
+Retry starts a fresh transfer; compatible complete caches can be reused offline.
+See the [setup and download test notes](docs/testing/guided-setup-model-downloads-v1.md)
+for supported models, failure behavior, and the manual checklist.
+
+### Teach Me Once
+
+In the native app, choose **Teach Me Once…** from JiSpr's menu after a dictation.
+Edit the wording in its review window and click **Review Changes**. JiSpr offers
+short word or phrase replacements; click **Remember** only for the ones you want
+to reuse. **This app** limits a correction to the dictation's destination app;
+**Everywhere** applies it across apps. A new dictation leaves your current edits
+in place and offers **Load latest**.
+
+Remembered corrections take effect on the next dictation without restarting.
+Use **Undo last learn**, **Forget**, or **Undo last forget** to reverse a decision.
+Learning affects future output; **Copy corrected text** lets you reuse the edited
+version yourself. Verbatim cleanup (`cleanup_level = "none"`) keeps learned
+replacements off.
+
+This first version learns exact words and short phrases from changes made in
+JiSpr's review window. It does not watch edits in other apps. Recent review text
+is held in memory independently of saved history and is cleared when the engine
+host exits. Only approved phrase rules are saved in `corrections.json` in the
+local data directory. Dictionary entries, snippets, and settings keep their
+existing files. Insertions, deletions, number-only changes, and ambiguous edits
+are not offered as reusable rules. Reviews of very long passages are rejected
+with an explanation; use a shorter dictation for learning. In sentence-streaming
+mode the review shows the most recent inserted chunk.
+
+The [Teach Me Once implementation and test notes](docs/testing/teach-me-once-v1.md)
+include its manual checklist and branch rollback instructions.
+
 LM Studio does **not** run Whisper. JiSpr runs MLX/faster-whisper directly for
 speech recognition and uses LM Studio only for optional text cleanup and
 transforms.
@@ -497,6 +559,7 @@ overrides application defaults.
 | `LOCAL_FLOW_HOTKEY` | `fn`, `space`, `f9`, or another supported key |
 | `LOCAL_FLOW_CLEANUP_LEVEL` | `none`, `light`, `medium`, or `high` |
 | `LOCAL_FLOW_INSERT_METHOD` | `auto`, `paste`, `type`, or `clipboard` |
+| `LOCAL_FLOW_PILL_POSITION` | native macOS app: `bottom` or `caret` (Living Caret) |
 | `LOCAL_FLOW_MIC_PRIORITY` | comma-separated device-name preferences |
 | `LOCAL_FLOW_VAD_PRESET` | `normal` or `whisper` for quiet speech |
 | `LOCAL_FLOW_DATA_DIR` | personalization, history, notes, and recovery data |
@@ -527,6 +590,30 @@ parent-process overrides always remain read-only.
 - Process interrupted after capture: run `uv run local-flow recover`.
 - Wayland: use hands-free mode and clipboard insertion; global hotkeys and
   synthetic typing are commonly blocked by the compositor.
+
+### Living Caret manual checks
+
+These checks require the native macOS app and real Accessibility access;
+headless tests do not establish app compatibility or permission behavior.
+The [2026-10-27 live QA results](docs/testing/living-caret-v1-live-qa.md) cover
+TextEdit, Safari, a second display, cancellation, and engine recovery, with
+bottom fallback observed in the ChatGPT window.
+
+1. In **Appearance**, enable the recording pill, select **Living Caret**, and
+   save. Confirm the preview changes and the idle indicator disappears.
+2. In TextEdit, place the caret in a document, hold Fn, and speak. Confirm the
+   indicator appears near the caret, responds to your voice, shows processing
+   after release, confirms insertion, and hides again without taking focus.
+3. Repeat in a browser text field and a supported editor. Move the caret and
+   test near all screen edges and on a second display; the indicator should
+   stay visible without covering the insertion point or capturing clicks.
+4. Try a terminal, an app without readable caret bounds, and denied
+   Accessibility access. Confirm fallback feedback appears at the bottom of
+   the screen and the app remains responsive. Dictation still needs its usual
+   microphone, hotkey, and insertion permissions.
+5. Switch between compact/expanded styles, cancel with Esc, pause/restart the
+   engine, and return to **Bottom of screen**. Confirm each state clears and
+   bottom placement retains its usual idle behavior after relaunch.
 
 ## Documentation
 
